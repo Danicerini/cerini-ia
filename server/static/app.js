@@ -1769,10 +1769,12 @@ function eventRow(e) {
     onclick: (ev) => { ev.stopPropagation(); toggleDone(e); }, onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); toggleDone(e); } } }) : null;
   return h('button', { class: 'ag-ev k-' + e.kind + (e.done ? ' done' : ''), onclick: () => eventEditor(e) },
     check || h('span', { class: 'ag-ev-bar' }),
-    h('span', { class: 'ag-ev-time tnum', text: evTime(e) }),
-    h('span', { class: 'ag-ev-tx' }, h('b', { text: e.title }),
-      h('small', { text: [e.kind === 'promemoria' ? 'Promemoria' : '', e.location, e.reminder ? (e.remind_min > 0 ? `avviso ${AVVISI.find(([m]) => m === e.remind_min)?.[1] || e.remind_min + ' min prima'}` : 'avviso') : ''].filter(Boolean).join(' · ') })),
-    e.reminder ? h('span', { class: 'ag-ev-bell', html: icon('bell', 'sm') }) : null);
+    // sopra l'ora (colorata) e i dettagli, sotto il titolo che prende tutta la larghezza
+    h('span', { class: 'ag-ev-tx' },
+      h('span', { class: 'ag-ev-meta' }, h('span', { class: 'ag-ev-time tnum', text: evTime(e) }),
+        ...[e.kind === 'promemoria' ? 'Promemoria' : '', e.location].filter(Boolean).map((x) => h('span', { text: '· ' + x })),
+        e.reminder ? h('span', { class: 'ag-ev-bell', title: e.remind_min > 0 ? `avviso ${AVVISI.find(([m]) => m === e.remind_min)?.[1] || e.remind_min + ' min prima'}` : 'avviso all\'ora giusta', html: icon('bell', 'sm') }) : null),
+      h('b', { text: e.title })));
 }
 
 // Il modulo per un impegno o un promemoria: nuovo (con il giorno scelto) o da modificare
