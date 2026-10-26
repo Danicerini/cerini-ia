@@ -1327,6 +1327,13 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .bp-check.on { background: var(--ok); border-color: var(--ok); }
 .bp-check .i { width: 12px; height: 12px; }
 .bp-item.done .bp-t { text-decoration: line-through; color: var(--text-3); }
+.ag-pill.done { opacity: .55; }
+.ag-pill.done span, .ag-pill.done b { text-decoration: line-through; }
+.ag-pill-ok { display: inline-grid; color: var(--ok); margin-right: 2px; }
+.ag-pill-ok .i { width: 12px; height: 12px; }
+.ag-dots i.done { opacity: .35; }
+.upd-bar { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 90; padding: 10px 16px;
+  border-radius: 99px; background: var(--accent); color: var(--primary-fg); font-weight: 600; font-size: 13.5px; box-shadow: var(--shadow); }
 .msg.note { display: flex; }
 .brain-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--border-strong);
   background: color-mix(in oklch, var(--accent) 6%, transparent); font-size: 13px; }

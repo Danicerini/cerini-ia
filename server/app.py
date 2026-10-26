@@ -597,6 +597,12 @@ async def index():
     return HTMLResponse(html, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
+@app.get("/api/app/version")
+async def app_version():
+    """La versione dell'interfaccia: se cambia, le pagine aperte si ricaricano da sole."""
+    return JSONResponse({"v": _version(STATIC / "app.js")}, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/privacy")
 async def privacy_page():
     page = (STATIC / "privacy.html").read_text(encoding="utf-8")

@@ -959,6 +959,20 @@ new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes)
   if (n.tagName === 'SELECT') upgradeSelect(n); else n.querySelectorAll?.('select').forEach(upgradeSelect);
 } }).observe(document.body, { childList: true, subtree: true });
 
+const APP_VER = document.querySelector('script[src*="/static/app.js"]')?.src.split('v=')[1] || '';
+async function checkUpdate() {
+  if (!APP_VER || document.hidden) return;
+  try {
+    const { v } = await (await fetch('/api/app/version', { cache: 'no-store' })).json();
+    if (!v || v === APP_VER) return;
+    const busy = S.stream || input.value.trim() || document.querySelector('.ag-modal, .email-card:not(.done) textarea:focus');
+    if (!busy) location.reload();   // niente in corso: si ricarica e basta
+    else if (!$('#updBar')) document.body.append(h('button', { id: 'updBar', class: 'upd-bar', text: 'C\'è una versione nuova di Cerini IA: tocca per aggiornare', onclick: () => location.reload() }));
+  } catch {}
+}
+setInterval(checkUpdate, 120000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+
 const input = $('#input');
 function focusInput() { if (!isMobile()) setTimeout(() => input.focus(), 0); }
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; }
@@ -1684,7 +1698,9 @@ async function renderAgenda() {
     renderAgenda();
   };
   const goToday = () => { A.anchor = A.view === 'week' ? mondayOf(today) : new Date(today.getFullYear(), today.getMonth(), 1); A.sel = todayIso; renderAgenda(); };
-  const pill = (e) => h('button', { class: 'ag-pill k-' + e.kind, title: `${evTime(e)} · ${e.title}`, onclick: (ev) => { ev.stopPropagation(); eventEditor(e); } },
+  const pill = (e) => h('button', { class: 'ag-pill k-' + e.kind + (e.done ? ' done' : ''), title: `${e.done ? 'Fatto · ' : ''}${evTime(e)} · ${e.title}`,
+      onclick: (ev) => { ev.stopPropagation(); eventEditor(e); } },
+    e.done ? h('i', { class: 'ag-pill-ok', html: icon('check', 'sm') }) : null,
     e.allday ? null : h('b', { class: 'tnum', text: e.time }), h('span', { text: e.title }));
 
   const head = h('div', { class: 'ag-head' },
@@ -1712,7 +1728,7 @@ async function renderAgenda() {
         onkeydown: (e) => { if (e.key === 'Enter') { A.sel = key; renderAgenda(); } } },
         h('span', { class: 'ag-n tnum', text: String(d.getDate()) }),
         h('div', { class: 'ag-pills' }, ...list.slice(0, 3).map(pill), list.length > 3 ? h('span', { class: 'ag-more', text: `+${list.length - 3}` }) : null),
-        h('div', { class: 'ag-dots' }, ...list.slice(0, 4).map((e) => h('i', { class: 'k-' + e.kind })))));
+        h('div', { class: 'ag-dots' }, ...list.slice(0, 4).map((e) => h('i', { class: 'k-' + e.kind + (e.done ? ' done' : '') })))));
     }
     main = h('section', { class: 'ag-cal' }, h('div', { class: 'ag-grid' }, ...DOW_LONG.map((x) => h('span', { class: 'ag-dow', text: x })), ...cells));
   } else if (A.view === 'week') {
