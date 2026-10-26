@@ -3050,7 +3050,7 @@ function personaCard() {
         const body = { nome: nome.value.trim(), extra: extra.value.trim() };
         for (const k in fields) body[k] = fields[k].value;
         const r = await (await api('/api/me/persona', body, { method: 'PUT' })).json();
-        out.className = 'form-msg ok'; out.replaceChildren(h('b', { text: 'Salvato. Aura da adesso:' }), h('ul', {}, ...r.lines.map((l) => h('li', { text: l }))));
+        await r; out.className = 'form-msg ok'; out.textContent = 'Salvato';
       } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; }
       save.disabled = false; } });
     card.lastChild.replaceWith(h('div', { class: 'stack persona-form' },
