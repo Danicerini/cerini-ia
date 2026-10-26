@@ -1315,6 +1315,18 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .persona-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
 @media (max-width: 560px) { .persona-grid { grid-template-columns: 1fr; } }
 .persona-form .form-msg ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 3px; }
+.ag-done { width: 22px; height: 22px; flex: none; border-radius: 7px; border: 1.5px solid var(--border-strong); display: grid; place-items: center;
+  color: var(--primary-fg); cursor: pointer; align-self: center; }
+.ag-done:hover { border-color: var(--ok); }
+.ag-done.on { background: var(--ok); border-color: var(--ok); }
+.ag-ev.done b { text-decoration: line-through; color: var(--text-3); }
+.ag-ev.done small, .ag-ev.done .ag-ev-time { color: var(--text-3); }
+.bp-item.ag { gap: 8px; }
+.bp-item.ag .bp-t { text-align: left; background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; }
+.bp-check { width: 16px; height: 16px; flex: none; border-radius: 5px; border: 1.5px solid var(--border-strong); display: grid; place-items: center; color: var(--primary-fg); }
+.bp-check.on { background: var(--ok); border-color: var(--ok); }
+.bp-check .i { width: 12px; height: 12px; }
+.bp-item.done .bp-t { text-decoration: line-through; color: var(--text-3); }
 .msg.note { display: flex; }
 .brain-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--border-strong);
   background: color-mix(in oklch, var(--accent) 6%, transparent); font-size: 13px; }

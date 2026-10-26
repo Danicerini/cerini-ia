@@ -1740,9 +1740,19 @@ async function renderAgenda() {
   root.replaceChildren(h('div', { class: 'ag-wrap' }, head, bar, h('div', { class: 'ag-layout' + (side ? '' : ' one') }, main, side)));
 }
 
+async function toggleDone(e) {
+  try {
+    const r = await (await api(`/api/calendar/event/${encodeURIComponent(e.id)}/done`, { done: !e.done })).json();
+    Object.assign(e, r); toast(r.done ? 'Fatto!' : 'Riaperto');
+    loadToday(); if ($('#main').classList.contains('agenda-open')) renderAgenda(); if (BP.tree) renderBrainPanel();
+  } catch (err) { toast(err.message); }
+}
 function eventRow(e) {
-  return h('button', { class: 'ag-ev k-' + e.kind, onclick: () => eventEditor(e) },
-    h('span', { class: 'ag-ev-bar' }),
+  const check = e.kind === 'promemoria' ? h('span', { class: 'ag-done' + (e.done ? ' on' : ''), role: 'checkbox', 'aria-checked': String(!!e.done), tabindex: 0,
+    title: e.done ? 'Segna da fare' : 'Segna fatto', html: e.done ? icon('check', 'sm') : '',
+    onclick: (ev) => { ev.stopPropagation(); toggleDone(e); }, onkeydown: (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); ev.stopPropagation(); toggleDone(e); } } }) : null;
+  return h('button', { class: 'ag-ev k-' + e.kind + (e.done ? ' done' : ''), onclick: () => eventEditor(e) },
+    check || h('span', { class: 'ag-ev-bar' }),
     h('span', { class: 'ag-ev-time tnum', text: evTime(e) }),
     h('span', { class: 'ag-ev-tx' }, h('b', { text: e.title }),
       h('small', { text: [e.kind === 'promemoria' ? 'Promemoria' : '', e.location, e.reminder ? (e.remind_min > 0 ? `avviso ${AVVISI.find(([m]) => m === e.remind_min)?.[1] || e.remind_min + ' min prima'}` : 'avviso') : ''].filter(Boolean).join(' · ') })),
@@ -1814,7 +1824,7 @@ async function loadToday() {
   const now = new Date(), mon = mondayOf(now);
   try {
     const d = await (await api(`/api/calendar/agenda?start=${isoDay(mon)}&days=7`)).json();
-    S.week = d.events; S.today = d.events.filter((e) => e.day === isoDay(now));
+    S.week = d.events; S.today = d.events.filter((e) => e.day === isoDay(now) && !e.done);
   } catch { S.week = S.week || []; }
   renderCalChip();
   if ($('#main').classList.contains('empty')) renderHero();
@@ -1974,7 +1984,8 @@ function feedCard(it) {
     chips.push(chip('Non mi interessa', 'trash', () => feedAct(it, 'junk')));
     if (link) chips.push(link);
   } else if (it.kind === 'reminder' && !done) {
-    chips.push(chip('Fatto', 'check', () => feedAct(it, 'dismiss'), true), chip('Tra 10 minuti', 'calendar', () => feedAct(it, 'snooze')));
+    chips.push(chip('Fatto', 'check', async () => { await feedAct(it, 'dismiss'); loadToday(); if (BP.tree) renderBrainPanel(); }, true),
+      chip('Tra 10 minuti', 'calendar', () => feedAct(it, 'snooze')));
   } else if (link) chips.push(link);
   if (done) body.push(h('div', { class: 'feed-done', html: icon('check', 'sm') + done }));
   if (chips.length) body.push(h('div', { class: 'au-chips' }, ...chips));
@@ -2103,10 +2114,15 @@ async function renderBrainPanel() {
       e.project ? h('span', { class: 'bp-tag', text: e.project }) : null,
       e.todo.length ? h('span', { class: 'bp-n', text: String(e.todo.length) }) : null));
   }
-  for (const a of BP.day.agenda || []) {
-    dayItems.push(h('button', { class: 'bp-item ag', onclick: openAgenda },
-      h('span', { class: 'bp-dot cal' }), h('span', { class: 'bp-t', text: `${a.allday ? '' : a.time + ' '}${a.title}` })));
-  }
+  const agRow = (a) => h('div', { class: 'bp-item ag' + (a.done ? ' done' : '') },
+    a.kind === 'promemoria'
+      ? h('button', { class: 'bp-check' + (a.done ? ' on' : ''), title: a.done ? 'Segna da fare' : 'Segna fatto', 'aria-label': a.done ? 'Segna da fare' : 'Segna fatto',
+          html: a.done ? icon('check', 'sm') : '', onclick: () => toggleDone(a) })
+      : h('span', { class: 'bp-dot cal' }),
+    h('button', { class: 'bp-t', text: `${a.allday ? '' : a.time + ' '}${a.title}`, onclick: openAgenda }));
+  const ag = BP.day.agenda || [];   // l'agenda da fare in cima (prima del diario), quella fatta in fondo
+  dayItems.unshift(...ag.filter((a) => !a.done).map(agRow));
+  dayItems.push(...ag.filter((a) => a.done).map(agRow));
   const MAX_DAY = 5, extra = dayItems.length - MAX_DAY;
   const dayBox = h('div', { class: 'bp-day' },
     h('div', { class: 'bp-day-h' }, h('span', { text: BP.sel === todayIso ? 'Oggi' : dayTitle(BP.sel) }),
