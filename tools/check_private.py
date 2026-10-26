@@ -34,7 +34,7 @@ SECRETS = [
     ("valore segreto scritto nel codice", re.compile(
         r"(?i)\b(password|passwd|secret|api_?key|token|client_secret)\w*['\"]?\s*[=:]\s*['\"](?!cambiami|your|xxx|example)[A-Za-z0-9+/_=.-]{16,}['\"]")),
 ]
-EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+EMAIL = re.compile(r"\b[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 
 
 def words() -> list[str]:
