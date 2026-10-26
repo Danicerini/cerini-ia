@@ -5,6 +5,7 @@ const ICONS = {
   panel: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
   edit: '<path d="M12 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
   down: '<path d="M12 5v14M19 12l-7 7-7-7"/>',
@@ -914,6 +915,50 @@ $('#toBottom').onclick = () => scrollToBottom();
 const keepFollowing = () => { if (follow) { scroller.scrollTop = scroller.scrollHeight; lastTop = scroller.scrollTop; } };
 
 // ================================================================= composer
+function upgradeSelect(sel) {
+  if (sel.dataset.dd || sel.multiple) return;
+  sel.dataset.dd = '1';
+  const label = h('span', { class: 'dd-l' });
+  const btn = h('button', { type: 'button', class: 'dd-btn ' + sel.className, 'aria-haspopup': 'listbox', 'aria-expanded': 'false',
+    'aria-label': sel.getAttribute('aria-label') || '' }, label, h('span', { class: 'dd-c', html: icon('chevron', 'sm') }));
+  const menu = h('div', { class: 'dd-menu', role: 'listbox', hidden: true });
+  const wrap = h('span', { class: 'dd' + (sel.classList.contains('ag-in') ? ' dd-block' : '') });
+  const sync = () => {
+    const o = sel.selectedOptions[0] || sel.options[0];
+    label.textContent = o ? o.textContent : '';
+    btn.classList.toggle('on', sel.classList.contains('on'));
+  };
+  const close = () => { menu.hidden = true; btn.setAttribute('aria-expanded', 'false'); document.removeEventListener('pointerdown', outside, true); };
+  const outside = (e) => { if (!wrap.contains(e.target)) close(); };
+  const open = () => {
+    menu.replaceChildren(...[...sel.options].filter((o) => !(o.value === '' && o.index === 0 && sel.options.length > 1)).map((o) =>
+      h('button', { type: 'button', role: 'option', class: 'dd-opt' + (o.value === sel.value ? ' sel' : ''), 'aria-selected': String(o.value === sel.value),
+        onclick: () => { sel.value = o.value; sel.dispatchEvent(new Event('change', { bubbles: true })); sync(); close(); btn.focus(); } },
+        h('span', { text: o.textContent }), o.value === sel.value ? h('span', { class: 'dd-check', html: icon('check', 'sm') }) : null)));
+    menu.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    // se sotto non c'e' spazio, si apre verso l'alto
+    const r = btn.getBoundingClientRect();
+    wrap.classList.toggle('up', innerHeight - r.bottom < Math.min(280, menu.scrollHeight + 12) && r.top > innerHeight - r.bottom);
+    (menu.querySelector('.sel') || menu.firstChild)?.focus();
+    document.addEventListener('pointerdown', outside, true);
+  };
+  btn.onclick = () => (menu.hidden ? open() : close());
+  menu.addEventListener('keydown', (e) => {
+    const items = [...menu.querySelectorAll('.dd-opt')], i = items.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); }
+    if (e.key === 'Escape') { e.preventDefault(); close(); btn.focus(); }
+  });
+  sel.addEventListener('change', sync);
+  sel.replaceWith(wrap);
+  wrap.append(sel, btn, menu);
+  sel.hidden = true; sel.tabIndex = -1;
+  sync();
+}
+new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) {
+  if (n.nodeType !== 1) continue;
+  if (n.tagName === 'SELECT') upgradeSelect(n); else n.querySelectorAll?.('select').forEach(upgradeSelect);
+} }).observe(document.body, { childList: true, subtree: true });
+
 const input = $('#input');
 function focusInput() { if (!isMobile()) setTimeout(() => input.focus(), 0); }
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; }
@@ -2072,7 +2117,7 @@ async function renderBrainPanel() {
   const kinds = BP.tree.kinds, others = Object.keys(kinds).filter((k) => !['projects', 'people'].includes(k));
   const tab = (k, label) => h('button', { class: 'bp-tab' + (BP.tab === k ? ' on' : ''), text: label, onclick: () => { BP.tab = k; renderBrainPanel(); } });
   const otherSel = h('select', { class: 'bp-tab bp-other' + (others.includes(BP.tab) ? ' on' : ''), 'aria-label': 'Altri tipi', onchange: (e) => { BP.tab = e.target.value; renderBrainPanel(); } },
-    h('option', { value: '', text: others.includes(BP.tab) ? kinds[BP.tab] : 'Altro ▸' }), ...others.map((k) => h('option', { value: k, text: kinds[k] })));
+    h('option', { value: '', text: others.includes(BP.tab) ? kinds[BP.tab] : 'Altri tipi' }), ...others.map((k) => h('option', { value: k, text: kinds[k] })));
   const list = BP.tree.entities.filter((e) => e.kind === BP.tab);
   const wiki = h('div', { class: 'bp-sec' },
     h('div', { class: 'bp-h' }, h('span', { text: 'WIKI' }),
@@ -2899,7 +2944,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? autonomyCard() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), autonomyCard()] : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
   body.append(hero, nav, ...[].concat(content));
 }
 
@@ -2973,6 +3018,49 @@ const AUTONOMY_LABELS = {
   sito_elimina: ['Eliminazioni', 'Cancellare piatti, eventi o il menu del giorno. Il sito tiene una copia di sicurezza al giorno.', 'Sito del locale'],
   utenti: ['Inviti', 'Creare inviti per nuovi account e mandarli per mail.', 'Persone'],
 };
+const PERSONA_LABELS = {
+  tono: ['Tono', { amichevole: 'Amichevole', diretto: 'Diretto e asciutto', scherzoso: 'Scherzoso', professionale: 'Professionale' }],
+  lunghezza: ['Lunghezza delle risposte', { brevissime: 'Brevissime', brevi: 'Brevi', normali: 'Normali', dettagliate: 'Dettagliate' }],
+  spiegazioni: ['Spiegazioni', { tecniche: 'Tecniche (sono del mestiere)', semplici: 'Semplici, senza gergo' }],
+  iniziativa: ['Iniziativa', { chiede: 'Chiede sempre prima', equilibrata: 'Fa da solo le cose sicure', proattivo: 'Proattivo: propone idee' }],
+  registro: ['Ti dà del', { tu: 'Tu', lei: 'Lei' }],
+  emoji: ['Emoji', { mai: 'Mai', poche: 'Ogni tanto', spesso: 'Spesso' }],
+};
+// Come si comporta Aura con te: lo decidi tu (finisce anche nel cervello, in boot/soul.md)
+function personaCard() {
+  const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('user', 'sm') + 'Come si comporta con te' }),
+    h('p', { text: 'Il carattere di Aura lo scegli tu. Vale in tutte le chat e lo trovi anche nel cervello (boot/soul.md).' })),
+    h('div', { class: 'list-empty', text: 'Carico…' }));
+  (async () => {
+    let d;
+    try { d = await (await api('/api/me/persona')).json(); } catch (e) { card.lastChild.textContent = e.message; return; }
+    const p = d.persona, fields = {};
+    const nome = h('input', { class: 'ag-in', value: p.nome || '', placeholder: 'Come ti chiama', 'aria-label': 'Come ti chiama' });
+    const extra = h('textarea', { class: 'ag-in', rows: 3, placeholder: 'Altre istruzioni, es. «quando parliamo di lavoro sii formale», «non propormi mai di accendere il PC»', 'aria-label': 'Altre istruzioni' });
+    extra.value = p.extra || '';
+    const rows = Object.entries(PERSONA_LABELS).map(([k, [label, names]]) => {
+      fields[k] = h('select', { class: 'ag-in', 'aria-label': label }, ...(d.opts[k] || Object.keys(names)).map((v) => h('option', { value: v, text: names[v] || v })));
+      fields[k].value = p[k];
+      return h('label', { class: 'ag-f' }, h('span', { text: label }), fields[k]);
+    });
+    const out = h('div', { class: 'form-msg', role: 'status' });
+    const save = h('button', { class: 'btn primary', text: 'Salva', onclick: async () => {
+      save.disabled = true;
+      try {
+        const body = { nome: nome.value.trim(), extra: extra.value.trim() };
+        for (const k in fields) body[k] = fields[k].value;
+        const r = await (await api('/api/me/persona', body, { method: 'PUT' })).json();
+        out.className = 'form-msg ok'; out.replaceChildren(h('b', { text: 'Salvato. Aura da adesso:' }), h('ul', {}, ...r.lines.map((l) => h('li', { text: l }))));
+      } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; }
+      save.disabled = false; } });
+    card.lastChild.replaceWith(h('div', { class: 'stack persona-form' },
+      h('label', { class: 'ag-f' }, h('span', { text: 'Come ti chiama' }), nome),
+      h('div', { class: 'persona-grid' }, ...rows),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Altre istruzioni (facoltative)' }), extra),
+      h('div', { class: 'form-actions' }, save), out));
+  })();
+  return card;
+}
 function autonomyCard() {
   const groups = S.me.autonomy_groups || [];
   const byHead = new Map();

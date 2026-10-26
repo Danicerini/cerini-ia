@@ -1294,6 +1294,27 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .sl-item.on, .sl-item:hover { background: var(--accent-soft); }
 .bv-skill-h { display: flex; align-items: center; gap: 10px; }
 .bv-skill-h code { font-size: 12px; color: var(--accent); background: var(--accent-soft); padding: 1px 7px; border-radius: 6px; }
+/* menu a tendina del sito (al posto dei select del browser) */
+.dd { position: relative; display: inline-flex; min-width: 0; }
+.dd-block { display: flex; width: 100%; }
+.dd-btn { display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; cursor: pointer; text-align: left; font: inherit; }
+.dd-btn.ag-in { width: 100%; }
+.dd-btn .dd-l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dd-btn .dd-c { display: inline-grid; color: var(--text-3); transition: transform .15s; }
+.dd-btn[aria-expanded="true"] .dd-c { transform: rotate(180deg); }
+.dd-btn.bp-tab { height: 28px; padding: 0 10px 0 11px; }
+.dd-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; min-width: 100%; max-height: 280px; overflow-y: auto; padding: 5px;
+  border-radius: 12px; border: 1px solid var(--border-strong); background: var(--raised); box-shadow: var(--shadow); display: grid; gap: 1px; }
+.dd.up .dd-menu { top: auto; bottom: calc(100% + 6px); }
+.dd-menu[hidden] { display: none; }
+.dd-opt { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 10px; border-radius: 8px; font-size: 13.5px;
+  color: var(--text); text-align: left; white-space: nowrap; }
+.dd-opt:hover, .dd-opt:focus-visible { background: var(--hover); outline: none; }
+.dd-opt.sel { color: var(--accent); font-weight: 600; background: var(--accent-soft); }
+.dd-check { display: inline-grid; color: var(--accent); }
+.persona-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+@media (max-width: 560px) { .persona-grid { grid-template-columns: 1fr; } }
+.persona-form .form-msg ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 3px; }
 .msg.note { display: flex; }
 .brain-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--border-strong);
   background: color-mix(in oklch, var(--accent) 6%, transparent); font-size: 13px; }

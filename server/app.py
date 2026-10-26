@@ -736,6 +736,91 @@ async def set_autonomy(body: AutonomyIn, user: dict = Depends(require_user)):
     return {"autonomy": cur, "mem_display": prefs.get("mem_display", "list")}
 
 
+PERSONA_OPTS = {
+    "tono": {"amichevole": "Tono amichevole e alla mano, come un amico competente.",
+             "diretto": "Diretto e asciutto: vai subito al punto, niente convenevoli.",
+             "scherzoso": "Scherzoso e ironico quando ci sta, ma sempre utile.",
+             "professionale": "Professionale e cortese."},
+    "lunghezza": {"brevissime": "Risposte brevissime: una o due frasi, a meno che chieda di più.",
+                  "brevi": "Risposte brevi: il necessario, niente giri di parole.",
+                  "normali": "Risposte di lunghezza normale.",
+                  "dettagliate": "Risposte dettagliate, con spiegazioni ed esempi."},
+    "spiegazioni": {"tecniche": "È un tecnico: usa pure termini tecnici, comandi e dettagli.",
+                    "semplici": "Spiega in modo semplice, senza gergo tecnico."},
+    "iniziativa": {"chiede": "Prima di fare qualcosa chiedi sempre, anche per le cose piccole.",
+                   "equilibrata": "Le cose sicure e annullabili falle da solo; per il resto chiedi.",
+                   "proattivo": "Sii proattivo: proponi idee, prossimi passi e cose che puoi fare tu."},
+    "registro": {"tu": "Dagli del tu.", "lei": "Dagli del lei."},
+    "emoji": {"mai": "Niente emoji.", "poche": "Emoji solo ogni tanto.", "spesso": "Usa volentieri le emoji."},
+}
+PERSONA_DEFAULT = {"tono": "amichevole", "lunghezza": "brevi", "spiegazioni": "tecniche", "iniziativa": "equilibrata",
+                   "registro": "tu", "emoji": "poche", "nome": "", "extra": ""}
+
+
+def persona(user: dict) -> dict:
+    return {**PERSONA_DEFAULT, **(_prefs(user).get("persona") or {})}
+
+
+def persona_lines(user: dict) -> list[str]:
+    pr = persona(user)
+    nick = pr["nome"].strip() or _nick(user)
+    lines = [f"Chiamalo «{nick}»."] + [PERSONA_OPTS[k][pr[k]] for k in PERSONA_OPTS if pr.get(k) in PERSONA_OPTS[k]]
+    if pr["extra"].strip():
+        lines.append(pr["extra"].strip())
+    return lines
+
+
+def persona_prompt(user: dict) -> str:
+    return ("\n\nCOME VUOLE CHE TI COMPORTI (l'ha deciso lui nelle impostazioni: vale più di ogni altra indicazione di stile):\n"
+            + "\n".join(f"- {l}" for l in persona_lines(user)))
+
+
+class PersonaIn(BaseModel):
+    tono: str = "amichevole"
+    lunghezza: str = "brevi"
+    spiegazioni: str = "tecniche"
+    iniziativa: str = "equilibrata"
+    registro: str = "tu"
+    emoji: str = "poche"
+    nome: str = ""
+    extra: str = ""
+
+
+@app.get("/api/me/persona")
+async def get_persona(user: dict = Depends(require_user)):
+    return {"persona": {**persona(user), "nome": persona(user)["nome"] or _nick(user)},
+            "opts": {k: list(v) for k, v in PERSONA_OPTS.items()}}
+
+
+@app.put("/api/me/persona")
+async def put_persona(body: PersonaIn, user: dict = Depends(require_user)):
+    pr = {k: v for k, v in body.model_dump().items()}
+    for k, opts in PERSONA_OPTS.items():
+        if pr[k] not in opts:
+            raise HTTPException(400, f"Valore non valido per {k}")
+    pr["nome"] = clean_name(pr["nome"])[:40]
+    pr["extra"] = pr["extra"].strip()[:800]
+    prefs = _prefs(user)
+    prefs["persona"] = pr
+    with db() as c:
+        c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
+    user = {**user, "prefs": json.dumps(prefs)}
+    # anche nel cervello: boot/soul.md dice come si comporta Aura con lui (la sezione «Come parlo» la scrive l'utente)
+    try:
+        brain_ensure(user)
+        meta, body_md = fm_split(brain_read(user, "boot/soul.md"))
+        body_md = re.sub(r"assistente personale di \S+\.", f"assistente personale di {_user_display(user)}.", body_md, count=1)
+        block = ["- " + l for l in persona_lines(user)] + [
+            "- Niente \"hai ragione\" di riflesso: se non sono d'accordo lo dico. Mi scuso solo se l'errore è mio.",
+            "- Ogni cosa che affermo ha una fonte (il cervello, una mail, una pagina) oppure dico che è un mio ragionamento; se non lo so, lo dico."]
+        body_md = _section_edit(body_md if re.search(r"^## Come parlo[ \t]*$", body_md, re.M) else body_md.rstrip("\n") + "\n\n## Come parlo\n",
+                                "Come parlo", block, replace=True)
+        await brain_write(user, "boot/soul.md", fm_join(meta, body_md) if meta else body_md, "Come si comporta Aura: deciso dall'utente", reindex=False)
+    except Exception as e:
+        print(f"soul.md: {e}", flush=True)
+    return {"persona": pr, "lines": persona_lines(user)}
+
+
 @app.post("/api/me/password")
 async def change_password(body: PasswordChange, request: Request, response: Response,
                           user: dict = Depends(require_user)):
@@ -1813,7 +1898,10 @@ async def memory_list(user: dict = Depends(require_user)):
 
 @app.post("/api/memory")
 async def memory_create(body: MemoryIn, user: dict = Depends(require_user)):
-    return {"id": (await brain_remember(user, body.text)).get("id")}
+    try:
+        return {"id": (await brain_remember(user, body.text)).get("id")}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.patch("/api/memory/{mid}")
@@ -2288,7 +2376,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                        + (MEMORY_PROMPT if tools else "") + core_memories_prompt(user))
             ap = active_project(user, body.chat_id or "", body.messages)
             yield ev(event="project", project={"id": ap["id"], "name": ap["name"], "path": ap["path"]} if ap else None)
-            sys_txt += await brain_prompt(user, body.messages, ap) + (BRAIN_PROMPT if tools else "")
+            sys_txt += await brain_prompt(user, body.messages, ap) + (BRAIN_PROMPT if tools else "") + persona_prompt(user)
             if skill:
                 sys_txt += (f"\n\nL'UTENTE HA CHIAMATO LA SKILL /{skill['slug']} ({skill['name']}): segui questa procedura e usa i suoi strumenti "
                             f"per quello che chiede nel messaggio.\n### {skill['path']}\n{fm_split(brain_read(user, skill['path']))[1]}")
@@ -6209,7 +6297,7 @@ WIKI_KINDS = {
     "companies": ("Aziende", "Aziende, clienti, fornitori, negozi: chi sono e cosa c'entrano con l'utente."),
     "places": ("Luoghi", "Posti che contano: casa, il locale, la palestra, dove lavora."),
     "services": ("Servizi", "Server, siti, account e strumenti che usa (senza password: quelle non si scrivono mai qui)."),
-    "things": ("Altro", "Tutto il resto che e' un'entita' stabile: oggetti, animali, abbonamenti."),
+    "things": ("Cose", "Tutto il resto che e' un'entita' stabile: oggetti, animali, abbonamenti."),
 }
 OLD_KINDS = {"progetti": "projects", "persone": "people", "luoghi": "places", "servizi": "services", "cose": "things"}
 
@@ -6561,6 +6649,9 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
                 best = (pos, e)
     if best:
         return best[1]["kind"], best[1]["name"], best[1]["path"]
+    first = (re.match(r"[A-Za-zÀ-ÿ]+", fact.strip()) or [""])[0].lower()
+    if first in me:   # «Marco preferisce…», «Marco lavora…»: e' lui
+        return "utente", user["username"], "boot/user.md"
     known = "\n".join(f"- {e['path']} ({e['name']})" for e in ents[:80]) or "(nessuna)"
     who = ", ".join(sorted(x.capitalize() for x in me))
     try:
@@ -6614,9 +6705,25 @@ async def link_entities(user: dict, rel: str, fact: str):
             await brain_write(user, e["path"], b, f"Collegati: {e['name']} ↔ {me['name']}", reindex=False)
 
 
+TASK_FACT_RE = re.compile(r"^(?:\S+\s+){0,3}(deve|devo|dovrebbe|dovr[aà]|bisogna)\s|\bricordami\b|\bda fare\b", re.I)
+
+
+def normalize_fact(user: dict, fact: str) -> str:
+    """«è un tecnico helpdesk» scritto nella mappa: il soggetto e' l'utente. Le cose da fare vanno nel diario, non qui."""
+    f = re.sub(r"\s+", " ", str(fact or "")).strip()
+    if len(f) < 4:
+        raise ValueError("Il ricordo è vuoto")
+    if TASK_FACT_RE.search(f):
+        raise ValueError("Questa è una cosa da fare, non un ricordo: va nel diario (diario_nota) o in agenda (promemoria)")
+    if f[0].islower():
+        f = f"{_user_display(user)} {f}"
+    return f
+
+
 async def brain_remember(user: dict, fact: str) -> dict:
     """Un ricordo nuovo: una riga nella scheda giusta (creata se serve). Ritorna dove e' finito."""
     brain_ensure(user)
+    fact = normalize_fact(user, fact)
     kind, name, rel = await _route_fact(user, fact)
     text = brain_read(user, rel) or _entity_file(kind, name)
     if rel.startswith("wiki/"):
