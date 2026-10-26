@@ -724,7 +724,8 @@ function emailView(chat, m) {
   const act = async (kind, btn) => {
     btn.disabled = true;
     try {
-      const r = await (await api(`/api/mail/compose/${kind === 'send' ? 'send' : 'draft'}`, { to: v.to || '', subject: v.subject || '', body: v.body || '', reply_to: v.reply_to || null })).json();
+      const r = await (await api(`/api/mail/compose/${kind === 'send' ? 'send' : 'draft'}`, { to: v.to || '', subject: v.subject || '', body: v.body || '',
+        reply_to: v.reply_to || null, attachments: (v.attachments || []).map((a) => a.id) })).json();
       v.status = kind === 'send' ? 'sent' : 'saved';
       v.done_at = Date.now();
       m.content = (m.content || '') + (kind === 'send' ? ` [L'utente ha INVIATO la mail a ${r.to}.]` : " [L'utente l'ha salvata nelle bozze di Gmail.]");
@@ -749,9 +750,26 @@ function emailView(chat, m) {
         const no = h('button', { class: 'btn sm em-cancel', html: icon('x', 'sm') + 'Annulla', onclick: cancel });
         return h('div', { class: 'em-actions' }, no, draft, send);
       })();
+  // allegati: quelli scelti da Aura (o il file che hai appena mandato in chat); si tolgono con la x, se ne aggiungono con «Allega»
+  v.attachments = v.attachments || [];
+  const pick = h('input', { type: 'file', multiple: true, hidden: true, onchange: async () => {
+    for (const f of pick.files) {
+      try {
+        const r = await fetch('/api/files?name=' + encodeURIComponent(f.name), { method: 'POST', body: f, headers: { 'Content-Type': f.type || 'application/octet-stream' }, credentials: 'same-origin' });
+        if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || 'caricamento non riuscito');
+        const d = await r.json(); v.attachments.push({ id: d.id, name: d.name, size: d.size });
+      } catch (e) { toast(`${f.name}: ${e.message}`); }
+    }
+    save(); renderThread(); } });
+  const atts = (v.attachments.length || !done) ? h('div', { class: 'em-atts' },
+    ...v.attachments.map((a, i) => h('span', { class: 'em-att' }, h('span', { html: icon('clip', 'sm') }),
+      h('a', { href: `/api/files/${a.id}?download=1`, text: a.name }), h('small', { class: 'tnum', text: fmtSize(a.size) }),
+      done ? null : h('button', { class: 'em-att-x', title: 'Togli', 'aria-label': `Togli ${a.name}`, html: icon('x', 'sm'),
+        onclick: () => { v.attachments.splice(i, 1); save(); renderThread(); } }))),
+    done ? null : h('button', { class: 'em-att-add', html: icon('clip', 'sm') + 'Allega', onclick: () => pick.click() }), pick) : null;
   return h('div', { class: 'email-card' + (done ? ' done' : '') },
     h('div', { class: 'em-head' }, h('b', { text: v.reply_to ? 'Risposta' : 'Email' }), h('span', { class: 'em-tools' }, copyB)),
-    field('em-to', 'Destinatari', 'to'), field('em-subj', 'Oggetto', 'subject'), body, foot);
+    field('em-to', 'Destinatari', 'to'), field('em-subj', 'Oggetto', 'subject'), body, atts, foot);
 }
 
 // Procedura / runbook preparato da Aura con il template della Homebase: anteprima, poi Crea su Homebase o Annulla

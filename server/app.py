@@ -2425,6 +2425,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     if name.startswith(("mail_", "web_", "homebase_scratchpad")) or name == "homebase_procedura":
                         # si puo' solo se lo chiede l'utente: il controllo guarda il suo ultimo messaggio, non il modello
                         args["_last_user"] = next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "")
+                    if name == "mail_prepara":
+                        args["_files"] = next((m.get("files") or [] for m in reversed(body.messages) if m.get("role") == "user"), [])
                     # Foto dell'evento: la prende il server dall'ultimo messaggio dell'utente (il modello non la ricopia)
                     if name in ("evento_aggiungi", "evento_modifica") and last_images and (
                             _truthy(args.get("usa_foto_allegata")) or name == "evento_aggiungi"):
@@ -2441,6 +2443,11 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args = {**args, "_images": last_images, "_files": last_files, "_web": web_done}
                     tool = TOOLS.get(name)
                     key = (name, json.dumps({k: v for k, v in args.items() if not str(k).startswith("_")}, sort_keys=True, default=str))
+                    if name == "mail_prepara" and any(k[0] == "mail_prepara" for k in done_calls):
+                        msgs.append({"role": "tool", "tool_name": name, "content": "La scheda della mail è GIÀ sotto la tua risposta: non "
+                                     "chiamare altri strumenti. Rispondi solo «Ecco la mail: controllala e premi Invia o Salva in bozze». "
+                                     "Non dire che la stai inviando: la manda lui."})
+                        continue
                     if tool and not tool["confirm"] and key in done_calls:
                         msgs.append({"role": "tool", "tool_name": name, "content": "Questa azione l'hai già fatta in questo turno e il "
                                      "risultato è sopra: non ripeterla. Rispondi all'utente adesso, in breve."})
@@ -7679,10 +7686,52 @@ async def _tool_mail_prepare(user: dict, args: dict, request: Request) -> dict:
         if len(keep) < len(EMAIL_RE.findall(to)):
             note = " Un indirizzo non era tra quelli conosciuti e l'ho lasciato vuoto: l'utente lo scrive nella scheda."
         to = ", ".join(keep)
-    view = {"kind": "email", "to": to, "subject": subj, "body": body, "reply_to": reply_id, "status": "draft"}
+    atts = _mail_attachments(uid, args)
+    body = _aura_signed(user, body)
+    view = {"kind": "email", "to": to, "subject": subj, "body": body, "reply_to": reply_id, "status": "draft", "attachments": atts}
+    att_txt = f" Allegati: {', '.join(a['name'] for a in atts)}." if atts else ""
     return {"content": "Mail preparata e mostrata all'utente in una scheda che può modificare, con i pulsanti «Invia» e «Salva "
-                       f"in bozze»: NON è ancora inviata né salvata, decide lui con un clic.{note} Rispondi solo con una frase breve.",
+                       f"in bozze»: NON è ancora inviata né salvata, decide lui con un clic.{att_txt}{note} Rispondi solo con una frase "
+                       "breve tipo «Ecco la mail: controllala e premi Invia». NON dire che la stai inviando.",
             "display": "", "view": view}
+
+
+def _mail_attachments(uid: int, args: dict) -> list[dict]:
+    """Cosa allegare: i file indicati dal modello (numero o nome) o, se non ne indica, quelli che l'utente ha appena allegato in chat."""
+    want = args.get("allegati") or []
+    want = want if isinstance(want, list) else [want]
+    rows = []
+    for w in want:
+        try:
+            rows.append(file_row(uid, w))
+        except ValueError:
+            with db() as c:
+                r = c.execute("SELECT * FROM files WHERE user_id = ? AND name = ? ORDER BY id DESC LIMIT 1", (uid, str(w).strip())).fetchone()
+            if r:
+                rows.append(dict(r))
+    if not rows:
+        for f in args.get("_files") or []:
+            try:
+                rows.append(file_row(uid, f.get("id")))
+            except (ValueError, AttributeError):
+                pass
+    seen, out = set(), []
+    for r in rows:
+        if r["id"] not in seen:
+            seen.add(r["id"])
+            out.append({"id": r["id"], "name": r["name"], "size": r["size"]})
+    return out[:10]
+
+
+AURA_SIGN = "Scritta da Aura, l'assistente personale di"
+
+
+def _aura_signed(user: dict, body: str) -> str:
+    """In fondo alle mail scritte da Aura: si capisce che le ha scritte lui (l'utente puo' toglierlo nella scheda)."""
+    if AURA_SIGN.lower() in body.lower():
+        return body
+    return body.rstrip() + f"\n\n--\n{AURA_SIGN} {_user_display(user)}."
+
 
 
 class ComposeIn(BaseModel):
@@ -7690,6 +7739,7 @@ class ComposeIn(BaseModel):
     subject: str = ""
     body: str
     reply_to: str | None = None
+    attachments: list[int] = []
 
 
 def _compose_check(body: ComposeIn, need_to: bool) -> list[str]:
@@ -7718,14 +7768,47 @@ async def _compose_message(uid: int, body: ComposeIn, to: list[str]) -> dict:
             msg["In-Reply-To"] = msg["References"] = mid
         payload["threadId"] = orig.get("threadId")
     msg.set_content(body.body)
-    payload["raw"] = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    total = 0
+    for fid in body.attachments[:10]:
+        try:
+            r, data = file_bytes(uid, fid)
+        except (ValueError, OSError):
+            raise HTTPException(404, f"L'allegato {fid} non c'è più: toglilo dalla mail")
+        total += len(data)
+        if total > MAIL_ATT_MAX:
+            raise HTTPException(413, f"Allegati troppo grandi per una mail (massimo {MAIL_ATT_MAX // 1024 // 1024} MB in tutto)")
+        main, _, sub = (r["mime"] or "application/octet-stream").partition("/")
+        msg.add_attachment(data, maintype=main or "application", subtype=sub or "octet-stream", filename=r["name"])
+    payload["_bytes"] = msg.as_bytes()
     return payload
+
+
+MAIL_ATT_MAX = 24 * 1024 * 1024
+GMAIL_UPLOAD = "https://gmail.googleapis.com/upload/gmail/v1/users/me"
+
+
+async def gmail_put_message(uid: int, payload: dict, draft: bool = False) -> dict:
+    """Invia (o salva in bozze) un messaggio MIME. Sopra i ~4 MB Gmail vuole l'upload «multipart», non il JSON con raw."""
+    data = payload.pop("_bytes")
+    if len(data) < 4_500_000:
+        payload["raw"] = base64.urlsafe_b64encode(data).decode()
+        return await gmail_api(uid, "POST", "/drafts" if draft else "/messages/send", json={"message": payload} if draft else payload)
+    meta = json.dumps({"message": payload} if draft else payload).encode()
+    b = "aura" + secrets.token_hex(8)
+    multipart = (f"--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".encode() + meta +
+                 f"\r\n--{b}\r\nContent-Type: message/rfc822\r\n\r\n".encode() + data + f"\r\n--{b}--".encode())
+    tok = await gmail_token(uid)
+    r = await client.post(f"{GMAIL_UPLOAD}/{'drafts' if draft else 'messages/send'}?uploadType=multipart", content=multipart, timeout=120,
+                          headers={"Authorization": f"Bearer {tok}", "Content-Type": f"multipart/related; boundary={b}"})
+    if r.status_code >= 400:
+        raise HTTPException(502, f"Gmail ha risposto {r.status_code}: {r.text[:200]}")
+    return r.json() if r.content else {}
 
 
 @app.post("/api/mail/compose/send")
 async def compose_send(body: ComposeIn, user: dict = Depends(require_admin)):
     to = _compose_check(body, True)
-    await gmail_api(user["id"], "POST", "/messages/send", json=await _compose_message(user["id"], body, to))
+    await gmail_put_message(user["id"], await _compose_message(user["id"], body, to))
     print(f"Mail inviata da {user['username']} a {len(to)} destinatari", flush=True)
     return {"ok": True, "to": ", ".join(to)}
 
@@ -7733,7 +7816,7 @@ async def compose_send(body: ComposeIn, user: dict = Depends(require_admin)):
 @app.post("/api/mail/compose/draft")
 async def compose_draft(body: ComposeIn, user: dict = Depends(require_admin)):
     to = _compose_check(body, False)
-    await gmail_api(user["id"], "POST", "/drafts", json={"message": await _compose_message(user["id"], body, to)})
+    await gmail_put_message(user["id"], await _compose_message(user["id"], body, to), draft=True)
     return {"ok": True}
 
 
@@ -7746,7 +7829,10 @@ TOOLS["mail_prepara"] = {
                 "con rispondi_a = numero n. della sua mail. Se l'indirizzo è tra le cose che sai, mettilo.",
                 {"a": {"type": "string", "description": "Destinatario/i, separati da virgola (facoltativo)"}, "oggetto": _S,
                  "testo": {"type": "string", "description": "Il testo completo della mail, con saluto e firma"},
-                 "rispondi_a": {"type": "integer"}}, ["testo"])}
+                 "rispondi_a": {"type": "integer", "description": "SOLO per rispondere a una mail trovata con mail_cerca (il suo n.)"},
+                 "allegati": {"type": "array", "items": {"type": "integer"},
+                              "description": "Numeri dei file da allegare (quelli scritti negli allegati della chat). Se l'utente ha appena allegato un file, va da sé"}},
+                ["testo"])}
 # inviare o salvare lo decide l'utente dalla scheda: questi due non si offrono piu' al modello
 TOOLS["mail_bozza"]["hidden"] = True
 TOOLS["mail_invia"]["hidden"] = True
