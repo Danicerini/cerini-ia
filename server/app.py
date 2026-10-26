@@ -2280,11 +2280,18 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             ctx = FREE_CTX if free else (CLOUD_CTX if is_cloud(body.model) else NUM_CTX)
             tools = tools_for(user) if not free and "tools" in await model_caps(body.model) else []
             tools = _topic_tools(tools, body.messages)
+            skill = slash_skill(user, body.messages) if tools else None
+            if skill and skill["tools"]:   # /homebase: gli strumenti di quella skill (piu' quelli per ricordare)
+                keep = tuple(skill["tools"]) + ("ricorda", "cervello_cerca")
+                tools = [t for t in tools_for(user) if t["function"]["name"].startswith(keep)] or tools
             sys_txt = (system_prompt(user, bool(tools), site=any(SITE_TOOL.match(t["function"]["name"]) for t in tools))
                        + (MEMORY_PROMPT if tools else "") + core_memories_prompt(user))
             ap = active_project(user, body.chat_id or "", body.messages)
             yield ev(event="project", project={"id": ap["id"], "name": ap["name"], "path": ap["path"]} if ap else None)
             sys_txt += await brain_prompt(user, body.messages, ap) + (BRAIN_PROMPT if tools else "")
+            if skill:
+                sys_txt += (f"\n\nL'UTENTE HA CHIAMATO LA SKILL /{skill['slug']} ({skill['name']}): segui questa procedura e usa i suoi strumenti "
+                            f"per quello che chiede nel messaggio.\n### {skill['path']}\n{fm_split(brain_read(user, skill['path']))[1]}")
             if any(t["function"]["name"] == "mail_cerca" for t in tools):
                 sys_txt += MAIL_PROMPT.format(email=_gmail_row(user["id"])["email"])
             if any(t["function"]["name"] == "promemoria" for t in tools):
@@ -3870,7 +3877,7 @@ def _agenda_fields(args: dict, kind: str) -> dict:
     if kind == "promemoria":
         args.setdefault("durata_minuti", 15)
     start, end, allday = _when(args)
-    title = str(args.get("titolo") or args.get("testo") or "").strip()[:200]
+    title = clean_name(str(args.get("titolo") or args.get("testo") or ""))[:200]
     if not title:
         raise ValueError("serve il titolo")
     return {"title": title, "kind": kind, "allday": int(allday), "start_ts": _ts(start), "end_ts": _ts(end),
@@ -6207,6 +6214,11 @@ WIKI_KINDS = {
 OLD_KINDS = {"progetti": "projects", "persone": "people", "luoghi": "places", "servizi": "services", "cose": "things"}
 
 
+def clean_name(name: str) -> str:
+    """Toglie le parole ripetute di fila nei nomi propri («Etienne Etienne», «Marco Marco Rossi»)."""
+    return re.sub(r"\b([A-ZÀ-Ý][\wà-ÿ']*)(?:\s+\1\b)+", r"\1", re.sub(r"\s+", " ", str(name or "")).strip())
+
+
 def entity_path(kind: str, slug: str) -> str:
     """I progetti sono cartelle (wiki/projects/<nome>/index.md), il resto un file per entita'."""
     return f"wiki/projects/{slug}/index.md" if kind == "projects" else f"wiki/{kind}/{slug}.md"
@@ -6371,6 +6383,7 @@ def brain_ensure(user: dict) -> Path:
         try:
             brain_upgrade(user)
             brain_layout_v2(user)
+            seed_skills(user)
         except Exception as e:
             print(f"Cervello v6: {e}", flush=True)
         return bdir
@@ -6469,6 +6482,21 @@ PERSON_RES = [
 ]
 
 
+COMPANY_RES = [   # un'azienda nominata come tale: va in companies/, non tra le persone ne' tra i progetti
+    re.compile(r"\b(?:l'azienda|la ditta|la societ[aà]|il cliente|la cliente|il fornitore|l'agenzia|lo studio|la cooperativa)\s+([A-ZÀ-Ý][\w&.'-]*(?:\s+[A-ZÀ-Ý][\w&.'-]*){0,3})"),
+    re.compile(r"\b([A-ZÀ-Ý][\w&.'-]*(?:\s+[A-ZÀ-Ý][\w&.'-]*){0,3})\s+(?:s\.?r\.?l\.?|s\.?p\.?a\.?|s\.?n\.?c\.?|s\.?a\.?s\.?|soc\.? coop\.?|societ[aà] cooperativa)\b", re.I),
+    re.compile(r"\b([A-ZÀ-Ý][\w&.'-]*(?:\s+[A-ZÀ-Ý][\w&.'-]*){0,2})\s+(?:è|e')\s+(?:un'azienda|una ditta|una societ[aà]|un cliente|un fornitore|un'agenzia)\b"),
+]
+
+
+def _company_in(fact: str) -> str:
+    for rx in COMPANY_RES:
+        m = rx.search(fact)
+        if m and not re.match(r"(?i)(il|la|lo|un|una|mio|mia)$", m.group(1)):
+            return clean_name(m.group(1))
+    return ""
+
+
 def _person_in(fact: str, me: set[str]) -> str:
     """Un'altra persona nominata accanto a una parola di relazione (amico, ragazza, collega…), se c'e'."""
     for rx in PERSON_RES:
@@ -6512,13 +6540,27 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
     ents = [e for e in brain_entities(user) if e["name"].lower() not in me and e["id"] not in me]
     low = fact.lower()
     flat = re.sub(r"[\W_]+", "", low)
+    # di chi parla il fatto: prima una persona con la sua relazione («Etienne è un collega…»), poi un'azienda dichiarata,
+    # poi la scheda che c'e' gia' nominata PER PRIMA (il soggetto), non una qualsiasi nominata nella frase
+    if person := _person_in(fact, me):
+        person = clean_name(person)
+        have = next((e for e in ents if e["kind"] == "people" and e["name"].lower() == person.lower()), None)
+        return ("people", have["name"], have["path"]) if have else ("people", person, entity_path("people", _slug(person)))
+    if company := _company_in(fact):
+        have = next((e for e in ents if e["name"].lower() == company.lower()), None)
+        return (have["kind"], have["name"], have["path"]) if have else ("companies", company, entity_path("companies", _slug(company)))
+    best = None
     for e in ents:   # una scheda che c'e' gia' e il cui nome compare nel fatto (il nome dell'utente non conta)
         for n in [e["name"], *e["aliases"]]:
             nf = re.sub(r"[\W_]+", "", n.lower())
-            if len(n) > 2 and n.lower() not in me and (re.search(rf"\b{re.escape(n.lower())}\b", low) or (len(nf) >= 6 and nf in flat)):
-                return e["kind"], e["name"], e["path"]   # anche scritto attaccato: «pizzeriadamario.it» -> Pizzeria da Mario
-    if person := _person_in(fact, me):
-        return "people", person, entity_path("people", _slug(person))
+            if len(n) <= 2 or n.lower() in me:
+                continue
+            m = re.search(rf"\b{re.escape(n.lower())}\b", low)
+            pos = m.start() if m else (flat.find(nf) * len(low) // max(1, len(flat)) if len(nf) >= 6 and nf in flat else -1)
+            if pos >= 0 and (best is None or pos < best[0]):   # anche scritto attaccato: «pizzeriadamario.it» -> Pizzeria da Mario
+                best = (pos, e)
+    if best:
+        return best[1]["kind"], best[1]["name"], best[1]["path"]
     known = "\n".join(f"- {e['path']} ({e['name']})" for e in ents[:80]) or "(nessuna)"
     who = ", ".join(sorted(x.capitalize() for x in me))
     try:
@@ -6537,11 +6579,39 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
     if d.get("scheda") == "esistente" and any(e["path"] == d.get("percorso") for e in ents):
         e = next(e for e in ents if e["path"] == d["percorso"])
         return e["kind"], e["name"], e["path"]
-    name = str(d.get("nome") or "").strip()[:60]
+    name = clean_name(str(d.get("nome") or ""))[:60]
     tipo = OLD_KINDS.get(str(d.get("tipo") or ""), str(d.get("tipo") or ""))
     if d.get("scheda") == "nuova" and tipo in WIKI_KINDS and name and not set(re.findall(r"\w+", name.lower())) <= me:
         return tipo, name, entity_path(tipo, _slug(name))
     return "utente", user["username"], "boot/user.md"
+
+
+def _link_line(e: dict) -> str:
+    return f"- [{e['name']}](wiki:{e['path']})"
+
+
+def _add_link(text: str, line: str) -> str:
+    meta, body = fm_split(text)
+    if line in body:
+        return text
+    return fm_join(meta, _section_edit(body, "Collegati", [line])) if meta else _section_edit(body, "Collegati", [line])
+
+
+async def link_entities(user: dict, rel: str, fact: str):
+    """Le altre schede nominate nel fatto (un progetto, un'azienda, una persona): collegate nei due sensi, in «Collegati»."""
+    ents = brain_entities(user)
+    me = next((e for e in ents if e["path"] == rel), None)
+    if not me:
+        return
+    low = fact.lower()
+    for e in ents:
+        if e["path"] == rel or e["kind"] not in ("projects", "companies", "people", "places"):
+            continue
+        if any(len(n) > 2 and re.search(rf"\b{re.escape(n.lower())}\b", low) for n in [e["name"], *e["aliases"]]):
+            a = _add_link(brain_read(user, rel), _link_line(e))
+            b = _add_link(brain_read(user, e["path"]), _link_line(me))
+            await brain_write(user, rel, a, f"Collegati: {me['name']} ↔ {e['name']}", reindex=False)
+            await brain_write(user, e["path"], b, f"Collegati: {e['name']} ↔ {me['name']}", reindex=False)
 
 
 async def brain_remember(user: dict, fact: str) -> dict:
@@ -6559,6 +6629,8 @@ async def brain_remember(user: dict, fact: str) -> dict:
         t = re.search(r"^# (.+)$", text, re.M)
         name = t.group(1).strip() if t else name
     await brain_write(user, rel, text, f"Ricordo in {rel}: {fact[:80]}", reindex=False)
+    if rel.startswith("wiki/"):
+        await link_entities(user, rel, fact)
     await brain_reindex(user, rel)
     brain_log_soon(user["id"], f"🧠 Ho scritto nel cervello ({name}): {fact}")
     line = fact.strip().rstrip(".") + "."
@@ -7003,10 +7075,68 @@ def brain_skills(user: dict) -> list[dict]:
     out = []
     for p in sorted((brain_dir(user) / "skills").glob("*/SKILL.md")):
         meta, body = fm_split(p.read_text(encoding="utf-8"))
-        trig = meta.get("trigger") if isinstance(meta.get("trigger"), list) else [x.strip() for x in str(meta.get("trigger") or "").split(",") if x.strip()]
-        out.append({"path": p.relative_to(brain_dir(user)).as_posix(), "name": meta.get("name") or p.parent.name, "trigger": trig,
-                    "summary": _clip(re.sub(r"#.*|\n+", " ", body), 140)})
+        lst = lambda v: v if isinstance(v, list) else [x.strip() for x in str(v or "").split(",") if x.strip()]
+        out.append({"path": p.relative_to(brain_dir(user)).as_posix(), "slug": p.parent.name, "name": meta.get("name") or p.parent.name,
+                    "trigger": lst(meta.get("trigger")), "tools": lst(meta.get("tools")), "admin": str(meta.get("admin") or "") == "true",
+                    "summary": str(meta.get("description") or "") or _clip(re.sub(r"#.*|\n+", " ", body), 140)})
     return out
+
+
+# le skill di base (procedure senza nomi ne' segreti): Aura le usa da sola con le parole «trigger», o al volo con /nome
+BUILTIN_SKILLS = {
+    "homebase": ("Homebase", "Note, fogli dello scratchpad e servizi della Homebase.", "homebase, scratchpad, foglio, nota, note, servizi",
+                 "homebase_", True, "1. For notes: list or search them first, then read the one that matters; create or update only what the user asked.\n"
+                 "2. For the scratchpad: open the sheet by its name; to write, append unless the user says to replace.\n"
+                 "3. For services and links: search them by name and give the link.\n4. Never write passwords or codes anywhere."),
+    "posta": ("Posta", "Leggere, cercare, pulire e scrivere la posta.", "mail, email, posta, gmail, cestino, bozza",
+              "mail_", True, "1. To find mail use mail_cerca with Gmail syntax (from:, subject:, newer_than:).\n"
+              "2. To write a mail use mail_prepara: the user sends it from the card. Never say a mail was sent.\n"
+              "3. Attach the files the user just sent in chat.\n4. Trash only what the user asked; never empty the trash without a yes."),
+    "agenda": ("Agenda", "Appuntamenti e promemoria nell'agenda di Aura.", "agenda, calendario, promemoria, ricordami, appuntamento",
+               "calendario_,promemoria", True, "1. Check the agenda first (calendario_vedi) when the user changes his mind: update, do not duplicate.\n"
+               "2. A reminder needs a time; ask only if it is missing.\n3. Put the full details in the notes."),
+    "diario": ("Diario", "Cosa è successo in un giorno e cosa resta da fare.", "diario, cosa ho fatto, giornata, da fare",
+               "diario_,lavoro_fatto,progetto_nuovo,cervello_", False, "1. «What did I do on X?»: read that day's diary (diario_giorno) and answer from it, citing it.\n"
+               "2. Things to do without a time go in the diary on the day they must be looked at.\n3. Work on a project goes in with lavoro_fatto, right away."),
+    "progetto": ("Progetto", "Aprire, creare o aggiornare un progetto, con le sue persone e aziende.", "progetto, cliente, lavoro per",
+                 "progetto_nuovo,lavoro_fatto,cervello_,scheda_modifica,ricorda", False,
+                 "1. Find the project by name (cervello_cerca); if it does not exist and the work lasts, create it (progetto_nuovo).\n"
+                 "2. Log what was done with lavoro_fatto, with a one-line status.\n3. People involved go in people/, the client company in companies/: "
+                 "save them with ricorda, they get linked to the project."),
+    "web": ("Web", "Cercare su internet e leggere le pagine.", "cerca su internet, cerca online, notizie, meteo",
+            "web_", False, "1. Search with web_cerca, then read the best result with web_leggi.\n2. Answer citing the sources (site name)."),
+}
+
+
+def seed_skills(user: dict):
+    """Le skill di base, se nel cervello non ci sono ancora (quelle che l'utente ha cambiato restano sue)."""
+    bdir = brain_dir(user)
+    made = False
+    for slug, (name, desc, trig, tools, admin, body) in BUILTIN_SKILLS.items():
+        q = bdir / f"skills/{slug}/SKILL.md"
+        if q.exists() or (admin and user.get("role") != "admin"):
+            continue
+        q.parent.mkdir(parents=True, exist_ok=True)
+        meta = {"type": "skill", "name": name, "description": desc, "trigger": [t.strip() for t in trig.split(",")],
+                "tools": [t.strip() for t in tools.split(",")], "admin": "true" if admin else "false"}
+        q.write_text(fm_join(meta, f"# {name}\n\n{body}\n"), encoding="utf-8")
+        made = True
+    if made:
+        _git(bdir, "add", "-A")
+        _git(bdir, "commit", "-q", "-m", "Skill di base")
+
+
+def slash_skill(user: dict, messages: list[dict]) -> dict | None:
+    """«/homebase …» all'inizio del messaggio: quella skill, subito."""
+    last = _last_user_text(messages).strip()
+    m = re.match(r"^/([\w-]+)", last)
+    if not m:
+        return None
+    want = _slug(m.group(1))
+    for sk in brain_skills(user):
+        if want in (sk["slug"], _slug(sk["name"])) and (not sk["admin"] or user["role"] == "admin"):
+            return sk
+    return None
 
 
 # ---- project-first (Brain Protocol v6): ogni lavoro che dura sta in un progetto; il lavoro di un giorno su un progetto e' UNA voce
@@ -7084,7 +7214,7 @@ PROJECT_BODY = "# {name}\n\n{desc}\n\n## Stato\n- [{today}] appena creato\n\n## 
 
 
 async def project_create(user: dict, name: str, desc: str = "", aliases: list[str] | None = None) -> dict:
-    name = re.sub(r"\s+", " ", str(name or "")).strip()[:60]
+    name = clean_name(name)[:60]
     if not name:
         raise ValueError("serve il nome del progetto")
     have = project_in_text(user, name)
@@ -7621,6 +7751,73 @@ async def _tool_diary_done(user: dict, args: dict, request: Request) -> dict:
         return {"content": "Nel diario non c'è una cosa da fare così ancora aperta.", "display": "Niente da spuntare nel diario"}
     await diary_check(user, best[1], best[2], True)
     return {"content": f"Segnato come fatto: «{best[2]}».", "display": f"Fatto: «{best[2]}»"}
+
+
+async def brain_rename(user: dict, e: dict, new_name: str) -> dict:
+    new_name = clean_name(new_name)[:60]
+    if not new_name:
+        raise ValueError("serve il nome nuovo")
+    old_rel, old_name = e["path"], e["name"]
+    new_rel = entity_path(e["kind"], _slug(new_name))
+    meta, body = fm_split(brain_read(user, old_rel))
+    meta["name"] = new_name
+    if e["kind"] == "projects":
+        meta["project"] = _slug(new_name)
+    body = re.sub(r"^# .+$", f"# {new_name}", body, count=1, flags=re.M)
+    body = body.replace(old_name, new_name)
+    if new_rel != old_rel:
+        if (brain_dir(user) / new_rel).exists():
+            raise ValueError(f"esiste già una scheda «{new_name}»")
+        await brain_delete(user, old_rel, f"Rinomino {old_name} in {new_name}")
+    await brain_write(user, new_rel, fm_join(meta, body), f"Rinominata: {old_name} → {new_name}")
+    # anche dove era nominata: le altre schede (link), il diario, l'agenda
+    for q in [*(brain_dir(user) / "wiki").rglob("*.md"), *(brain_dir(user) / "diary").rglob("*.md")]:
+        t = q.read_text(encoding="utf-8")
+        t2 = t.replace(f"wiki:{old_rel}", f"wiki:{new_rel}").replace(old_name, new_name)
+        if t2 != t:
+            await brain_write(user, q.relative_to(brain_dir(user)).as_posix(), t2, f"{old_name} → {new_name}", reindex=False)
+    with db() as c:
+        for r in c.execute("SELECT id, title FROM agenda WHERE user_id = ? AND title LIKE ?", (user["id"], f"%{old_name}%")).fetchall():
+            c.execute("UPDATE agenda SET title = ? WHERE id = ?", (r["title"].replace(old_name, new_name), r["id"]))
+    return {"path": new_rel, "name": new_name}
+
+
+async def _tool_card_edit(user: dict, args: dict, request: Request) -> dict:
+    q = str(args.get("scheda") or "").strip()
+    ents = brain_entities(user)
+    e = next((x for x in ents if x["path"] == q), None) or next((x for x in ents if q.lower() in (x["name"].lower(), x["id"])), None) \
+        or next((x for x in ents if q.lower() and q.lower() in x["name"].lower()), None)
+    if not e:
+        return {"content": f"Non trovo una scheda «{q}» nel cervello.", "display": f"Scheda «{q}» non trovata"}
+    done = []
+    if str(args.get("nuovo_nome") or "").strip():
+        r = await brain_rename(user, e, str(args["nuovo_nome"]))
+        done.append(f"rinominata in «{r['name']}»")
+        e = next(x for x in brain_entities(user) if x["path"] == r["path"])
+    if str(args.get("togli") or "").strip():
+        text = brain_read(user, e["path"])
+        lines = [l for l in text.split("\n") if not (l.startswith("- ") and str(args["togli"]).strip().lower() in l.lower())]
+        if len(lines) < len(text.split("\n")):
+            await brain_write(user, e["path"], "\n".join(lines), f"{e['name']}: tolto «{str(args['togli'])[:60]}»")
+            done.append("tolta la riga")
+    if str(args.get("aggiungi") or "").strip():
+        await brain_write(user, e["path"], _add_fact(brain_read(user, e["path"]), str(args["aggiungi"])), f"{e['name']}: aggiunto un fatto")
+        await link_entities(user, e["path"], str(args["aggiungi"]))
+        done.append("aggiunto il fatto")
+    if not done:
+        return {"content": "Non mi hai detto cosa cambiare (nuovo_nome, aggiungi o togli).", "display": "Niente da cambiare"}
+    return {"content": f"Scheda {e['path']}: " + ", ".join(done) + ".", "display": f"Scheda «{e['name']}»: " + ", ".join(done)}
+
+
+TOOLS.update({
+    "scheda_modifica": {
+        "admin": False, "confirm": False, "run": _tool_card_edit,
+        "spec": _fn("scheda_modifica", "Corregge una scheda del cervello (persona, progetto, azienda…): la rinomina (nome sbagliato o "
+                    "ripetuto), aggiunge un fatto o ne toglie uno. Usala SEMPRE quando l'utente chiede di correggere o rinominare.",
+                    {"scheda": {"type": "string", "description": "Nome attuale della scheda"}, "nuovo_nome": _S,
+                     "aggiungi": {"type": "string", "description": "Un fatto da aggiungere"},
+                     "togli": {"type": "string", "description": "Parte del testo della riga da togliere"}}, ["scheda"])},
+})
 
 
 TOOLS.update({

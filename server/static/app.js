@@ -917,10 +917,30 @@ const keepFollowing = () => { if (follow) { scroller.scrollTop = scroller.scroll
 const input = $('#input');
 function focusInput() { if (!isMobile()) setTimeout(() => input.focus(), 0); }
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; }
-input.addEventListener('input', () => { autosize(); renderComposer(); });
+input.addEventListener('input', () => { autosize(); renderComposer(); slashMenu(); });
 input.addEventListener('keydown', (e) => {
+  const menu = $('#slashMenu');
+  if (menu && !menu.hidden) {
+    const items = [...menu.querySelectorAll('.sl-item')], on = items.findIndex((x) => x.classList.contains('on'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[on]?.classList.remove('on'); items[(on + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.classList.add('on'); return; }
+    if ((e.key === 'Enter' || e.key === 'Tab') && items[on]) { e.preventDefault(); items[on].click(); return; }
+    if (e.key === 'Escape') { menu.hidden = true; return; }
+  }
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()) { e.preventDefault(); $('#composer').requestSubmit(); }
 });
+let SKILLS = null;
+async function slashMenu() {
+  let menu = $('#slashMenu');
+  const m = input.value.match(/^\/([\w-]*)$/);
+  if (!m) { if (menu) menu.hidden = true; return; }
+  if (!SKILLS) { try { SKILLS = (await (await api('/api/brain/tree')).json()).skills; } catch { SKILLS = []; } }
+  const list = SKILLS.filter((s) => (s.slug + ' ' + s.name).toLowerCase().includes(m[1].toLowerCase()));
+  if (!menu) { menu = h('div', { id: 'slashMenu', class: 'slash-menu', role: 'listbox' }); $('#composer').append(menu); }
+  menu.hidden = !list.length;
+  menu.replaceChildren(...list.map((s, i) => h('button', { type: 'button', class: 'sl-item' + (i === 0 ? ' on' : ''), role: 'option',
+    onclick: () => { input.value = `/${s.slug} `; menu.hidden = true; input.focus(); autosize(); renderComposer(); } },
+    h('b', { text: '/' + s.slug }), h('span', { text: s.summary || s.name }))));
+}
 
 function renderComposer() {
   const s = S.status, m = activeModel(), streaming = !!S.stream;
@@ -2042,11 +2062,12 @@ async function renderBrainPanel() {
     dayItems.push(h('button', { class: 'bp-item ag', onclick: openAgenda },
       h('span', { class: 'bp-dot cal' }), h('span', { class: 'bp-t', text: `${a.allday ? '' : a.time + ' '}${a.title}` })));
   }
+  const MAX_DAY = 5, extra = dayItems.length - MAX_DAY;
   const dayBox = h('div', { class: 'bp-day' },
     h('div', { class: 'bp-day-h' }, h('span', { text: BP.sel === todayIso ? 'Oggi' : dayTitle(BP.sel) }),
       h('button', { class: 'bp-add', title: 'Nuova voce del diario', 'aria-label': 'Nuova voce del diario', html: icon('edit', 'sm'), onclick: () => brainNew('diario') })),
-    ...(dayItems.length ? dayItems : [h('div', { class: 'bp-empty', text: 'Niente in questo giorno.' })]),
-    (BP.day.entries || []).length > 1 ? h('button', { class: 'bp-link', text: 'Leggi tutta la giornata', onclick: () => openBrainDay(BP.sel) }) : null);
+    ...(dayItems.length ? dayItems.slice(0, MAX_DAY) : [h('div', { class: 'bp-empty', text: 'Niente in questo giorno.' })]),
+    (BP.day.entries || []).length > 1 || extra > 0 ? h('button', { class: 'bp-link', text: extra > 0 ? `+${extra} altre · leggi tutta la giornata` : 'Leggi tutta la giornata', onclick: () => openBrainDay(BP.sel) }) : null);
 
   const kinds = BP.tree.kinds, others = Object.keys(kinds).filter((k) => !['projects', 'people'].includes(k));
   const tab = (k, label) => h('button', { class: 'bp-tab' + (BP.tab === k ? ' on' : ''), text: label, onclick: () => { BP.tab = k; renderBrainPanel(); } });
@@ -2085,7 +2106,8 @@ function brainShell(title, actions, ...body) {
 }
 function bvRender(md, path) {
   // i link «chat:ID» il filtro di sicurezza li toglierebbe: diventano «#chat=ID» e li apre la pagina
-  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md.replace(/\]\(chat:([\w-]+)\)/g, '](#chat=$1)')) });
+  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md.replace(/\]\(chat:([\w-]+)\)/g, '](#chat=$1)').replace(/\]\(wiki:([\w\/.-]+)\)/g, '](#brain=$1)')) });
+  box.querySelectorAll('a[href^="#brain="]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openBrainFile(a.getAttribute('href').slice(7)); }));
   // le caselle «- [ ]» si spuntano davvero (nel diario)
   box.querySelectorAll('li').forEach((li) => {
     const cb = li.querySelector('input[type="checkbox"]');
@@ -2216,9 +2238,11 @@ function auraLog(text) {
 async function openBrainSkills() {
   if (!BP.tree) { try { BP.tree = await (await api('/api/brain/tree')).json(); } catch (e) { toast(e.message); return; } }
   brainShell('Skill', [h('button', { class: 'btn sm primary', html: icon('edit', 'sm') + 'Nuova skill', onclick: () => brainNew('skill') })],
-    h('p', { class: 'field-hint', text: 'Procedure che Aura segue quando un messaggio contiene una delle parole di «trigger». Scrivile come istruzioni, senza nomi né password.' }),
+    h('p', { class: 'field-hint', text: 'Procedure che Aura segue da solo quando nel messaggio ci sono le parole di attivazione. Per chiamarne una al volo scrivi /nome all’inizio del messaggio (es. «/homebase apri il foglio spesa»).' }),
     ...BP.tree.skills.map((s) => h('button', { class: 'card bv-skill', onclick: () => openBrainFile(s.path) },
-      h('b', { text: s.name }), h('small', { text: s.trigger.length ? 'si attiva con: ' + s.trigger.join(', ') : 'nessuna parola di attivazione' }), h('span', { text: s.summary }))));
+      h('div', { class: 'bv-skill-h' }, h('b', { text: s.name }), h('code', { text: '/' + s.slug })),
+      h('span', { text: s.summary }),
+      h('small', { text: s.trigger.length ? 'da solo con: ' + s.trigger.join(', ') : 'solo con /' + s.slug }))));
 }
 function brainNew(kind) {
   $('#agModal')?.remove();
