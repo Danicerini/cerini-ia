@@ -2097,7 +2097,8 @@ def tools_for(user: dict) -> list:
 
 # Con tanti strumenti un modello piccolo li confonde (es. "promozioni" delle mail scambiate per le "proposte del
 # giorno" del sito): se il messaggio parla chiaramente di posta o di sito, gli si danno solo quelli giusti.
-MAIL_TOPIC = re.compile(r"\b(e-?mail\w*|mail|posta|gmail|inbox|casella|spam|newsletter|mittent\w*|cestin\w*|non lett\w*|bozz\w*|"
+MAIL_WORD = r"(?:e-?mail\w*|mail\w*|amil|mial|emial|meil|imail|maill)"
+MAIL_TOPIC = re.compile(r"\b(" + MAIL_WORD + r"|posta|gmail|inbox|casella|spam|newsletter|mittent\w*|cestin\w*|non lett\w*|bozz\w*|"
                         r"disiscriv\w*|iscrizion\w*)\b", re.I)
 SITE_TOPIC = re.compile(r"\b(sito|men[uù]|piatt\w*|carta|propost\w* del giorno|event\w*|appuntament\w*|allergen\w*|"
                         r"categori\w*|prodott\w*|serat\w*|pranzo|cena del|baita)\b", re.I)
@@ -2124,12 +2125,17 @@ def _tool_group(name: str) -> str:
     return "site" if SITE_TOOL.match(name) else ""
 
 
+SEND_TO_RE = re.compile(r"\b(mand\w*|invi\w*|spedisc\w*|spedi\w*|inoltr\w*|scriv\w*gli|scriv\w*le|giralo|girala)\b", re.I)
+
+
 def _topics(messages: list[dict]) -> set:
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
     found = {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC)) if rx.search(last)}
     last_msg = next((m for m in reversed(messages) if m.get("role") == "user"), {})
     if last_msg.get("files"):
         found.add("file")
+        if SEND_TO_RE.search(last):
+            found.add("mail")
     if not found:   # "si', cestinale": vale l'argomento degli ultimi strumenti usati in questa chat
         for m in reversed(messages[-8:]):
             g = _tool_group(m.get("tool_name") or "")
@@ -2346,6 +2352,18 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         content = GEMMA_TOKENS_RE.sub("", TEXT_CALL_RE.sub("", content)).strip()
                 if not calls and not content.strip() and not answered and not retried:
                     retried = True   # niente testo e niente strumenti: capita, si rifa' il giro una volta
+                    continue
+                if (not calls and not composed and MAIL_CLAIM_RE.search(said_all + content) and not any(k[0] in ("mail_prepara", "mail_invia", "mail_bozza") for k in done_calls)
+                        and user["role"] == "admin" and _gmail_row(user["id"])):
+                    composed = True
+                    if not any(t["function"]["name"] == "mail_prepara" for t in tools):
+                        tools = tools + [TOOLS["mail_prepara"]["spec"]]
+                    msgs.append({"role": "assistant", "content": content})
+                    msgs.append({"role": "system", "content": "FALSO: hai scritto che la mail è inviata/spedita, ma NON hai chiamato nessuno strumento: "
+                                 "non è partito niente. Chiama ADESSO mail_prepara con destinatario, oggetto e testo (gli allegati della chat "
+                                 "si aggiungono da soli). Dopo, scrivi solo: «Correggo: non era ancora partita. Ecco la mail: controllala e "
+                                 "premi Invia.»"})
+                    yield json.dumps({"message": {"role": "assistant", "content": "\n\n"}, "done": False}) + "\n"
                     continue
                 if (not calls and not answered and not composed and len(content) < 2000 and COMPOSE_RE.search(_last_user_text(body.messages))
                         and any(t["function"]["name"] == "mail_prepara" for t in tools)):
@@ -6413,6 +6431,7 @@ def _user_names(user: dict) -> set[str]:
 
 DIARY_CLAIM_RE = re.compile(r"\b(ho |l'ho |li ho |te l'ho )?(aggiunt|segnat|scritt|annotat|mess|inserit)\w*\b.{0,80}\bdiario\b", re.I | re.S)
 AGENDA_CLAIM_RE = re.compile(r"\b(aggiornat|modificat|impostat|creat|salvat|spostat|cambiat|aggiunt|inserit|messo)\w*\b.{0,60}\b(promemoria|agenda|impegno|evento|appuntamento)\b", re.I | re.S)
+MAIL_CLAIM_RE = re.compile(r"\b(ho inviato|ho mandato|ho spedito|sto inviando|sto mandando|sto spedendo|(e-?mail|mail|messaggio|allegato)\b.{0,40}\b(inviat|spedit|mandat|partit)\w*|(inviat|spedit|mandat)\w*\b.{0,40}\b(e-?mail|mail|allegato))", re.I | re.S)
 AGENDA_TOOLS = ("promemoria", "calendario_crea", "calendario_modifica", "calendario_elimina", "calendario_vedi")
 _REL = (r"(?:migliore\s+)?(?:amic[oa]|fratello|sorella|madre|padre|mamma|pap[aà]|ragazza|ragazzo|fidanzat[oa]|moglie|marito|"
         r"figli[oa]|cugin[oa]|zi[oa]|nonn[oa]|collega|capo|cliente|vicin[oa] di casa|coinquilin[oa])")
@@ -6738,17 +6757,26 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
     with db() as c:
         row = c.execute("SELECT * FROM brain_episodes WHERE chat_id = ?", (chat_id,)).fetchone()
     upto = row["upto"] if row else 0
-    convo = [m for m in messages if m.get("role") in ("user", "assistant") and (m.get("content") or "").strip()]
+    convo = [m for m in messages if m.get("role") in ("user", "assistant", "tool") and (m.get("content") or m.get("view") or "")]
     new = convo[upto:]
     if sum(1 for m in new if m["role"] == "user") < 1 or sum(len(m.get("content") or "") for m in new) < 120:
         return None
     plist_ = projects(user)
     ap = active_project(user, chat_id, messages)
     plist = ", ".join(f"{e['id']} ({e['name']})" for e in plist_) or "nessuno"
-    text = "\n".join(f"{'Utente' if m['role'] == 'user' else 'Aura'}: {str(m['content'])[:1200]}" for m in new)[-9000:]
+    def line(m):
+        if m["role"] == "tool":
+            v = m.get("view") or {}
+            st = {"draft": "preparata, NON inviata", "sent": "INVIATA dall'utente", "saved": "salvata in bozze dall'utente",
+                  "cancelled": "annullata"}.get(v.get("status"), "") if v.get("kind") == "email" else ""
+            return f"[Esito strumento {m.get('tool_name') or ''}: {(st or str(m.get('content') or '')[:300])}]"
+        return f"{'Utente' if m['role'] == 'user' else 'Aura'}: {str(m['content'])[:1200]}"
+    text = "\n".join(line(m) for m in new)[-9000:]
     prompt = ("Scrivi la voce di diario di questa conversazione tra l'utente e il suo assistente Aura. Il diario serve a sapere, un domani, "
               "cosa è successo quel giorno. Scrivi in italiano, in terza persona sull'utente (per nome: '<nome> ha…'), concreto: cosa voleva, cosa è "
-              "stato fatto o deciso, con i dettagli che contano (nomi, numeri, file). Se è chiacchiera senza sostanza, utile=false.\n"
+              "stato fatto o deciso, con i dettagli che contano (nomi, numeri, file). Se è chiacchiera senza sostanza, utile=false. "
+              "ATTENZIONE: un'azione (mail inviata, promemoria creato, file salvato…) è successa SOLO se c'è il suo [Esito strumento] o se "
+              "l'utente dice di averla fatta lui. Se Aura dice di averla fatta ma non c'è l'esito, NON è successa: non scriverla tra i fatti.\n"
               f"Oggi è {GIORNI[local_now().weekday()]} {local_now().strftime('%Y-%m-%d')}. Progetti esistenti: {plist}."
               + (f" Il progetto di questa chat è {ap['id']} ({ap['name']})." if ap else "") + "\n"
               "Rispondi SOLO JSON: {\"utile\": true|false, \"titolo\": \"breve, 3-7 parole\", \"riassunto\": \"2-5 frasi\", "
@@ -7652,7 +7680,7 @@ async def conv_toggle(body: ConvToggle, user: dict = Depends(require_user)):
 # ---- mail preparata in chat: Aura la scrive, l'utente la vede in una scheda modificabile e sceglie Invia o Salva in bozze
 
 EMAIL_RE = re.compile(r"[^@\s,;<>]+@[^@\s,;<>]+\.[^@\s,;<>]+")
-COMPOSE_RE = re.compile(r"\b(prepar\w*|scriv\w*|mand\w*|invi\w*|rispond\w*|manda)\b.{0,60}\b(e-?mail|mail|risposta)\b|\b(rispondi|rispondere)\s+a\b", re.I | re.S)
+COMPOSE_RE = re.compile(r"\b(prepar\w*|scriv\w*|mand\w*|invi\w*|rispond\w*|manda)\b.{0,60}\b(" + MAIL_WORD + r"|risposta)\b|\b(rispondi|rispondere)\s+a\b", re.I | re.S)
 
 
 async def _known_address(uid: int, to: str, last_user: str) -> bool:
