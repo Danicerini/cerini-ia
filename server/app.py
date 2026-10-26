@@ -2132,10 +2132,11 @@ def _topics(messages: list[dict]) -> set:
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
     found = {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC)) if rx.search(last)}
     last_msg = next((m for m in reversed(messages) if m.get("role") == "user"), {})
-    if last_msg.get("files"):
+    files = [f for f in last_msg.get("files") or [] if isinstance(f, dict)]
+    if any(not f.get("image") for f in files):   # le foto le guarda il modello: non sono «lavoro sui file»
         found.add("file")
-        if SEND_TO_RE.search(last):
-            found.add("mail")
+    if files and (SEND_TO_RE.search(last) or re.search(r"\balleg\w*", last, re.I)):
+        found.add("mail")
     if not found:   # "si', cestinale": vale l'argomento degli ultimi strumenti usati in questa chat
         for m in reversed(messages[-8:]):
             g = _tool_group(m.get("tool_name") or "")
@@ -2445,6 +2446,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args["_last_user"] = next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "")
                     if name == "mail_prepara":
                         args["_files"] = next((m.get("files") or [] for m in reversed(body.messages) if m.get("role") == "user"), [])
+                        args["_chat_files"] = [f for m in body.messages if m.get("role") == "user" for f in (m.get("files") or [])]
                     # Foto dell'evento: la prende il server dall'ultimo messaggio dell'utente (il modello non la ricopia)
                     if name in ("evento_aggiungi", "evento_modifica") and last_images and (
                             _truthy(args.get("usa_foto_allegata")) or name == "evento_aggiungi"):
@@ -7728,15 +7730,16 @@ def _mail_attachments(uid: int, args: dict) -> list[dict]:
     """Cosa allegare: i file indicati dal modello (numero o nome) o, se non ne indica, quelli che l'utente ha appena allegato in chat."""
     want = args.get("allegati") or []
     want = want if isinstance(want, list) else [want]
+    chat_files = [f for f in args.get("_chat_files") or [] if isinstance(f, dict)]
+    ok_ids = {_int(f.get("id")) for f in chat_files}
     rows = []
-    for w in want:
-        try:
-            rows.append(file_row(uid, w))
-        except ValueError:
-            with db() as c:
-                r = c.execute("SELECT * FROM files WHERE user_id = ? AND name = ? ORDER BY id DESC LIMIT 1", (uid, str(w).strip())).fetchone()
-            if r:
-                rows.append(dict(r))
+    for w in want:   # solo file mandati in questa chat (per numero o per nome): un numero inventato non pesca un file a caso
+        f = next((x for x in chat_files if _int(x.get("id")) == _int(w) or str(x.get("name") or "").lower() == str(w).strip().lower()), None)
+        if f and _int(f.get("id")) in ok_ids:
+            try:
+                rows.append(file_row(uid, f.get("id")))
+            except ValueError:
+                pass
     if not rows:
         for f in args.get("_files") or []:
             try:

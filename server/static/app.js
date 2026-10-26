@@ -616,7 +616,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
     if (S.editing === i) return editEl(chat, m, i);
     const bubble = h('div', { class: 'bubble' });
     if (m.images?.length) bubble.append(h('div', { class: 'imgs' }, m.images.map((src) => h('img', { src, alt: 'Immagine allegata' }))));
-    if (m.files?.length) bubble.append(h('div', { class: 'msg-files' }, m.files.map((f) => fileChip(f))));
+    if (m.files?.some((f) => !f.image)) bubble.append(h('div', { class: 'msg-files' }, m.files.filter((f) => !f.image).map((f) => fileChip(f))));
     if (m.content) bubble.append(document.createTextNode(m.content));
     const copyB = h('button', { class: 'icon-btn sm', title: 'Copia', 'aria-label': 'Copia', html: icon('copy', 'sm'), onclick: () => copyText(m.content, copyB) });
     return h('div', { class: 'msg user' }, bubble,
@@ -944,8 +944,8 @@ function renderComposer() {
   S.files = S.files || [];
   att.classList.toggle('hidden', !S.attachments.length && !S.files.length);
   att.replaceChildren(...S.attachments.map((src, i) => h('div', { class: 'att' }, h('img', { src, alt: '' }),
-    h('button', { type: 'button', 'aria-label': 'Rimuovi immagine', html: icon('x'), onclick: () => { S.attachments.splice(i, 1); renderComposer(); } }))),
-    ...S.files.map((f, i) => h('div', { class: 'att file' + (f.uploading ? ' up' : '') },
+    h('button', { type: 'button', 'aria-label': 'Rimuovi immagine', html: icon('x'), onclick: () => { S.attachments.splice(i, 1); const im = S.files.filter((f) => f.image)[i]; if (im) S.files.splice(S.files.indexOf(im), 1); renderComposer(); } }))),
+    ...S.files.map((f, i) => f.image ? '' : h('div', { class: 'att file' + (f.uploading ? ' up' : '') },
       h('span', { class: 'fi', html: icon('clip', 'sm') }), h('span', { class: 'fn', text: f.name, title: f.name }),
       h('small', { text: f.uploading ? 'carico…' : fmtSize(f.size) }),
       h('button', { type: 'button', 'aria-label': 'Rimuovi file', html: icon('x'), onclick: () => { S.files.splice(i, 1); renderComposer(); } }))));
@@ -965,8 +965,22 @@ function renderComposer() {
 $('#thinkBtn').onclick = () => { S.think = !S.think; pref.set('think', S.think); renderComposer(); };
 $('#attachBtn').onclick = () => $('#fileInput').click();
 $('#fileInput').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
-input.addEventListener('paste', (e) => {
-  const files = [...(e.clipboardData?.files || [])];
+function pastedFiles(dt) {
+  if (!dt) return [];
+  const items = [...(dt.items || [])].filter((it) => it.kind === 'file');
+  const imgs = items.filter((it) => it.type.startsWith('image/')).map((it) => it.getAsFile()).filter(Boolean);
+  const files = imgs.length ? imgs : [...(dt.files || [])];
+  const stamp = new Date().toLocaleTimeString('it-IT').replace(/:/g, '');
+  // il browser chiama «image.png» ogni immagine incollata: le si da' un nome riconoscibile
+  return files.map((f, i) => /^image\.\w+$/i.test(f.name || 'image.png')
+    ? new File([f], `screenshot-${stamp}${files.length > 1 ? '-' + (i + 1) : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type })
+    : f);
+}
+document.addEventListener('paste', (e) => {
+  const tgt = e.target;
+  if (tgt !== input && tgt?.closest?.('input, textarea, [contenteditable="true"]')) return;   // dentro altri campi: incolla normale
+  if ($('#app').classList.contains('hidden')) return;
+  const files = pastedFiles(e.clipboardData);
   if (files.length) { e.preventDefault(); addFiles(files); }
 });
 const comp = $('#composer');
@@ -980,7 +994,14 @@ async function addFiles(files) {
   const list = [...files].slice(0, 10);
   // le foto le vede direttamente il modello (se puo'); tutto il resto va sul server e Aura lo legge con gli strumenti
   for (const f of list.filter((f) => f.type.startsWith('image/') && hasCap('vision') && S.attachments.length < 6)) {
-    try { S.attachments.push(await shrink(f)); } catch { toast('Immagine non leggibile: ' + f.name); }
+    try { S.attachments.push(await shrink(f)); } catch { toast('Immagine non leggibile: ' + f.name); continue; }
+    if (f.size > 25 * 1048576) continue;
+    const item = { name: f.name, size: f.size, uploading: true, image: true };
+    S.files.push(item); renderComposer();
+    fetch('/api/files?name=' + encodeURIComponent(f.name), { method: 'POST', body: f, headers: { 'Content-Type': f.type || 'image/png' }, credentials: 'same-origin' })
+      .then(async (r) => { if (!r.ok) throw new Error(); Object.assign(item, await r.json(), { uploading: false, image: true }); })
+      .catch(() => { S.files.splice(S.files.indexOf(item), 1); })
+      .finally(renderComposer);
   }
   const others = list.filter((f) => !(f.type.startsWith('image/') && hasCap('vision')));
   for (const f of others) {
@@ -1026,7 +1047,7 @@ comp.addEventListener('submit', (e) => {
   c.messages = c.messages.filter((m) => m.role !== 'error');
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
-  if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime }));
+  if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
   c.messages.push(msg);
   if (c.title === 'Nuova chat') c.title = (text || S.files[0]?.name || 'Immagine').replace(/\s+/g, ' ').slice(0, 48);
   input.value = ''; S.attachments = []; S.files = []; autosize();
@@ -2629,7 +2650,7 @@ async function run(chat) {
     const o = { role: m.role, content: m.content || '' };
     if (m.images?.length) o.images = m.images.map((d) => d.slice(d.indexOf(',') + 1));
     if (m.tool_calls) o.tool_calls = m.tool_calls;
-    if (m.files?.length) o.files = m.files.map((f) => ({ id: f.id, name: f.name }));
+    if (m.files?.length) o.files = m.files.map((f) => ({ id: f.id, name: f.name, ...(f.image ? { image: true } : {}) }));
     if (m.tool_name) o.tool_name = m.tool_name;
     return o;
   });
