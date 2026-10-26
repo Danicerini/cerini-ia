@@ -1,0 +1,22 @@
+[Unit]
+Description=Pannello web IA locale (Ollama)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ollamaweb
+Group=ollamaweb
+WorkingDirectory=/opt/ollama-web
+EnvironmentFile=/opt/ollama-web/.env
+ExecStart=/opt/ollama-web/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080 --no-server-header --no-access-log
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# Database utenti e chat
+ReadWritePaths=/opt/ollama-web/data
+
+[Install]
+WantedBy=multi-user.target

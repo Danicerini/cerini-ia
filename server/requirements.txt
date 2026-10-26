@@ -1,0 +1,7 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+httpx==0.28.1
+numpy==2.2.6
+pypdf==5.1.0
+pillow==11.1.0
+pywebpush==2.5.0

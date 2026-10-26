@@ -1,0 +1,4 @@
+#!/bin/sh
+# Prima di ogni commit: niente segreti e niente dati personali (vedi tools/check_private.py).
+PY=$(command -v python3 || command -v python || command -v py)
+exec "$PY" "$(git rev-parse --show-toplevel)/tools/check_private.py"

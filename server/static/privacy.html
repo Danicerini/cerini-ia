@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy · Cerini IA</title>
+<meta name="description" content="Informativa sulla privacy di Cerini IA: come l'assistente personale accede a Gmail, quali dati conserva e come cancellarli.">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+:root { --bg: #f8f9fb; --card: #fff; --text: #1a1b1e; --text-2: #4a4d55; --text-3: #6b6f78; --border: #e3e5ea; --accent: #3b5bdb; --soft: #eef2ff; }
+@media (prefers-color-scheme: dark) { :root { --bg: #1a1b1e; --card: #222327; --text: #ececee; --text-2: #b9bcc4; --text-3: #8d919b; --border: #33353b; --accent: #8ea6ff; --soft: #262c44; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 40px 20px 64px; }
+header { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+header img { width: 40px; height: 40px; border-radius: 11px; }
+header b { font-size: 18px; letter-spacing: -.01em; }
+h1 { font-size: 30px; line-height: 1.2; letter-spacing: -.02em; margin: 0 0 6px; }
+.upd { color: var(--text-3); font-size: 14px; margin: 0 0 28px; }
+h2 { font-size: 19px; margin: 34px 0 8px; letter-spacing: -.01em; }
+p, li { color: var(--text-2); }
+ul { padding-left: 22px; }
+li { margin: 4px 0; }
+strong { color: var(--text); }
+a { color: var(--accent); }
+code { font-size: 14px; background: var(--soft); padding: 1px 6px; border-radius: 6px; overflow-wrap: anywhere; }
+.box { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; margin: 18px 0; }
+.box p { margin: 0; }
+table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 12px 0; }
+th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-top: 1px solid var(--border); color: var(--text-2); }
+th { color: var(--text); font-weight: 600; background: var(--card); }
+.tbl { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; }
+.tbl table { margin: 0; }
+.tbl tr:first-child th { border-top: 0; }
+footer { margin-top: 44px; padding-top: 18px; border-top: 1px solid var(--border); font-size: 14px; color: var(--text-3); }
+</style>
+</head>
+<body>
+<main>
+<header><img src="/icon-192.png" alt=""><b>Cerini IA</b></header>
+
+<h1>Informativa sulla privacy</h1>
+<p class="upd">Ultimo aggiornamento: 23 ottobre 2026 (aggiunto Google Calendar)</p>
+
+<div class="box"><p><strong>In breve.</strong> Cerini IA è un'app privata con un assistente personale, Aura. Non è un servizio pubblico e si entra solo su invito. Il modello di intelligenza artificiale gira su un computer di casa del titolare, non su servizi cloud di IA. Se colleghi il tuo account Google, l'app legge e gestisce posta e calendario solo per fare quello che chiedi. Questi dati non vengono venduti, ceduti, usati per pubblicità né per addestrare modelli di IA.</p></div>
+
+<h2>1. Chi gestisce l'app</h2>
+<p>Cerini IA è un progetto personale di {{OWNER_NAME}}, che è il titolare del trattamento. L'app è raggiungibile su <a href="{{PUBLIC_URL}}/">{{PUBLIC_HOST}}</a>. Contatto per qualsiasi richiesta sulla privacy: <a href="mailto:{{OWNER_EMAIL}}">{{OWNER_EMAIL}}</a>.</p>
+
+<h2>2. Come Cerini IA accede a Gmail e Google Calendar</h2>
+<p>Il collegamento all'account Google (posta e calendario) è facoltativo e c'è solo per l'account amministratore. Lo attivi tu da <em>Impostazioni → Account → Google → Collega Google</em> con l'accesso ufficiale di Google (OAuth 2.0 con PKCE). Approvi i permessi sulla schermata di Google: Cerini IA non vede né conserva la tua password Google.</p>
+<p>Il permesso richiesto è <code>https://mail.google.com/</code>, cioè l'accesso completo alla posta. Serve perché, oltre a leggere e organizzare le mail, l'app ti permette di svuotare cestino e spam (cancellazione definitiva) e di inviare mail. Gmail non offre queste funzioni con permessi più ristretti. L'app usa questo accesso solo per:</p>
+<ul>
+<li>mostrarti le mail nella pagina <strong>Posta</strong> (elenco, ricerca, lettura);</li>
+<li>farle smistare all'assistente (cosa è importante e cosa si può buttare) e farti rispondere a domande sulle tue mail;</li>
+<li>eseguire le azioni che chiedi: spostare nel cestino, segnare come spam, archiviare, segnare come lette, ripristinare;</li>
+<li>salvare <strong>bozze</strong> nella cartella Bozze di Gmail (non vengono inviate);</li>
+<li><strong>svuotare cestino o spam e inviare/rispondere a mail: solo su tua richiesta esplicita e sempre dopo una tua conferma.</strong> L'assistente non può farlo di sua iniziativa e non segue istruzioni scritte dentro le mail.</li>
+</ul>
+<p>Per il calendario viene chiesto anche il permesso <code>https://www.googleapis.com/auth/calendar.events</code>, cioè leggere e gestire gli eventi dei tuoi calendari. L'app lo usa solo per mostrarti l'agenda, rispondere a domande sui tuoi impegni e creare, spostare o eliminare eventi e promemoria quando lo chiedi. I promemoria sono eventi con una notifica, che arriva tramite l'app Google Calendar. L'app non invita altre persone agli eventi. Eliminare un evento richiede la tua conferma.</p>
+<p>Per spostare nel cestino, segnare come spam o archiviare, l'assistente chiede conferma con una scheda che elenca le mail coinvolte. Nelle impostazioni puoi decidere di lasciarlo fare senza conferma; inviare e svuotare chiedono conferma comunque.</p>
+
+<h2>3. Dove vengono elaborati i dati</h2>
+<ul>
+<li><strong>Server dell'app.</strong> Gira su un piccolo server in casa del titolare, in Italia. Parla con Google tramite le API ufficiali di Gmail (<code>gmail.googleapis.com</code>), di Google Calendar (<code>www.googleapis.com/calendar</code>) e di accesso (<code>oauth2.googleapis.com</code>, <code>accounts.google.com</code>), e non contatta altri servizi per posta e calendario.</li>
+<li><strong>Intelligenza artificiale.</strong> Quando l'assistente legge o smista le mail o guarda il calendario, il testo che gli serve (mittente, oggetto, anteprima o testo della mail; titolo, orario e luogo degli eventi) va al modello di IA (Ollama con modelli open source, es. Gemma), che gira su un PC di casa nella stessa rete locale del server. <strong>Né le mail né gli eventi vengono inviati a servizi di IA esterni</strong> (OpenAI, Google Gemini, Anthropic o altri).</li>
+<li><strong>Trasporto.</strong> L'app è raggiungibile da Internet attraverso Cloudflare (Cloudflare Tunnel), che fa da intermediario cifrato tra il tuo browser e il server di casa. Per questo, le pagine e le risposte che vedi nel browser, comprese le mail aperte, passano dalla rete di Cloudflare, che non le conserva per conto dell'app. Le chiamate del server a Google non passano da Cloudflare.</li>
+</ul>
+
+<h2>4. Quali dati e token vengono conservati</h2>
+<div class="tbl"><table>
+<tr><th>Dato</th><th>Dove</th><th>Per quanto</th></tr>
+<tr><td>Token di aggiornamento (refresh token) di Google e indirizzo Gmail collegato</td><td>Database del server di casa (file accessibile solo al servizio dell'app)</td><td>Finché non scolleghi Gmail: allo scollegamento viene revocato presso Google e cancellato</td></tr>
+<tr><td>Token di accesso temporaneo di Google</td><td>Solo nella memoria del server, mai su disco</td><td>Circa 1 ora (scadenza di Google) o fino al riavvio</td></tr>
+<tr><td>Elenco/anteprime delle ultime mail e risultato dello smistamento</td><td>Memoria del server (cache)</td><td>Al massimo 15 minuti, o fino al riavvio</td></tr>
+<tr><td>Corrispondenza tra numeri brevi e mail o eventi (es. "mail n.3")</td><td>Memoria del server</td><td>Fino al riavvio</td></tr>
+<tr><td>Le tue conversazioni con l'assistente, compresi gli estratti di mail che ha letto per risponderti</td><td>Database del server di casa, visibili solo a te</td><td>Finché non elimini la conversazione</td></tr>
+<tr><td>Indice delle conversazioni (ogni domanda con la sua risposta, trasformata in un vettore) per ripescare quello che hai detto in altre chat</td><td>Database del server di casa, visibile solo a te</td><td>Finché esiste la chat (cancellando la chat sparisce anche dall'indice); si può spegnere dalla pagina Memoria, e allora l'indice viene cancellato</td></tr>
+<tr><td>Ricordi della "Memoria" personale</td><td>Database del server di casa</td><td>Finché non li cancelli. L'assistente può salvare un fatto importante che gli racconti; i ricordi salvati si vedono in chat e nella pagina Memoria</td></tr>
+</table></div>
+<p>Il server non copia la casella di posta né il calendario: mail ed eventi restano su Google e vengono letti quando servono. Il server non scrive nei suoi log né il testo delle mail né le ricerche fatte nella posta. Se il server viene salvato con copie di sicurezza (backup), quelle copie contengono anche il database con i dati qui sopra e vengono sostituite nel tempo.</p>
+
+<h2>4b. Ricerche su internet</h2>
+<p>Quando serve, l'assistente cerca su internet. Le ricerche passano da un motore di ricerca privato (SearXNG) che gira sul server di casa: il testo della ricerca, senza dati del tuo account, viene inviato a motori di ricerca pubblici (ad esempio Google, Brave, DuckDuckGo). Il server poi apre le pagine dei risultati per leggerle. Il testo della ricerca lo scrive l'assistente in base alla tua richiesta: se le chiedi di cercare qualcosa che riguarda una mail o un evento (per esempio il nome di un'azienda), quelle parole finiscono nella ricerca; il contenuto delle mail e del calendario non viene inviato ai motori di ricerca. Le ricerche e le pagine non vengono conservate, salvo quanto resta nella conversazione.</p>
+
+<h2>5. Chi può vedere i dati</h2>
+<p>Solo tu, con il tuo account. Gli altri utenti invitati non hanno accesso alla tua posta, alle tue chat né alla tua memoria. I dati non vengono venduti, ceduti o condivisi con terzi, salvo i fornitori tecnici indicati sopra (Google come fonte della posta, Cloudflare per il trasporto), o quando la legge lo impone.</p>
+
+<h2>6. Rispetto delle regole di Google</h2>
+<p>L'uso e il trasferimento ad altre applicazioni delle informazioni ricevute dalle API di Google (Gmail e Calendar) rispettano le <a href="https://developers.google.com/terms/api-services-user-data-policy" rel="noopener">Google API Services User Data Policy</a>, compresi i requisiti di <em>Limited Use</em>. I dati di Gmail e Calendar servono solo per le funzioni dell'assistente descritte qui e visibili all'utente. Non vengono usati per pubblicità né per addestrare modelli di IA generici, e nessuna persona li legge, salvo tuo consenso esplicito, per motivi di sicurezza o per obblighi di legge.</p>
+
+<h2>7. Come scollegare Gmail e cancellare i dati</h2>
+<ul>
+<li><strong>Scollegare dall'app:</strong> <em>Impostazioni → Account → Google → Scollega</em> (vale per posta e calendario). Il token viene revocato presso Google e cancellato subito dal database; i dati in memoria del server legati a Gmail vengono tolti.</li>
+<li><strong>Scollegare da Google:</strong> puoi togliere l'accesso anche da <a href="https://myaccount.google.com/permissions" rel="noopener">myaccount.google.com/permissions</a>. L'app non potrà più leggere posta e calendario.</li>
+<li><strong>Conversazioni:</strong> eliminale dall'elenco delle chat (icona del cestino): vengono cancellate dal database.</li>
+<li><strong>Memoria:</strong> cancella i singoli ricordi o documenti dalla pagina <em>Memoria</em>.</li>
+<li><strong>Tutto:</strong> scrivi a <a href="mailto:{{OWNER_EMAIL}}">{{OWNER_EMAIL}}</a> per far cancellare il tuo account con tutti i dati collegati (conversazioni, memoria, collegamento Gmail).</li>
+</ul>
+<p>Le mail che sposti nel cestino restano nel cestino di Gmail, dove Google le cancella dopo 30 giorni. Quelle cancellate definitivamente (svuotando cestino o spam) non si possono recuperare.</p>
+
+<h2>8. Sicurezza</h2>
+<p>L'accesso all'app richiede account e password. I tentativi di accesso sono limitati, le connessioni da Internet sono cifrate (HTTPS) e il server accetta richieste solo tramite il tunnel o dalla rete di casa. Il PC con il modello di IA sta nella rete di casa e non è esposto a Internet: lo raggiunge solo il server dell'app.</p>
+
+<h2>9. I tuoi diritti</h2>
+<p>In base al GDPR puoi chiedere di accedere ai tuoi dati, correggerli, cancellarli, limitarne l'uso o riceverne una copia, e puoi opporti al trattamento. Scrivi al contatto sopra. Puoi anche presentare reclamo al Garante per la protezione dei dati personali (<a href="https://www.garanteprivacy.it" rel="noopener">garanteprivacy.it</a>).</p>
+
+<h2>10. Modifiche</h2>
+<p>Se il modo in cui l'app usa i dati cambia, questa pagina viene aggiornata con una nuova data. Per i cambiamenti importanti sull'uso di Gmail, viene chiesto di nuovo il consenso.</p>
+
+<footer>Cerini IA · <a href="/">Torna all'app</a></footer>
+</main>
+</body>
+</html>
