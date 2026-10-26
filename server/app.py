@@ -2852,6 +2852,10 @@ async def put_chat(chat_id: str, body: ChatDoc, user: dict = Depends(require_use
         owner = c.execute("SELECT user_id FROM chats WHERE id = ?", (chat_id,)).fetchone()
         if owner and owner["user_id"] != user["id"]:
             raise HTTPException(404, "Chat non trovata")
+        if owner and chat_id != aura_chat_id(user["id"]):
+            stored = json.loads(c.execute("SELECT messages FROM chats WHERE id = ?", (chat_id,)).fetchone()["messages"] or "[]")
+            have = {m.get("rid") for m in body.messages if m.get("role") == "note"}
+            body.messages = body.messages + [m for m in stored if m.get("role") == "note" and m.get("rid") not in have]
         if chat_id == aura_chat_id(user["id"]) and owner:
             stored = json.loads(c.execute("SELECT messages FROM chats WHERE id = ?", (chat_id,)).fetchone()["messages"] or "[]")
             have = {m.get("fid") for m in body.messages if m.get("role") == "feed"}
@@ -4123,7 +4127,7 @@ async def agenda_tick():
         mins = max(0, (r["start_ts"] - now + 30) // 60)
         if r["kind"] == "promemoria":
             fb = f"Ehi, è il momento: {r['title']}."
-            task = f"Ricordagli adesso di fare questa cosa (te l'aveva chiesto lui): «{r['title']}». Diglielo in modo diretto, chiamandolo per nome, es. «<nome>, è ora di …»." + (f" Note: {r['notes']}" if r["notes"] else "")
+            task = f"Ricordagli adesso di fare questa cosa (te l'aveva chiesto lui): «{r['title']}». Diglielo in modo diretto, chiamandolo per nome, es. «{_nick(user)}, è ora di …»." + (f" Note: {r['notes']}" if r["notes"] else "")
         else:
             soon = "adesso" if mins <= 1 else f"tra {mins} minuti" if mins < 120 else e["when"]
             fb = f"Ti ricordo che {soon} hai «{r['title']}»" + (f" ({r['location']})." if r["location"] else ".")
@@ -5590,7 +5594,7 @@ async def classify_mail(user: dict, m: dict, rule: str | None) -> dict:
               "\nRispondi SOLO con JSON: {\"tipo\": \"interessante|normale|inutile|sospetta\", \"riassunto\": \"una frase breve in italiano su "
               "cosa dice la mail\", \"messaggio\": \"se è interessante o sospetta: il messaggio che gli scrivi tu, Aura, per avvisarlo, "
               "come un assistente che lo conosce (1-2 frasi, amichevole, al maschile, chiamalo per nome). Se dai ricordi sai chi è il "
-              "mittente per lui (es. la sua ragazza, un amico, il suo capo), dillo: «<nome>, ti ha scritto <persona>, la tua ragazza: …». "
+              f"mittente per lui (es. la sua ragazza, un amico, il suo capo), dillo: «{_nick(user)}, ti ha scritto Giulia, la tua ragazza: …» (con i nomi veri). "
               "Poi in breve cosa dice o cosa vuole.\"}")
     mail = (f"Da: {m['from']} <{m['email']}>\nOggetto: {m['subject']}\nCategoria Gmail: {m.get('category') or 'principale'}\n"
             f"Newsletter (disiscrizione): {'sì' if m.get('unsubscribe') else 'no'}\n---\n{(m.get('text') or m.get('snippet') or '')[:2500]}")
@@ -6193,12 +6197,26 @@ import unicodedata
 
 BRAIN_ROOT = DATA_DIR / "brains"
 WIKI_KINDS = {
-    "progetti": ("Progetti", "Lavori che durano piu' di una conversazione: un sito, un cliente, un viaggio, la macchina."),
-    "persone": ("Persone", "Le persone della vita dell'utente: chi sono per lui, come contattarle, cosa conta."),
-    "luoghi": ("Luoghi", "Posti che contano: casa, il locale, la palestra, dove lavora."),
-    "servizi": ("Servizi", "Server, siti, account e strumenti che usa (senza password: quelle non si scrivono mai qui)."),
-    "cose": ("Altro", "Tutto il resto che e' un'entita' stabile: oggetti, animali, abbonamenti."),
+    "projects": ("Progetti", "Lavori che durano piu' di una conversazione: un sito, un cliente, un viaggio, la macchina."),
+    "people": ("Persone", "Le persone della vita dell'utente: chi sono per lui, come contattarle, cosa conta."),
+    "companies": ("Aziende", "Aziende, clienti, fornitori, negozi: chi sono e cosa c'entrano con l'utente."),
+    "places": ("Luoghi", "Posti che contano: casa, il locale, la palestra, dove lavora."),
+    "services": ("Servizi", "Server, siti, account e strumenti che usa (senza password: quelle non si scrivono mai qui)."),
+    "things": ("Altro", "Tutto il resto che e' un'entita' stabile: oggetti, animali, abbonamenti."),
 }
+OLD_KINDS = {"progetti": "projects", "persone": "people", "luoghi": "places", "servizi": "services", "cose": "things"}
+
+
+def entity_path(kind: str, slug: str) -> str:
+    """I progetti sono cartelle (wiki/projects/<nome>/index.md), il resto un file per entita'."""
+    return f"wiki/projects/{slug}/index.md" if kind == "projects" else f"wiki/{kind}/{slug}.md"
+
+
+def entity_id(rel: str) -> str:
+    q = Path(rel)
+    return q.parent.name if q.name == "index.md" else q.stem
+
+
 _BRAIN_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -6352,6 +6370,7 @@ def brain_ensure(user: dict) -> Path:
     if (bdir / ".git").exists():
         try:
             brain_upgrade(user)
+            brain_layout_v2(user)
         except Exception as e:
             print(f"Cervello v6: {e}", flush=True)
         return bdir
@@ -6368,7 +6387,7 @@ def brain_ensure(user: dict) -> Path:
                            "Nel frontmatter `trigger:` le parole che la richiamano.\n",
         "skills/scrivere-mail/SKILL.md": "---\ntype: skill\nname: Scrivere una mail\ntrigger: [mail, email, rispondi, scrivi a]\n---\n\n"
                                          "# Scrivere una mail\n\n1. Capisci a chi va e cosa deve ottenere.\n2. Tono: quello che l'utente usa con quella "
-                                         "persona (guarda la sua scheda in wiki/persone).\n3. Breve: saluto, il punto, cosa serve, saluto.\n"
+                                         "persona (guarda la sua scheda in wiki/people).\n3. Breve: saluto, il punto, cosa serve, saluto.\n"
                                          "4. Prepara la bozza con mail_prepara: la invia lui.\n",
     }
     for kind, (label, desc) in WIKI_KINDS.items():
@@ -6387,12 +6406,13 @@ def brain_ensure(user: dict) -> Path:
 
 
 def _entity_file(kind: str, name: str, extra: dict | None = None) -> str:
-    meta = {"type": "wiki", "kind": kind, "name": name, "aliases": [], "updated": local_now().strftime("%Y-%m-%d")}
-    if kind == "progetti":
-        meta["status"] = "active"
+    meta = {"type": "project" if kind == "projects" else "wiki", "kind": kind, "name": name, "aliases": [],
+            "created_with": "aura", "updated": local_now().strftime("%Y-%m-%d")}
+    if kind == "projects":
+        meta.update(status="active", project=_slug(name), tags=["project"])
     meta.update(extra or {})
-    if kind == "progetti":
-        return fm_join(meta, PROJECT_BODY.format(name=name, desc="Cos'è: da scrivere.", today=local_now().strftime("%d/%m")))
+    if kind == "projects":
+        return fm_join(meta, PROJECT_BODY.format(name=name, desc="Cos'è: da scrivere.", today=local_now().strftime("%Y-%m-%d")))
     return fm_join(meta, f"# {name}\n\n## Fatti\n")
 
 
@@ -6406,11 +6426,13 @@ def _add_fact(text: str, fact: str) -> str:
 
 def brain_entities(user: dict) -> list[dict]:
     out = []
-    for p in sorted((brain_dir(user) / "wiki").glob("*/*.md")):
-        if p.name == "index.md":
-            continue
+    root = brain_dir(user) / "wiki"
+    files = [q for q in root.glob("*/*.md") if q.name != "index.md"] + list(root.glob("*/*/index.md"))
+    for p in sorted(files):
         meta, body = fm_split(p.read_text(encoding="utf-8"))
-        out.append({"path": p.relative_to(brain_dir(user)).as_posix(), "kind": p.parent.name, "name": meta.get("name") or p.stem,
+        kind = p.parent.parent.name if p.name == "index.md" else p.parent.name
+        rel = p.relative_to(brain_dir(user)).as_posix()
+        out.append({"path": rel, "id": entity_id(rel), "kind": kind, "name": meta.get("name") or (re.search(r"^# (.+)$", body, re.M) or [None, entity_id(rel)])[1],
                     "aliases": meta.get("aliases") if isinstance(meta.get("aliases"), list) else [], "status": meta.get("status") or "",
                     "updated": meta.get("updated") or "", "summary": _clip(re.sub(r"#.*|\n+", " ", body), 140)})
     return out
@@ -6457,6 +6479,13 @@ def _person_in(fact: str, me: set[str]) -> str:
     return ""
 
 
+def _nick(user: dict) -> str:
+    """Come vuole essere chiamato (dai suoi fatti: «preferisce essere chiamato Dani»), se no il nome."""
+    text = brain_read(user, "boot/user.md")
+    m = re.search(r"chiamat[oa]\s+([A-ZÀ-Ý][a-zà-ÿ]+)", text)
+    return m.group(1) if m else _user_display(user).split()[0]
+
+
 def _user_display(user: dict) -> str:
     """Il nome vero dell'utente, se si capisce dai suoi ricordi (es. «Marco Rossi preferisce…»); altrimenti lo username."""
     lines = [l[2:] for l in brain_read(user, "boot/user.md").split("\n") if l.startswith("- ")]
@@ -6480,7 +6509,7 @@ def _user_title(user: dict, text: str) -> str:
 async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
     """In quale scheda va un fatto: (kind, nome, percorso). L'utente stesso -> boot/user.md."""
     me = _user_names(user)
-    ents = [e for e in brain_entities(user) if e["name"].lower() not in me and Path(e["path"]).stem not in me]
+    ents = [e for e in brain_entities(user) if e["name"].lower() not in me and e["id"] not in me]
     low = fact.lower()
     flat = re.sub(r"[\W_]+", "", low)
     for e in ents:   # una scheda che c'e' gia' e il cui nome compare nel fatto (il nome dell'utente non conta)
@@ -6489,7 +6518,7 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
             if len(n) > 2 and n.lower() not in me and (re.search(rf"\b{re.escape(n.lower())}\b", low) or (len(nf) >= 6 and nf in flat)):
                 return e["kind"], e["name"], e["path"]   # anche scritto attaccato: «pizzeriadamario.it» -> Pizzeria da Mario
     if person := _person_in(fact, me):
-        return "persone", person, f"wiki/persone/{_slug(person)}.md"
+        return "people", person, entity_path("people", _slug(person))
     known = "\n".join(f"- {e['path']} ({e['name']})" for e in ents[:80]) or "(nessuna)"
     who = ", ".join(sorted(x.capitalize() for x in me))
     try:
@@ -6499,8 +6528,8 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
             "\n\nSe il fatto parla dell'utente stesso (chi è, età, lavoro, gusti, salute, come vuole essere chiamato) la scheda è «utente». "
             "Se parla soprattutto di un'ALTRA persona (anche se nomina l'utente, es. «il migliore amico di Marco è Luca» → la scheda di Luca), "
             "di un progetto, di un luogo, di un servizio o di una cosa, usa quella scheda (esistente, o nuova con tipo e nome proprio "
-            "dell'entità). Un sito, un locale, un'azienda, un lavoro o un cliente sono «progetti» o «servizi», MAI «persone»: "
-            "«persone» solo per esseri umani con un nome. Tipi: " + ", ".join(WIKI_KINDS) +
+            "dell'entità). Un lavoro che dura è «projects»; un'azienda, un cliente o un negozio è «companies»; un sito o un account è «services»: MAI "
+            "«people», che è solo per esseri umani con un nome. Tipi: " + ", ".join(WIKI_KINDS) +
             ". Rispondi SOLO JSON: {\"scheda\": \"utente\" | \"esistente\" | \"nuova\", \"percorso\": \"wiki/…md se esistente\", \"tipo\": \"…\", \"nome\": \"…\"}"}],
             json_mode=True, temperature=0, timeout=60) or "{}")
     except (HTTPException, httpx.HTTPError, ValueError):
@@ -6509,8 +6538,9 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
         e = next(e for e in ents if e["path"] == d["percorso"])
         return e["kind"], e["name"], e["path"]
     name = str(d.get("nome") or "").strip()[:60]
-    if d.get("scheda") == "nuova" and d.get("tipo") in WIKI_KINDS and name and not set(re.findall(r"\w+", name.lower())) <= me:
-        return d["tipo"], name, f"wiki/{d['tipo']}/{_slug(name)}.md"
+    tipo = OLD_KINDS.get(str(d.get("tipo") or ""), str(d.get("tipo") or ""))
+    if d.get("scheda") == "nuova" and tipo in WIKI_KINDS and name and not set(re.findall(r"\w+", name.lower())) <= me:
+        return tipo, name, entity_path(tipo, _slug(name))
     return "utente", user["username"], "boot/user.md"
 
 
@@ -6627,23 +6657,78 @@ async def brain_migrate_soon(user: dict):
 
 # ---- il diario
 
-def _diary_path(day: str, title: str) -> str:
-    return f"diary/{day[:4]}/{day}-{_slug(title)[:50]}.md"
+def _diary_path(day: str, title: str = "") -> str:
+    return f"diary/{day[:4]}/{day}.md"
+
+
+def day_path(day: str) -> str:
+    return f"diary/{day[:4]}/{day}.md"
+
+
+DAY_TAIL = ("Da fare", "Aura")   # in fondo al giorno: le cose da fare e cosa ha fatto Aura da solo
+
+
+def _day_text(user: dict, day: str) -> str:
+    return brain_read(user, day_path(day)) or fm_join(
+        {"date": day, "type": "diary", "created_with": "autosave", "tags": ["daily", "autosave"]}, f"# {day}\n")
+
+
+def _day_add(body: str, title: str, lines: list[str]) -> str:
+    """Righe nella sezione «## titolo» del giorno; una sezione nuova va prima di «Da fare» e «Aura»."""
+    lines = [l for l in lines if str(l).strip()]
+    if not lines:
+        return body
+    if re.search(rf"^## {re.escape(title)}[ \t]*$", body, re.M) or title in DAY_TAIL:
+        if title == "Aura" and re.search(r"^## Da fare[ \t]*$", body, re.M) is None and not re.search(r"^## Aura[ \t]*$", body, re.M):
+            return body.rstrip("\n") + "\n\n## Aura\n" + "\n".join(lines) + "\n"
+        if title == "Da fare" and not re.search(r"^## Da fare[ \t]*$", body, re.M):
+            m = re.search(r"^## Aura[ \t]*$", body, re.M)
+            sec = "## Da fare\n" + "\n".join(lines) + "\n\n"
+            return body[:m.start()] + sec + body[m.start():] if m else body.rstrip("\n") + "\n\n" + sec
+        return _section_edit(body, title, lines)
+    m = re.search(r"^## (Da fare|Aura)[ \t]*$", body, re.M)
+    sec = f"## {title}\n" + "\n".join(lines) + "\n\n"
+    return body[:m.start()] + sec + body[m.start():] if m else body.rstrip("\n") + "\n\n" + sec
+
+
+async def day_write(user: dict, day: str, parts: list[tuple[str, list[str]]], msg: str) -> str:
+    brain_ensure(user)
+    meta, body = fm_split(_day_text(user, day))
+    for title, lines in parts:
+        body = _day_add(body, title, lines)
+    return await brain_write(user, day_path(day), fm_join(meta, body), msg, reindex=False)
+
+
+def day_sections(text: str) -> list[tuple[str, str]]:
+    body = fm_split(text)[1]
+    parts = re.split(r"^## (.+)$", body, flags=re.M)
+    return [(parts[i].strip(), parts[i + 1].strip()) for i in range(1, len(parts), 2)]
+
+
+def day_section_text(user: dict, day: str, title: str) -> str:
+    return next((b for t, b in day_sections(brain_read(user, day_path(day))) if t.lower() == title.lower()), "")
 
 
 def diary_entries(user: dict, start: str = "", end: str = "") -> list[dict]:
-    out = []
+    """Le voci del diario: per ogni giorno, una per sezione (un progetto, un argomento, «Da fare», «Aura»)."""
+    out, names = [], {e["name"].lower(): e["id"] for e in brain_entities(user) if e["kind"] == "projects"}
     for p in sorted((brain_dir(user) / "diary").glob("*/*.md")):
         day = p.name[:10]
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day) or (start and day < start) or (end and day > end):
             continue
-        meta, body = fm_split(p.read_text(encoding="utf-8"))
-        todo = re.findall(r"^\s*- \[ \] (.+)$", body, re.M)
-        done = re.findall(r"^\s*- \[[xX]\] (.+)$", body, re.M)
-        title = next((m.group(1) for m in re.finditer(r"^# (.+)$", body, re.M)), p.stem[11:].replace("-", " "))
-        out.append({"path": p.relative_to(brain_dir(user)).as_posix(), "day": day, "title": title, "project": meta.get("project") or "",
-                    "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [], "todo": todo, "done": done,
-                    "dropped": meta.get("dropped") == "true", "log": "giornata" in p.stem})
+        rel = p.relative_to(brain_dir(user)).as_posix()
+        text = p.read_text(encoding="utf-8")
+        meta = fm_split(text)[0]
+        secs = day_sections(text) if p.stem == day else [("", fm_split(text)[1])]
+        for title, body in secs:
+            title = title or next((m.group(1) for m in re.finditer(r"^# (.+)$", fm_split(text)[1], re.M)), p.stem[11:].replace("-", " "))
+            proj = names.get(title.lower(), "") or (meta.get("project") or "" if p.stem != day else "")
+            if title == "Da fare":   # «- [ ] cosa · Progetto»: la cosa e' di quel progetto
+                proj = ""
+            out.append({"path": rel, "day": day, "title": title, "project": proj, "text": body,
+                        "tags": meta.get("tags") if isinstance(meta.get("tags"), list) else [],
+                        "todo": re.findall(r"^\s*- \[ \] (.+)$", body, re.M), "done": re.findall(r"^\s*- \[[xX]\] (.+)$", body, re.M),
+                        "dropped": meta.get("dropped") == "true", "log": title == "Aura" or "giornata" in p.stem})
     return out
 
 
@@ -6651,7 +6736,7 @@ _LOG_QUEUE: dict[int, list[str]] = {}
 
 
 def brain_log_soon(uid: int, line: str):
-    """Una riga nel registro della giornata (diary/AAAA/AAAA-MM-GG-giornata.md); si scrivono a gruppi, senza bloccare."""
+    """Una riga in «## Aura» nel diario di oggi (cosa ha fatto Aura da solo); si scrivono a gruppi, senza bloccare."""
     clean = re.sub(r"\s+", " ", str(line)).strip()[:300]
     _LOG_QUEUE.setdefault(uid, []).append(f"- {local_now().strftime('%H:%M')} {clean}")
     if len(_LOG_QUEUE[uid]) == 1:
@@ -6666,35 +6751,34 @@ async def _flush_log(uid: int):
         row = c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
     if not row:
         return
-    user = dict(row)
-    brain_ensure(user)
     day = local_now().strftime("%Y-%m-%d")
-    rel = f"diary/{day[:4]}/{day}-giornata.md"
-    text = brain_read(user, rel) or fm_join({"type": "diary", "date": day, "created_at": local_now().strftime("%Y-%m-%dT%H:%M"),
-                                            "tags": ["giornata"]}, f"# Giornata del {day[8:]}/{day[5:7]}\n\nCosa ha fatto Aura oggi.\n")
     try:
-        await brain_write(user, rel, text.rstrip("\n") + "\n" + "\n".join(lines) + "\n", f"Giornata {day}", reindex=False)
+        await day_write(dict(row), day, [("Aura", lines)], f"Diario {day}: cosa ha fatto Aura")
     except Exception as e:
         print(f"Diario: {e}", flush=True)
 
 
+def _project_name(user: dict, pid: str) -> str:
+    return next((e["name"] for e in brain_entities(user) if e["kind"] == "projects" and e["id"] == pid), pid)
+
+
 async def diary_add(user: dict, title: str, text: str = "", day: str = "", todo: list[str] | None = None, project: str = "",
                     tags: list[str] | None = None) -> str:
-    brain_ensure(user)
+    """Una nota nel diario del giorno: nella sezione del progetto (o del titolo); le cose da fare in «Da fare» col progetto accanto."""
     day = day or local_now().strftime("%Y-%m-%d")
-    rel = _diary_path(day, title)
-    n = 2
-    while (brain_dir(user) / rel).exists():
-        rel = _diary_path(day, f"{title} {n}"); n += 1
-    meta = {"type": "diary", "date": day, "created_at": local_now().strftime("%Y-%m-%dT%H:%M"), "tags": tags or []}
-    if project:
-        meta["project"] = project
-    body = f"# {title}\n\n{text.strip()}\n" + ("\n## Da fare\n" + "\n".join(f"- [ ] {t}" for t in todo) + "\n" if todo else "")
-    return await brain_write(user, rel, fm_join(meta, body), f"Diario {day}: {title[:80]}", reindex=False)
+    pname = _project_name(user, project) if project else ""
+    sec = pname or title
+    lines = []
+    if text.strip():
+        lines.append(f"- {local_now().strftime('%H:%M')} " + (f"**{title}** — {text.strip()}" if pname and title.strip().lower() != pname.lower() else text.strip()))
+    elif not todo:
+        lines.append(f"- {local_now().strftime('%H:%M')} {title}")
+    todos = [f"- [ ] {t.strip()}" + (f" · {pname}" if pname else "") for t in todo or [] if str(t).strip()]
+    return await day_write(user, day, [(sec, lines), ("Da fare", todos)], f"Diario {day}: {title[:80]}")
 
 
 async def diary_check(user: dict, rel: str, item: str, done: bool = True) -> str:
-    """Spunta (o toglie la spunta a) una cosa da fare; quando non resta niente di aperto, la voce si sposta a oggi (chiusa oggi)."""
+    """Spunta (o toglie la spunta a) una cosa da fare, li' dove sta."""
     text = brain_read(user, rel)
     if not text:
         raise HTTPException(404, "Voce del diario non trovata")
@@ -6703,31 +6787,57 @@ async def diary_check(user: dict, rel: str, item: str, done: bool = True) -> str
     if not n:
         raise HTTPException(404, "Non trovo quella cosa da fare")
     await brain_write(user, rel, new, f"{'Fatto' if done else 'Riaperto'}: {item[:80]}", reindex=False)
-    today = local_now().strftime("%Y-%m-%d")
-    if done and not re.search(r"^\s*- \[ \] ", fm_split(new)[1], re.M) and Path(rel).name[:10] != today:
-        return await diary_move(user, rel, today, closing=True)
     return rel
 
 
+async def diary_move_item(user: dict, rel: str, item: str, day: str) -> str:
+    """Rimandare una cosa da fare: la riga passa al giorno nuovo (con la data da cui arriva)."""
+    text = brain_read(user, rel)
+    line = next((l for l in text.split("\n") if re.fullmatch(rf"\s*- \[ \] {re.escape(item)}\s*", l)), None)
+    if not line:
+        raise HTTPException(404, "Non trovo quella cosa da fare")
+    await brain_write(user, rel, "\n".join(l for l in text.split("\n") if l is not line), f"Rimandata al {day}: {item[:80]}", reindex=False)
+    old = Path(rel).stem[:10]
+    tag = f" ↻ dal {old[8:]}/{old[5:7]}" if "↻" not in item else ""
+    return await day_write(user, day, [("Da fare", [f"- [ ] {item}{tag}"])], f"Diario {day}: rimandata {item[:60]}")
+
+
 async def diary_move(user: dict, rel: str, day: str, closing: bool = False) -> str:
-    """Rimandare = spostare il file; ogni rinvio resta scritto in «rescheduled»."""
+    """Le voci vecchie (un file per evento) si spostano intere; quelle nuove stanno nel file del giorno."""
     text = brain_read(user, rel)
     meta, body = fm_split(text)
-    if not closing:
-        stamp = local_now().strftime("%Y%m%dT%H%M") + "-" + day.replace("-", "")
-        meta["rescheduled"] = ",".join(x for x in [str(meta.get("rescheduled") or "") if not isinstance(meta.get("rescheduled"), list) else "", stamp] if x)
+    stamp = local_now().strftime("%Y%m%dT%H%M") + "-" + day.replace("-", "")
+    meta["rescheduled"] = ",".join(x for x in [str(meta.get("rescheduled") or "") if not isinstance(meta.get("rescheduled"), list) else "", stamp] if x)
     meta["date"] = day
-    new_rel = f"diary/{day[:4]}/{day}-{Path(rel).stem[11:]}.md"
-    n = 2
-    while new_rel != rel and (brain_dir(user) / new_rel).exists():
-        new_rel = f"diary/{day[:4]}/{day}-{Path(rel).stem[11:]}-{n}.md"; n += 1
+    new_rel = f"diary/{day[:4]}/{day}-{Path(rel).stem[11:] or 'voce'}.md"
     await brain_delete(user, rel, f"Sposto {rel}")
-    return await brain_write(user, new_rel, fm_join(meta, body), f"{'Chiusa' if closing else 'Rimandata'} al {day}: {Path(rel).stem[11:]}", reindex=False)
+    return await brain_write(user, new_rel, fm_join(meta, body), f"Rimandata al {day}: {Path(rel).stem[11:]}", reindex=False)
+
+
+# ---- ricevuta nella chat: «💾 salvato nel brain» con i file toccati (la chat la riceve anche se e' gia' aperta)
+
+def chat_note(uid: int, chat_id: str, text: str, paths: list[str]):
+    if not chat_id or chat_id.startswith("aurafeed"):
+        return
+    with db() as c:
+        r = c.execute("SELECT messages FROM chats WHERE id = ? AND user_id = ?", (chat_id, uid)).fetchone()
+        if not r:
+            return
+        msgs = json.loads(r["messages"] or "[]")
+        msgs.append({"role": "note", "rid": secrets.token_hex(6), "ts": int(time.time() * 1000), "content": text, "paths": paths})
+        c.execute("UPDATE chats SET messages = ? WHERE id = ?", (json.dumps(msgs, ensure_ascii=False), chat_id))
+
+
+@app.get("/api/chats/{chat_id}/notes")
+async def chat_notes_api(chat_id: str, user: dict = Depends(require_user)):
+    with db() as c:
+        r = c.execute("SELECT messages FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"])).fetchone()
+    return {"notes": [m for m in json.loads(r["messages"] or "[]") if m.get("role") == "note"] if r else []}
 
 
 # ---- le voci del diario dalle chat: a chat ferma da qualche minuto, Aura scrive cosa e' successo e cosa resta da fare
 
-EPISODE_WAIT = int(os.environ.get("EPISODE_WAIT", "300"))
+EPISODE_WAIT = int(os.environ.get("EPISODE_WAIT", "120"))
 _EPISODE_TASKS: dict[str, asyncio.Task] = {}
 
 
@@ -6775,7 +6885,7 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
         return f"{'Utente' if m['role'] == 'user' else 'Aura'}: {str(m['content'])[:1200]}"
     text = "\n".join(line(m) for m in new)[-9000:]
     prompt = ("Scrivi la voce di diario di questa conversazione tra l'utente e il suo assistente Aura. Il diario serve a sapere, un domani, "
-              "cosa è successo quel giorno. Scrivi in italiano, in terza persona sull'utente (per nome: '<nome> ha…'), concreto: cosa voleva, cosa è "
+              f"cosa è successo quel giorno. Scrivi in italiano, in terza persona sull'utente (per nome: '{_user_display(user).split()[0]} ha…'), concreto: cosa voleva, cosa è "
               "stato fatto o deciso, con i dettagli che contano (nomi, numeri, file). Se è chiacchiera senza sostanza, utile=false. "
               "ATTENZIONE: un'azione (mail inviata, promemoria creato, file salvato…) è successa SOLO se c'è il suo [Esito strumento] o se "
               "l'utente dice di averla fatta lui. Se Aura dice di averla fatta ma non c'è l'esito, NON è successa: non scriverla tra i fatti.\n"
@@ -6809,24 +6919,19 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
     today = local_now().strftime("%Y-%m-%d")
     todo_now = [str(t.get("cosa")).strip() for t in d.get("da_fare") or [] if isinstance(t, dict) and t.get("cosa") and not t.get("quando")]
     later = [t for t in d.get("da_fare") or [] if isinstance(t, dict) and t.get("cosa") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(t.get("quando") or ""))]
-    body = str(d.get("riassunto") or "").strip() + f"\n\n[Chat](chat:{chat_id})"
-    if pr:   # project-first: il lavoro di oggi su quel progetto e' una voce sola, che si allunga
-        fatti = [str(x) for x in d.get("fatti") or [] if str(x).strip()] or [str(d.get("riassunto") or "")]
-        rel = await project_log(user, pr, fatti, todo_now, f"[Chat](chat:{chat_id})")
-        if str(d.get("stato") or "").strip():
-            await project_status(user, pr, str(d["stato"]))
-    elif row and row["path"] and row["day"] == today and brain_read(user, row["path"]):   # stessa chat, stesso giorno: si aggiorna
-        old = brain_read(user, row["path"])
-        meta, ob = fm_split(old)
-        ob = ob.rstrip("\n") + "\n\n" + str(d.get("riassunto") or "").strip() + "\n" + ("".join(f"- [ ] {t}\n" for t in todo_now))
-        rel = await brain_write(user, row["path"], fm_join(meta, ob), f"Diario {today}: aggiornata la voce", reindex=False)
-    else:
-        rel = await diary_add(user, str(d["titolo"]).strip()[:80], body, today, todo_now, project, ["chat"])
+    summary = str(d.get("riassunto") or "").strip()
+    sec = pr["name"] if pr else str(d["titolo"]).strip()[:80]
+    todos = [f"- [ ] {t}" + (f" · {pr['name']}" if pr else "") for t in todo_now]
+    line = f"- {local_now().strftime('%H:%M')} {summary} ([chat](chat:{chat_id}))" if summary else f"- [chat](chat:{chat_id})"
+    rel = await day_write(user, today, [(sec, [line]), ("Da fare", todos)], f"Diario {today}: {sec[:60]}")
+    if pr and str(d.get("stato") or "").strip():
+        await project_status(user, pr, str(d["stato"]))
     for t in later:
-        await diary_add(user, str(t["cosa"]).strip()[:80], f"Da fare (detto in chat il {today[8:]}/{today[5:7]}).", t["quando"],
-                        [str(t["cosa"]).strip()], project, ["da-fare"])
+        await diary_add(user, str(t["cosa"]).strip()[:80], "", t["quando"], [str(t["cosa"]).strip()], project)
     with db() as c:
         c.execute("UPDATE brain_episodes SET path = ?, day = ? WHERE chat_id = ?", (rel, today, chat_id))
+    saved = [rel] + ([pr["path"]] if pr else []) + sorted({day_path(t["quando"]) for t in later})
+    chat_note(user["id"], chat_id, "💾 salvato nel brain", saved)
     return rel
 
 
@@ -6853,10 +6958,10 @@ async def brain_prompt(user: dict, messages: list[dict], ap: dict | None = None)
              f"### boot/domain.md (le regole)\n{_boot_text(user, 'domain.md', 1500)}"]
     # il progetto di questa chat (Brain Protocol: project-first): scheda + registro di oggi
     if ap:
-        log = brain_read(user, project_log_path(ap["id"]))
+        log = day_section_text(user, local_now().strftime("%Y-%m-%d"), ap["name"])
         parts.append(f"PROGETTO ATTIVO in questa chat: {ap['name']} ({ap['path']}). Quello che l'utente fa, decide o finisce qui va SUBITO "
                      f"nel registro di oggi con lavoro_fatto.\n### {ap['path']}\n{_clip_block(fm_split(brain_read(user, ap['path']))[1], 1500)}"
-                     + (f"\n### Registro di oggi ({project_log_path(ap['id'])})\n{_clip_block(fm_split(log)[1], 1200)}" if log else ""))
+                     + (f"\n### Oggi su {ap['name']} (diario {project_log_path(ap['id'])})\n{_clip_block(log, 1200)}" if log else ""))
     else:
         names = ", ".join(p["name"] for p in projects(user)) or "nessuno"
         parts.append(f"Nessun progetto attivo in questa chat. Progetti che esistono: {names}. Se l'utente parla di un lavoro che dura (un "
@@ -6905,7 +7010,7 @@ def brain_skills(user: dict) -> list[dict]:
 
 
 # ---- project-first (Brain Protocol v6): ogni lavoro che dura sta in un progetto; il lavoro di un giorno su un progetto e' UNA voce
-# del diario (diary/AAAA/AAAA-MM-GG-<progetto>.md) che si allunga durante la giornata; la scheda del progetto ha «Stato attuale»
+# del diario (diary/AAAA/AAAA-MM-GG.md, sezione col nome del progetto) che si allunga durante la giornata; la scheda del progetto ha «Stato»
 
 def init_project_db():
     with db() as c:
@@ -6914,7 +7019,7 @@ def init_project_db():
 
 
 def projects(user: dict) -> list[dict]:
-    return [{**e, "id": Path(e["path"]).stem} for e in brain_entities(user) if e["kind"] == "progetti"]
+    return [e for e in brain_entities(user) if e["kind"] == "projects"]
 
 
 def _flat(s: str) -> str:
@@ -6975,7 +7080,7 @@ def _section_edit(body: str, title: str, lines: list[str], replace: bool = False
     return body[:start] + chunk + ("\n\n" + body[end:].lstrip("\n") if nxt else "\n")
 
 
-PROJECT_BODY = "# {name}\n\n{desc}\n\n## Stato attuale\n{today}: appena creato\n\n## Da fare e da non fare\n\n## Collegati\n\n## Fatti\n\n## Decisioni\n"
+PROJECT_BODY = "# {name}\n\n{desc}\n\n## Stato\n- [{today}] appena creato\n\n## Da fare e da non fare\n\n## Collegati\n\n## Fatti\n\n## Decisioni\n"
 
 
 async def project_create(user: dict, name: str, desc: str = "", aliases: list[str] | None = None) -> dict:
@@ -6986,56 +7091,47 @@ async def project_create(user: dict, name: str, desc: str = "", aliases: list[st
     if have and _flat(have["name"]) == _flat(name):
         return have
     pid = _slug(name)
-    rel = f"wiki/progetti/{pid}.md"
+    rel = entity_path("projects", pid)
     today = local_now().strftime("%Y-%m-%d")
-    meta = {"type": "wiki", "kind": "progetti", "name": name, "aliases": [a for a in (aliases or []) if a][:8], "status": "active",
-            "created_at": today, "updated": today}
-    body = PROJECT_BODY.format(name=name, desc=(desc or "").strip() or "Cos'è: da scrivere.", today=local_now().strftime("%d/%m"))
+    meta = {"type": "project", "kind": "projects", "name": name, "aliases": [a for a in (aliases or []) if a][:8], "status": "active",
+            "project": pid, "created_with": "aura", "tags": ["project"], "created_at": today, "updated": today}
+    body = PROJECT_BODY.format(name=name, desc=(desc or "").strip() or "Cos'è: da scrivere.", today=today)
     await brain_write(user, rel, fm_join(meta, body), f"Nuovo progetto: {name}")
     brain_log_soon(user["id"], f"📁 Nuovo progetto nel cervello: {name}")
     return next(p for p in projects(user) if p["id"] == pid)
 
 
 async def project_status(user: dict, p: dict, stato: str):
-    """«Stato attuale» e' una riga sola, che si SOSTITUISCE (non e' un diario)."""
+    """«Stato»: una riga con la data per ogni passo, la piu' recente in fondo (come nel brain di riferimento)."""
     stato = re.sub(r"\s+", " ", str(stato or "")).strip()[:240]
     if not stato:
         return
     meta, body = fm_split(brain_read(user, p["path"]))
-    line = f"{local_now().strftime('%d/%m')}: {stato}"
-    if not re.search(r"^## Stato attuale[ \t]*$", body, re.M):
+    line = f"- [{local_now().strftime('%Y-%m-%d')}] {stato}"
+    body = re.sub(r"^## Stato attuale[ \t]*$", "## Stato", body, flags=re.M)
+    if not re.search(r"^## Stato[ \t]*$", body, re.M):
         first = re.search(r"^## ", body, re.M)
-        body = (body[:first.start()] + f"## Stato attuale\n{line}\n\n" + body[first.start():]) if first else body.rstrip("\n") + f"\n\n## Stato attuale\n{line}\n"
+        body = (body[:first.start()] + f"## Stato\n{line}\n\n" + body[first.start():]) if first else body.rstrip("\n") + f"\n\n## Stato\n{line}\n"
     else:
-        body = _section_edit(body, "Stato attuale", [line], replace=True)
+        body = _section_edit(body, "Stato", [line])
     meta["updated"] = local_now().strftime("%Y-%m-%d")
-    await brain_write(user, p["path"], fm_join(meta, body), f"{p['name']}: stato attuale", reindex=False)
+    await brain_write(user, p["path"], fm_join(meta, body), f"{p['name']}: stato", reindex=False)
 
 
 def project_log_path(pid: str, day: str = "") -> str:
-    day = day or local_now().strftime("%Y-%m-%d")
-    return f"diary/{day[:4]}/{day}-{pid}.md"
+    return day_path(day or local_now().strftime("%Y-%m-%d"))
 
 
 async def project_log(user: dict, p: dict, done: list[str] | None = None, todo: list[str] | None = None, source: str = "") -> str:
-    """Il registro di oggi del progetto: una voce sola al giorno, con «Fatto» (con l'ora) e «Da fare» (caselle)."""
-    brain_ensure(user)
-    day = local_now().strftime("%Y-%m-%d")
-    rel = project_log_path(p["id"], day)
-    text = brain_read(user, rel)
-    if not text:
-        meta = {"type": "diary", "date": day, "created_at": local_now().strftime("%Y-%m-%dT%H:%M"), "project": p["id"], "tags": ["lavoro"]}
-        text = fm_join(meta, f"# {p['name']} · {day[8:]}/{day[5:7]}\n\n## Fatto\n\n## Da fare\n")
-    meta, body = fm_split(text)
+    """Il lavoro di oggi sul progetto: la sua sezione nel diario di oggi (con l'ora); le cose da fare in «Da fare»."""
     hm = local_now().strftime("%H:%M")
     clean = lambda x: re.sub(r"\s+", " ", str(x)).strip().rstrip(".")
-    if done:
-        body = _section_edit(body, "Fatto", [f"- {hm} {clean(x)}." for x in done if clean(x)])
-    if todo:
-        body = _section_edit(body, "Da fare", [f"- [ ] {clean(x)}" for x in todo if clean(x)])
-    if source and source not in body:
-        body = _section_edit(body, "Chat", [f"- {source}"])
-    return await brain_write(user, rel, fm_join(meta, body), f"{p['name']} {day}: lavoro", reindex=False)
+    lines = [f"- {hm} {clean(x)}." for x in done or [] if clean(x)]
+    if source and lines:
+        lines[-1] += f" ({source.replace('[Chat]', '[chat]')})"
+    todos = [f"- [ ] {clean(x)} · {p['name']}" for x in todo or [] if clean(x)]
+    day = local_now().strftime("%Y-%m-%d")
+    return await day_write(user, day, [(p["name"], lines), ("Da fare", todos)], f"Diario {day}: {p['name']}")
 
 
 def _project_for(user: dict, args: dict) -> dict | None:
@@ -7090,29 +7186,28 @@ TOOLS.update({
 # ---- aggiornamento dei cervelli gia' nati alla v6 del protocollo: boot/brain.md, skills.yaml, indici che dicono cosa ci va dentro
 
 KIND_INDEX = {
-    "progetti": "Projects: any piece of work that lasts longer than one conversation (a client, a place where the user goes to work, a site, "
-                "a move, a trip).\n\n## What a valid entry looks like\n\nOne file per project (`wiki/progetti/<slug>.md`, a folder with `index.md` "
-                "when it outgrows a file). Frontmatter: `type: wiki`, `kind: progetti`, `name`, `aliases`, `status` (active | paused | done | "
-                "dropped). Sections: what it is (1-2 paragraphs), `## Stato attuale` (ONE line, replaced, never appended), `## Da fare e da "
-                "non fare` (permanent rules), `## Collegati` (people, places, services involved), `## Fatti`, `## Decisioni`.\n\nDated "
-                "events never go here: they go in `diary/`, one entry per project per day (`diary/YYYY/YYYY-MM-DD-<slug>.md`, "
-                "`project: <slug>` in frontmatter).",
-    "persone": "People in the user's life.\n\n## What a valid entry looks like\n\n`wiki/persone/<name>.md`, frontmatter `name`, `aliases`. "
-               "Who they are for the user, how to reach them (no passwords), what matters. Link the projects they are part of.",
-    "luoghi": "Places that matter.\n\n## What a valid entry looks like\n\n`wiki/luoghi/<name>.md`: what it is, address if useful, which projects.",
-    "servizi": "Servers, sites, accounts and tools the user relies on.\n\n## What a valid entry looks like\n\n`wiki/servizi/<name>.md`: what it "
-               "does, where it runs, who uses it. NEVER passwords, tokens or codes.",
-    "cose": "Stable entities that fit no other kind: objects, animals, subscriptions.\n\n## What a valid entry looks like\n\nOne file per "
-            "entity. If you cannot say what kind of entity something is, it is probably an event: that is `diary/`.",
+    "projects": "Projects: any piece of work that lasts longer than one conversation (a client, a place where the user goes to work, a site, "
+                "a move, a trip).\n\n## What a valid entry looks like\n\nOne folder per project: `wiki/projects/<slug>/index.md` (deep dives as "
+                "other files in the same folder). Frontmatter: `type: project`, `project: <slug>`, `name`, `aliases`, `status` (active | "
+                "paused | done | dropped). Sections: what it is, `## Stato` (one dated line per step: `- [YYYY-MM-DD] …`), `## Da fare e da "
+                "non fare` (permanent rules), `## Collegati`, `## Fatti`, `## Decisioni`.\n\nDated work never goes here: it goes in the "
+                "day's diary file, under a section named after the project.",
+    "people": "People in the user's life.\n\n## What a valid entry looks like\n\n`wiki/people/<name>.md`, frontmatter `name`, `aliases`. "
+              "Who they are for the user, how to reach them (no passwords), what matters. Link the projects they are part of.",
+    "companies": "Companies, clients, suppliers, shops.\n\n## What a valid entry looks like\n\n`wiki/companies/<name>.md`: what they do, "
+                 "contacts, which projects involve them.",
+    "places": "Places that matter.\n\n## What a valid entry looks like\n\n`wiki/places/<name>.md`: what it is, address if useful, which projects.",
+    "services": "Servers, sites, accounts and tools the user relies on.\n\n## What a valid entry looks like\n\n`wiki/services/<name>.md`: what "
+                "it does, where it runs, who uses it. NEVER passwords, tokens or codes.",
+    "things": "Stable entities that fit no other kind: objects, animals, subscriptions.\n\n## What a valid entry looks like\n\nOne file per "
+              "entity. If you cannot say what kind of entity something is, it is probably an event: that is `diary/`.",
 }
 
-DIARY_INDEX = ("---\ntype: index\n---\n\n# Diary\n\nOne file per event: `diary/YYYY/YYYY-MM-DD-what.md`. The date in the filename is the day "
-               "the entry must be looked at next; when nothing is left to look at, the day it closed. `created_at` keeps the day it was born. "
-               "Postponing means moving the file and recording it in `rescheduled`. The only stored state is `dropped`.\n\n"
-               "## Entries in this brain\n\n- **Project log**: `YYYY-MM-DD-<project>.md`, one per project per day, with `## Fatto` (time + what "
-               "was done or decided) and `## Da fare` (checkboxes). It grows during the day. Every entry carries `project:`.\n"
-               "- **Note / task**: `YYYY-MM-DD-<what>.md`, dated on the day it must be looked at.\n"
-               "- **Giornata**: `YYYY-MM-DD-giornata.md`, what Aura did by itself that day (mail, reminders, memory).\n")
+DIARY_INDEX = ("---\ntype: index\n---\n\n# Diary\n\nOne file per day: `diary/YYYY/YYYY-MM-DD.md` (frontmatter `date`, `type: diary`, "
+               "`created_with`, `tags: [daily, …]`). Inside, one `## section` per project or topic of that day, written as it happens and "
+               "extended when the same work goes on. At the bottom: `## Da fare` (checkboxes, with ` · Project` when they belong to one; an "
+               "open task sits on the day it must be looked at, a postponed one moves to the new day) and `## Aura` (what Aura did by "
+               "itself: mail, reminders, memory).\n")
 
 SKILLS_YAML = ("# boot/skills.yaml — where this brain gets its skills from\n#\n# Skills live in skills/<name>/SKILL.md (agnostic procedure).\n"
                "# What a skill needs to know here goes in wiki/skills/<name>.yaml (local). Secrets never: they stay in the app.\n\n"
@@ -7143,7 +7238,7 @@ Only {name} and Aura. Nothing in here is shared.
 
 ## Operational rules
 
-- Project-first: every piece of work that lasts longer than one chat is a project in `wiki/progetti/`. Deduce it from the chat; if
+- Project-first: every piece of work that lasts longer than one chat is a project in `wiki/projects/`. Deduce it from the chat; if
   there is none and the work is clearly multi-step, create it and say so. Every diary entry carries its `project`.
 - Write as it happens: what was done or decided on a project goes into today's project log immediately, not "later".
 - Sending mail, emptying the trash, deleting anything: always with explicit confirmation, because it cannot be undone.
@@ -7158,7 +7253,7 @@ Only {name} and Aura. Nothing in here is shared.
 
 MAIL_SKILL_V6 = ("---\ntype: skill\nname: Writing an email\ntrigger: [mail, email, rispondi, scrivi a]\n---\n\n# Writing an email\n\n"
                  "1. Work out who it goes to and what it must achieve.\n2. Tone: the one the user uses with that person (read their card in "
-                 "`wiki/persone/`).\n3. Short: greeting, the point, what is needed, sign-off. In the user's language.\n"
+                 "`wiki/people/`).\n3. Short: greeting, the point, what is needed, sign-off. In the user's language.\n"
                  "4. Prepare the draft with `mail_prepara`: the user sends it.\n")
 
 
@@ -7181,18 +7276,127 @@ def brain_upgrade(user: dict):
         (bdir / rel).parent.mkdir(parents=True, exist_ok=True)
         (bdir / rel).write_text(text, encoding="utf-8")
     # le schede dei progetti prendono le sezioni della v6 (stato attuale, regole, collegati) se non le hanno
-    for p in (bdir / "wiki/progetti").glob("*.md"):
-        if p.name == "index.md":
-            continue
-        meta, body = fm_split(p.read_text(encoding="utf-8"))
-        for sec in ("Stato attuale", "Da fare e da non fare", "Collegati", "Fatti", "Decisioni"):
-            if not re.search(rf"^## {sec}[ \t]*$", body, re.M):
-                body = body.rstrip("\n") + f"\n\n## {sec}\n" + ("(da scrivere)\n" if sec == "Stato attuale" else "")
-        p.write_text(fm_join(meta, body), encoding="utf-8")
     if src.exists():
         (bdir / "boot/brain.md").write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
     _git(bdir, "add", "-A")
     _git(bdir, "commit", "-q", "-m", "Brain Protocol v6: brain.md, skills.yaml, indici, project-first")
+
+
+def _legacy_diary(bdir: Path) -> list[Path]:
+    return [q for q in (bdir / "diary").glob("*/*.md") if re.fullmatch(r"\d{4}-\d{2}-\d{2}-.+", q.stem)]
+
+
+def brain_layout_v2(user: dict):
+    """Una volta: i tipi in inglese, i progetti in cartelle, il diario a un file per giorno (come il brain di riferimento)."""
+    bdir = brain_dir(user)
+    legacy = _legacy_diary(bdir)
+    old_dirs = [k for k in OLD_KINDS if (bdir / "wiki" / k).exists()]
+    if not legacy and not old_dirs:
+        return
+    moved: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for old in old_dirs:
+        new = OLD_KINDS[old]
+        for q in sorted((bdir / "wiki" / old).glob("*.md")):
+            if q.name == "index.md":
+                q.unlink()
+                continue
+            meta, body = fm_split(q.read_text(encoding="utf-8"))
+            slug = q.stem
+            meta["kind"] = new
+            if new == "projects":
+                meta.update(type="project", project=slug)
+                meta.setdefault("tags", ["project"])
+                # «Stato attuale / 26/10: testo» -> «Stato / - [2026-10-26] testo»
+                def _stato(m):
+                    lines = []
+                    for l in m.group(1).strip().split("\n"):
+                        mm = re.match(r"(\d{1,2})/(\d{1,2}):\s*(.+)", l.strip())
+                        if mm:
+                            lines.append(f"- [{local_now().year}-{int(mm.group(2)):02d}-{int(mm.group(1)):02d}] {mm.group(3)}")
+                        elif l.strip() and l.strip() != "(da scrivere)":
+                            lines.append(l.strip() if l.strip().startswith("- ") else f"- {l.strip()}")
+                    return "## Stato\n" + "\n".join(lines) + ("\n\n" if lines else "\n")
+                body = re.sub(r"^## Stato attuale[ \t]*\n((?:(?!^## ).*\n?)*)", _stato, body, count=1, flags=re.M)
+                names[slug] = meta.get("name") or slug
+            rel_old = q.relative_to(bdir).as_posix()
+            rel_new = entity_path(new, slug)
+            (bdir / rel_new).parent.mkdir(parents=True, exist_ok=True)
+            (bdir / rel_new).write_text(fm_join(meta, body), encoding="utf-8")
+            q.unlink()
+            moved[rel_old] = rel_new
+        try:
+            (bdir / "wiki" / old).rmdir()
+        except OSError:
+            pass
+    for e in brain_entities(user):
+        if e["kind"] == "projects":
+            names.setdefault(e["id"], e["name"])
+    # diario: ogni voce vecchia diventa una sezione del file del suo giorno
+    days: dict[str, list[tuple[str, list[str]]]] = {}
+    for q in sorted(legacy):
+        day = q.stem[:10]
+        meta, body = fm_split(q.read_text(encoding="utf-8"))
+        title = next((m.group(1).strip() for m in re.finditer(r"^# (.+)$", body, re.M)), q.stem[11:].replace("-", " "))
+        body = re.sub(r"^# .+\n+", "", body, count=1)
+        pid = str(meta.get("project") or "")
+        pname = names.get(pid, "")
+        parts = days.setdefault(day, [])
+        if "giornata" in q.stem:
+            parts.append(("Aura", re.findall(r"^- \d{1,2}:\d{2} .+$", body, re.M)))
+        else:
+            subs = re.split(r"^## (.+)$", body, flags=re.M)
+            intro, lines, todos = subs[0].strip(), [], []
+            for i in range(1, len(subs), 2):
+                t, b = subs[i].strip(), subs[i + 1].strip()
+                if t == "Da fare":
+                    todos += [l + (f" · {pname}" if pname and "·" not in l else "") for l in b.split("\n") if re.match(r"\s*- \[[ xX]\] ", l)]
+                elif b:
+                    lines += [l for l in b.split("\n") if l.strip()]
+            todos += [l + (f" · {pname}" if pname and "·" not in l else "") for l in intro.split("\n") if re.match(r"\s*- \[[ xX]\] ", l)]
+            intro = "\n".join(l for l in intro.split("\n") if not re.match(r"\s*- \[[ xX]\] ", l)).strip()
+            if intro.startswith("Da fare (detto in chat"):
+                intro = ""
+            sec = pname or title
+            first = _user_display(user).split()[0]
+            intro = re.sub(r"(?:[Ll]')?<nome>", first, intro)
+            links = re.findall(r"\[[Cc]hat\]\(chat:[\w-]+\)", intro + "\n" + "\n".join(lines))
+            intro = re.sub(r"\[[Cc]hat\]\(chat:[\w-]+\)", "", intro).strip()
+            lines = [re.sub(r"(?:[Ll]')?<nome>", first, l) for l in lines if re.sub(r"[-\s]|\[[Cc]hat\]\(chat:[\w-]+\)", "", l)]
+            head = [f"**{title}** — {intro}" if pname and intro and title.lower() not in (pname.lower(), f"{pname.lower()} · {day[8:]}/{day[5:7]}") else intro]
+            out = [x if x.lstrip().startswith("- ") else f"- {x}" for x in head + lines if x.strip()]
+            if links:   # i link alle chat in fondo alla sezione, su una riga sola
+                out.append("- chat: " + " ".join(dict.fromkeys(l.replace("[Chat]", "[chat]") for l in links)))
+            parts.append((sec, out))
+            if todos:
+                parts.append(("Da fare", todos))
+        q.unlink()
+        moved[q.relative_to(bdir).as_posix()] = day_path(day)
+    for day, parts in days.items():
+        meta, body = fm_split(brain_read(user, day_path(day)) or fm_join(
+            {"date": day, "type": "diary", "created_with": "autosave", "tags": ["daily", "autosave"]}, f"# {day}\n"))
+        for title, lines in parts:
+            body = _day_add(body, title, lines)
+        (bdir / day_path(day)).parent.mkdir(parents=True, exist_ok=True)
+        (bdir / day_path(day)).write_text(fm_join(meta, body), encoding="utf-8")
+    # indici e regole con i nomi nuovi
+    for kind, text in KIND_INDEX.items():
+        (bdir / f"wiki/{kind}").mkdir(parents=True, exist_ok=True)
+        (bdir / f"wiki/{kind}/index.md").write_text(f"---\ntype: index\nkind: {kind}\n---\n\n# {WIKI_KINDS[kind][0]}\n\n{text}\n", encoding="utf-8")
+    (bdir / "diary/index.md").write_text(DIARY_INDEX, encoding="utf-8")
+    for rel in ("boot/domain.md", "skills/scrivere-mail/SKILL.md"):
+        if (bdir / rel).exists():
+            t = (bdir / rel).read_text(encoding="utf-8")
+            for a, b in (("wiki/progetti/", "wiki/projects/"), ("wiki/persone/", "wiki/people/")):
+                t = t.replace(a, b)
+            (bdir / rel).write_text(t, encoding="utf-8")
+    with db() as c:   # i ricordi indicizzati puntano ai file nuovi
+        for a, b in moved.items():
+            c.execute("UPDATE memories SET doc_id = ? WHERE user_id = ? AND doc_id = ?", (b, user["id"], a))
+        c.execute("UPDATE brain_episodes SET path = '' WHERE user_id = ?", (user["id"],))
+    _git(bdir, "add", "-A")
+    _git(bdir, "commit", "-q", "-m", "Struttura nuova: diario a un file per giorno, progetti in cartelle, tipi in inglese")
+    print(f"Cervello di {user['username']}: spostati {len(moved)} file nella struttura nuova", flush=True)
 
 
 # ---- API per il pannello del cervello
@@ -7219,8 +7423,6 @@ async def brain_day_api(day: str, user: dict = Depends(require_user)):
         raise HTTPException(400, "Data non valida")
     brain_ensure(user)
     entries = diary_entries(user, day, day)
-    for e in entries:
-        e["text"] = fm_split(brain_read(user, e["path"]))[1]
     from datetime import date
     d = date.fromisoformat(day)
     agenda = await cal_events(user["id"], 1, "", d) if user["role"] == "admin" else []
@@ -7235,9 +7437,9 @@ async def brain_file_api(path: str, user: dict = Depends(require_user)):
         raise HTTPException(404, "File non trovato nel cervello")
     meta, body = fm_split(text)
     linked = []
-    if path.startswith("wiki/progetti/"):
-        slug = Path(path).stem
-        linked = [e for e in diary_entries(user) if e["project"] == slug][-30:]
+    if path.startswith("wiki/projects/"):
+        slug = entity_id(path)
+        linked = [{k: v for k, v in e.items() if k != "text"} for e in diary_entries(user) if e["project"] == slug][-30:]
     return {"path": path, "meta": meta, "body": body, "raw": text, "linked": linked}
 
 
@@ -7274,7 +7476,7 @@ async def brain_new_api(body: BrainNewIn, user: dict = Depends(require_user)):
         rel = f"skills/{_slug(name)}/SKILL.md"
         text = fm_join({"type": "skill", "name": name, "trigger": []}, f"# {name}\n\n{body.text.strip() or '1. …'}\n")
     elif body.kind in WIKI_KINDS:
-        rel = f"wiki/{body.kind}/{_slug(name)}.md"
+        rel = entity_path(body.kind, _slug(name))
         text = _entity_file(body.kind, name)
         if body.text.strip():
             text = _add_fact(text, body.text.strip())
@@ -7299,12 +7501,15 @@ async def brain_check_api(body: BrainCheckIn, user: dict = Depends(require_user)
 class BrainMoveIn(BaseModel):
     path: str
     day: str
+    item: str = ""
 
 
 @app.post("/api/brain/move")
 async def brain_move_api(body: BrainMoveIn, user: dict = Depends(require_user)):
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.day):
         raise HTTPException(400, "Data non valida")
+    if body.item:
+        return {"path": await diary_move_item(user, _safe_rel(body.path), body.item, body.day)}
     return {"path": await diary_move(user, _safe_rel(body.path), body.day)}
 
 
@@ -7359,7 +7564,7 @@ async def _tool_brain_search(user: dict, args: dict, request: Request) -> dict:
 async def _tool_brain_read(user: dict, args: dict, request: Request) -> dict:
     name = str(args.get("scheda") or "").strip()
     ents = brain_entities(user)
-    e = next((e for e in ents if e["path"] == name), None) or next((e for e in ents if name.lower() in (e["name"].lower(), Path(e["path"]).stem)), None) \
+    e = next((e for e in ents if e["path"] == name), None) or next((e for e in ents if name.lower() in (e["name"].lower(), e["id"])), None) \
         or next((e for e in ents if name.lower() in e["name"].lower()), None)
     if not e:
         return {"content": f"Non c'è una scheda «{name}». Schede: " + ", ".join(x["name"] for x in ents[:60]), "display": f"Nessuna scheda «{name}»"}

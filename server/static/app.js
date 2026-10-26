@@ -650,6 +650,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
+  if (m.role === 'note') return noteEl(m);
   if (m.role === 'confirm') return confirmEl(chat, m);
   // Messaggio dell'assistente che chiede solo di usare uno strumento: non ha testo da mostrare
   if (m.role === 'assistant' && m.tool_calls?.length && !m.content && !m.thinking && !m._streaming) return null;
@@ -1994,7 +1995,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && S.
 // ================================================================ cervello (Brain Protocol)
 // Pannello a destra: il diario (calendario del mese + le voci del giorno), la wiki (Progetti / Persone / Altro) e le skill.
 // Cliccando si apre il file al centro: si legge, si modifica, si spuntano le cose fatte, si torna a una versione vecchia.
-const BP = { month: null, sel: null, tab: 'progetti', other: null, tree: null, day: null };
+const BP = { month: null, sel: null, tab: 'projects', other: null, tree: null, day: null };
 const bpOpen = () => document.getElementById('app').classList.contains('brain-on');
 function toggleBrain(force) {
   const on = force ?? !bpOpen();
@@ -2047,7 +2048,7 @@ async function renderBrainPanel() {
     ...(dayItems.length ? dayItems : [h('div', { class: 'bp-empty', text: 'Niente in questo giorno.' })]),
     (BP.day.entries || []).length > 1 ? h('button', { class: 'bp-link', text: 'Leggi tutta la giornata', onclick: () => openBrainDay(BP.sel) }) : null);
 
-  const kinds = BP.tree.kinds, others = Object.keys(kinds).filter((k) => !['progetti', 'persone'].includes(k));
+  const kinds = BP.tree.kinds, others = Object.keys(kinds).filter((k) => !['projects', 'people'].includes(k));
   const tab = (k, label) => h('button', { class: 'bp-tab' + (BP.tab === k ? ' on' : ''), text: label, onclick: () => { BP.tab = k; renderBrainPanel(); } });
   const otherSel = h('select', { class: 'bp-tab bp-other' + (others.includes(BP.tab) ? ' on' : ''), 'aria-label': 'Altri tipi', onchange: (e) => { BP.tab = e.target.value; renderBrainPanel(); } },
     h('option', { value: '', text: others.includes(BP.tab) ? kinds[BP.tab] : 'Altro ▸' }), ...others.map((k) => h('option', { value: k, text: kinds[k] })));
@@ -2055,7 +2056,7 @@ async function renderBrainPanel() {
   const wiki = h('div', { class: 'bp-sec' },
     h('div', { class: 'bp-h' }, h('span', { text: 'WIKI' }),
       h('button', { class: 'bp-add', title: 'Nuova scheda', 'aria-label': 'Nuova scheda', html: icon('edit', 'sm'), onclick: () => brainNew(BP.tab) })),
-    h('div', { class: 'bp-tabs' }, tab('progetti', 'Progetti'), tab('persone', 'Persone'), otherSel),
+    h('div', { class: 'bp-tabs' }, tab('projects', 'Progetti'), tab('people', 'Persone'), otherSel),
     ...(list.length ? list.map((e) => h('button', { class: 'bp-item', onclick: () => openBrainFile(e.path) },
       h('span', { class: 'bp-t', text: e.name }), e.status ? h('span', { class: 'bp-badge ' + e.status, text: e.status.toUpperCase() }) : null))
       : [h('div', { class: 'bp-empty', text: 'Ancora niente qui.' })]));
@@ -2100,7 +2101,12 @@ function bvRender(md, path) {
         try { const r = await (await api('/api/brain/check', { path, item, done: !done })).json(); toast(done ? 'Riaperta' : 'Fatta!'); openBrainFile(r.path); renderBrainPanel(); }
         catch (e) { toast(e.message); } } }), h('span', { class: done ? 'done' : '', text: item }));
   });
-  box.querySelectorAll('a[href^="#chat="]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); closeBrainView(); openChat(a.getAttribute('href').slice(6)); }));
+  box.querySelectorAll('a[href^="#chat="]').forEach((a) => {   // col titolo della chat, non «chat chat chat»
+    const c = S.chats.find((x) => x.id === a.getAttribute('href').slice(6));
+    if (c?.title) a.textContent = c.title;
+    a.classList.add('bv-chatlink');
+    a.addEventListener('click', (e) => { e.preventDefault(); closeBrainView(); openChat(a.getAttribute('href').slice(6)); });
+  });
   return box;
 }
 function bvSections(md, path) {
@@ -2111,8 +2117,13 @@ function bvSections(md, path) {
   const out = [];
   if (intro) out.push(h('section', { class: 'card bv-intro' }, bvRender(intro, path)));
   for (const s of full) {
-    if (/^stato attuale$/i.test(s.title)) {
-      out.push(h('section', { class: 'bv-status' }, h('span', { class: 'bv-status-l', text: 'Stato attuale' }), h('div', { class: 'bv-status-t', text: s.body.replace(/\n+/g, ' ') })));
+    if (/^stato( attuale)?$/i.test(s.title)) {
+      const steps = s.body.split('\n').map((l) => l.replace(/^-\s*/, '').trim()).filter(Boolean);
+      const fmt = (l) => l.replace(/^\[(\d{4})-(\d{2})-(\d{2})\]\s*/, (_, y, m, dd) => `${dd}/${m} · `);
+      const last = steps.pop() || '';
+      out.push(h('section', { class: 'bv-status' }, h('span', { class: 'bv-status-l', text: 'Stato' }), h('div', { class: 'bv-status-t', text: fmt(last) }),
+        steps.length ? h('details', { class: 'bv-status-old' }, h('summary', { text: `Passi precedenti (${steps.length})` }),
+          h('ul', {}, ...steps.reverse().map((l) => h('li', { text: fmt(l) })))) : null));
       continue;
     }
     const box = bvRender(s.body, path);
@@ -2124,6 +2135,30 @@ function bvSections(md, path) {
   if (empty.length) out.push(h('p', { class: 'bv-empty', text: `Ancora vuote: ${empty.map((s) => s.title).join(' · ')}. Le riempie Aura man mano, o tu con «Modifica».` }));
   return out;
 }
+function brainLabel(path) {
+  const day = path.match(/^diary\/\d{4}\/(\d{4})-(\d{2})-(\d{2})\.md$/);
+  if (day) return ['📄', `diario del ${day[3]}/${day[2]}`];
+  const id = path.split('/').slice(-1)[0] === 'index.md' ? path.split('/').slice(-2)[0] : path.split('/').pop().replace(/\.md$/, '');
+  const e = BP.tree?.entities?.find((x) => x.path === path);
+  return [path.startsWith('wiki/projects/') ? '📁' : path.startsWith('wiki/people/') ? '👤' : '📝', e?.name || id.replace(/-/g, ' ')];
+}
+function noteEl(m) {
+  return h('div', { class: 'msg note' }, h('div', { class: 'brain-note' },
+    h('span', { class: 'bn-h', text: m.content || '💾 salvato nel brain' }),
+    h('div', { class: 'bn-files' }, ...(m.paths || []).map((p) => { const [ic, label] = brainLabel(p);
+      return h('button', { class: 'bn-file', title: p, onclick: () => openBrainFile(p) }, h('span', { text: ic }), h('span', { text: label })); }))));
+}
+// le ricevute le scrive il server qualche minuto dopo la chat: se la chat e' aperta, arrivano da sole
+setInterval(async () => {
+  const c = current();
+  if (!c || S.stream || document.hidden || isAuraChat(c) || !c.messages?.length) return;
+  try {
+    const { notes } = await (await api(`/api/chats/${encodeURIComponent(c.id)}/notes`)).json();
+    const have = new Set(c.messages.filter((m) => m.role === 'note').map((m) => m.rid));
+    const fresh = notes.filter((n) => !have.has(n.rid));
+    if (fresh.length && current() === c) { c.messages.push(...fresh); renderThread(); keepFollowing?.(); if (BP.tree) renderBrainPanel(); }
+  } catch {}
+}, 20000);
 async function openBrainFile(path) {
   let f;
   try { f = await (await api(`/api/brain/file?path=${encodeURIComponent(path)}`)).json(); } catch (e) { toast(e.message); return; }
