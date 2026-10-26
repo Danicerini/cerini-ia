@@ -2945,7 +2945,7 @@ function accountTab(body) {
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
   const content = sec === 'aura' ? [personaCard(), autonomyCard()] : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
-  body.append(hero, nav, ...[].concat(content));
+  body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
 function securityCards() {
