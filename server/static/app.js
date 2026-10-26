@@ -2083,7 +2083,8 @@ function brainShell(title, actions, ...body) {
     ...body));
 }
 function bvRender(md, path) {
-  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md) });
+  // i link «chat:ID» il filtro di sicurezza li toglierebbe: diventano «#chat=ID» e li apre la pagina
+  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md.replace(/\]\(chat:([\w-]+)\)/g, '](#chat=$1)')) });
   // le caselle «- [ ]» si spuntano davvero (nel diario)
   box.querySelectorAll('li').forEach((li) => {
     const cb = li.querySelector('input[type="checkbox"]');
@@ -2099,8 +2100,29 @@ function bvRender(md, path) {
         try { const r = await (await api('/api/brain/check', { path, item, done: !done })).json(); toast(done ? 'Riaperta' : 'Fatta!'); openBrainFile(r.path); renderBrainPanel(); }
         catch (e) { toast(e.message); } } }), h('span', { class: done ? 'done' : '', text: item }));
   });
-  box.querySelectorAll('a[href^="chat:"]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); closeBrainView(); openChat(a.getAttribute('href').slice(5)); }));
+  box.querySelectorAll('a[href^="#chat="]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); closeBrainView(); openChat(a.getAttribute('href').slice(6)); }));
   return box;
+}
+function bvSections(md, path) {
+  const parts = md.split(/^## (.+)$/m);
+  const intro = parts[0].trim(), secs = [];
+  for (let i = 1; i < parts.length; i += 2) secs.push({ title: parts[i].trim(), body: (parts[i + 1] || '').trim() });
+  const full = secs.filter((s) => s.body && s.body !== '(da scrivere)'), empty = secs.filter((s) => !full.includes(s));
+  const out = [];
+  if (intro) out.push(h('section', { class: 'card bv-intro' }, bvRender(intro, path)));
+  for (const s of full) {
+    if (/^stato attuale$/i.test(s.title)) {
+      out.push(h('section', { class: 'bv-status' }, h('span', { class: 'bv-status-l', text: 'Stato attuale' }), h('div', { class: 'bv-status-t', text: s.body.replace(/\n+/g, ' ') })));
+      continue;
+    }
+    const box = bvRender(s.body, path);
+    if (/^chat$/i.test(s.title)) {   // i link alle chat col titolo della chat, non «Chat, Chat, Chat»
+      box.querySelectorAll('a[href^="#chat="]').forEach((a) => { const c = S.chats.find((x) => x.id === a.getAttribute('href').slice(6)); a.textContent = c?.title || 'Apri la chat'; });
+    }
+    out.push(h('section', { class: 'card bv-sec' }, h('h2', { class: 'bv-sec-h', text: s.title }), box));
+  }
+  if (empty.length) out.push(h('p', { class: 'bv-empty', text: `Ancora vuote: ${empty.map((s) => s.title).join(' · ')}. Le riempie Aura man mano, o tu con «Modifica».` }));
+  return out;
 }
 async function openBrainFile(path) {
   let f;
@@ -2136,14 +2158,14 @@ async function openBrainFile(path) {
     ...f.linked.slice().reverse().map((e) => h('button', { class: 'bp-item', onclick: () => openBrainFile(e.path) },
       h('span', { class: 'bp-dot' + (e.todo.length ? ' open' : '') }), h('span', { class: 'bp-t', text: `${e.day.slice(8)}/${e.day.slice(5, 7)} · ${e.title}` })))) : null;
   brainShell(title, acts, h('p', { class: 'bv-path mono', text: path }), chips.length ? h('div', { class: 'bv-chips' }, ...chips) : null,
-    h('section', { class: 'card' }, bvRender(body, path)), linked);
+    ...bvSections(body, path), linked);
 }
 async function openBrainDay(day) {
   let d; try { d = await (await api(`/api/brain/day/${day}`)).json(); } catch (e) { toast(e.message); return; }
   const logs = d.entries.filter((e) => e.log), rest = d.entries.filter((e) => !e.log);
-  brainShell(dayTitle(day), [], ...rest.map((e) => h('section', { class: 'card' },
+  brainShell(dayTitle(day), [], ...rest.map((e) => h('section', { class: 'card bv-day' },
     h('div', { class: 'card-head' }, h('h2', { text: e.title }), e.project ? h('span', { class: 'bv-chip', text: e.project }) : null),
-    bvRender(e.text.replace(/^# .+\n+/, ''), e.path))),
+    h('div', { class: 'bv-day-body' }, ...bvSections(e.text.replace(/^# .+\n+/, ''), e.path)))),
     ...logs.map((e) => h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Cosa ha fatto Aura' })), auraLog(e.text))),
     d.agenda.length ? h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { text: 'In agenda' })), ...d.agenda.map(eventRow)) : null);
 }
