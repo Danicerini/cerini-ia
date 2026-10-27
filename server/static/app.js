@@ -2379,7 +2379,7 @@ function cloudCard() {
     let c;
     try { c = await (await api('/api/cloud')).json(); } catch (e) { card.lastChild.textContent = e.message; return; }
     const prov = h('select', { class: 'ag-in', 'aria-label': 'Fornitore' }, ...Object.entries(c.presets).map(([k, p]) => h('option', { value: k, text: p.name })));
-    prov.value = c.provider || 'deepseek';
+    prov.value = c.provider || 'regolo';
     const base = h('input', { class: 'ag-in', value: c.base || '', placeholder: 'https://…/v1', 'aria-label': 'Indirizzo API' });
     const model = h('input', { class: 'ag-in', value: c.model || '', placeholder: 'nome del modello', list: 'cloudModels', 'aria-label': 'Modello' });
     const models = h('datalist', { id: 'cloudModels' });
@@ -2387,8 +2387,18 @@ function cloudCard() {
     const sw = (on, label) => { const b = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label,
       onclick: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')) }, h('span')); return b; };
     const en = sw(c.enabled, 'Attivo'), bg = sw(c.background, 'Lavori in sottofondo');
-    const fill = () => { const p = c.presets[prov.value]; if (prov.value !== 'custom') { base.value = p.base; if (!model.value || Object.values(c.presets).some((x) => x.model === model.value)) model.value = p.model; } };
+    // i modelli consigliati del fornitore: un clic e il campo si riempie
+    const note = h('small', { class: 'cloud-note' }), picks = h('div', { class: 'cloud-picks' });
+    const showPicks = () => {
+      const p = c.presets[prov.value] || {};
+      note.textContent = p.note || '';
+      picks.replaceChildren(...(p.models || []).map(([m, why]) => h('button', { type: 'button', class: 'cloud-pick' + (model.value === m ? ' on' : ''),
+        onclick: () => { model.value = m; showPicks(); } }, h('b', { text: m }), why ? h('span', { text: why }) : '')));
+    };
+    const fill = () => { const p = c.presets[prov.value]; if (prov.value !== 'custom') { base.value = p.base; if (!model.value || Object.values(c.presets).some((x) => x.model === model.value || (x.models || []).some(([m]) => m === model.value))) model.value = p.model; } showPicks(); };
     prov.onchange = fill;
+    model.oninput = showPicks;
+    showPicks();
     if (!c.model) fill();
     const out = h('div', { class: 'form-msg', role: 'status' });
     const save = async () => {
@@ -2410,9 +2420,9 @@ function cloudCard() {
       } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; }
       testBtn.disabled = false; } });
     card.lastChild.replaceWith(h('div', { class: 'stack cloud-form' },
-      h('label', { class: 'ag-f' }, h('span', { text: 'Fornitore' }), prov),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Fornitore' }), prov, note),
       h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key),
-      h('label', { class: 'ag-f' }, h('span', { text: 'Modello' }), model, models),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Modello' }), model, models), picks,
       h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base),
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Attivo' }), h('small', { text: 'Compare nel menu dei modelli.' })), en),
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Lavora anche in sottofondo' }),

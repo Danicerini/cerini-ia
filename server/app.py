@@ -6110,6 +6110,11 @@ async def aura_watch_now(user: dict = Depends(require_admin)):
 
 CLOUD_FILE = DATA_DIR / "cloud.json"
 CLOUD_PRESETS = {
+    # Regolo (Seeweb): azienda italiana, server in Europa, non conserva i messaggi (zero data retention)
+    "regolo": {"name": "Regolo (Italia)", "base": "https://api.regolo.ai/v1", "model": "qwen3.5-122b",
+               "note": "Azienda italiana (Seeweb), dati in Europa, non conserva i messaggi.",
+               "models": [["qwen3.5-122b", "consigliato"], ["glm5.2", "il più forte"], ["mistral-small-4-119b", "costa la metà"],
+                          ["gemma4-31b", "Gemma grande"], ["gpt-oss-120b", ""]]},
     "deepseek": {"name": "DeepSeek", "base": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
     "gemini": {"name": "Google Gemini", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash"},
     "openai": {"name": "OpenAI", "base": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
