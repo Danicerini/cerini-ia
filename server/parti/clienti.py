@@ -203,10 +203,15 @@ async def _comune_directory(town: str) -> list[dict]:
 
 async def _web_discover(mestiere: str, area: str) -> list[dict]:
     """Una ricerca «mestiere + zona»: i siti delle attività (da controllare) e le schede degli elenchi (chi forse un sito non ce l'ha)."""
-    try:
-        res = (await web_search(f"{mestiere} {area}", 20))["results"]
-    except Exception:
-        return []
+    res = []
+    for wait in (0, 20, 60):   # se i motori non rispondono (troppe ricerche di fila) si aspetta e si riprova
+        await asyncio.sleep(wait)
+        try:
+            res = (await web_search(f"{mestiere} {area}", 20))["results"]
+        except Exception:
+            res = []
+        if res:
+            break
     town = area if area in clienti_zona()["comuni"] else ""
     out = []
     for x in res:
@@ -392,7 +397,7 @@ async def clienti_search(uid: int, mestieri: list[str] | None = None, force: boo
                     places[p["ext_id"]] = seen[k] = p
                     if host:
                         sites.add(host)
-                await asyncio.sleep(1.5)   # piano: il motore di ricerca non deve pensare a un robot impazzito
+                await asyncio.sleep(4)   # piano: i motori di ricerca non devono pensare a un robot impazzito
             # 3) chi sembra senza sito: una ricerca col nome, per esserne sicuri
             nosite = [p for p in places.values() if not p.get("website")]
             job.update(total=len(nosite), done=0)
