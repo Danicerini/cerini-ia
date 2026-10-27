@@ -7895,6 +7895,29 @@ async def brain_graph_api(diary: int = 1, user: dict = Depends(require_user)):
     return brain_graph(user, bool(diary))
 
 
+# i colori del grafo di Obsidian, uguali a quelli dell'app
+OBSIDIAN_GRAPH = {"colorGroups": [{"query": q, "color": {"a": 1, "rgb": c}} for q, c in (
+    ("path:boot/user", 0xE8B84A), ("path:wiki/projects", 0x5B7CF0), ("path:wiki/people", 0x4CC38A), ("path:wiki/companies", 0xF08A5B),
+    ("path:wiki/places", 0x3DB8C9), ("path:wiki/services", 0xB57BEB), ("path:diary", 0x8A8F98))],
+    "showTags": False, "showAttachments": False, "hideUnresolved": True, "showOrphans": True}
+
+
+@app.get("/api/brain/export")
+async def brain_export(user: dict = Depends(require_user)):
+    """Il cervello com'e' adesso, in uno zip da aprire come cartella (vault) in Obsidian: i file markdown + i colori del grafo."""
+    import io, zipfile
+    bdir = brain_ensure(user)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for q in sorted(bdir.rglob("*")):
+            rel = q.relative_to(bdir)
+            if q.is_file() and rel.parts[0] not in (".git", ".obsidian") and q.name not in (".env", ".gitignore"):
+                z.write(q, f"cervello/{rel.as_posix()}")
+        z.writestr("cervello/.obsidian/graph.json", json.dumps(OBSIDIAN_GRAPH, indent=2))
+    name = f"cervello-{local_now().strftime('%Y-%m-%d')}.zip"
+    return Response(buf.getvalue(), media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
+
+
 @app.get("/api/brain/tree")
 async def brain_tree_api(month: str = "", user: dict = Depends(require_user)):
     brain_ensure(user)
