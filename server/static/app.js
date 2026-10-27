@@ -28,6 +28,7 @@ const ICONS = {
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
   play: '<path d="M6 3l14 9-14 9Z"/>',
   sound: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
+  chart: '<path d="M3 3v18h18"/><path d="M8 16v-5M13 16V7M18 16v-8"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
@@ -318,6 +319,10 @@ function renderPicker() {
       h('div', { class: 'side-act' }, act), mem);
     p.append(row);
   }
+  // quanto ha consumato il modello attivo questo mese (un clic apre i consumi)
+  const um = S.usage?.models?.find((x) => x.name === sel);
+  p.append(h('button', { class: 'picker-foot u-foot', onclick: () => { S.accSec = 'usage'; openSettings('account'); } }, h('span', { html: icon('chart', 'sm') }),
+    h('span', { text: 'Questo mese' }), h('span', { class: 'pf-state tnum', text: um ? `${fmtTok(um.month[1] + um.month[2])} token · ${um.cloud ? (um.month_cost == null ? 'prezzo da impostare' : fmtMoney(um.month_cost)) : 'gratis'}` : 'ancora niente' })));
   // Modelli di servizio (memoria): informativi, non si scelgono per chattare
   (s.helpers || []).forEach((x) => p.append(h('div', { class: 'picker-foot' }, h('span', { html: icon('brain', 'sm') }),
     h('span', { text: `Memoria: ${x.name.replace(':latest', '')}` }), h('span', { class: 'pf-state', text: x.loaded ? `in GPU · ${gb(x.size_vram)}` : 'si accende quando serve' }))));
@@ -328,7 +333,7 @@ setInterval(() => { const b = $('#busyTxt'); if (b) b.textContent = busyText(); 
 function togglePicker(force) {
   const p = $('#picker'), open = force ?? p.classList.contains('hidden');
   p.classList.toggle('hidden', !open); $('#modelBtn').setAttribute('aria-expanded', open);
-  if (open) { renderPicker(); refresh(); }
+  if (open) { renderPicker(); refresh(); loadUsage().then(() => { if (!p.classList.contains('hidden')) renderPicker(); }); }
 }
 $('#modelBtn').onclick = (e) => { e.stopPropagation(); togglePicker(); };
 document.addEventListener('click', (e) => { if (!$('#picker').contains(e.target)) togglePicker(false); });
@@ -3136,7 +3141,7 @@ function renderSettings() {
 
 // ------------------------------------------------------------------ account
 // In alto il profilo; sotto una sezione alla volta (Aura, Sicurezza, Collegamenti, Aspetto): niente pagina infinita.
-const ACC_SECTIONS = [['aura', 'Aura', 'brain'], ['security', 'Sicurezza', 'shield'], ['links', 'Collegamenti', 'link'], ['look', 'Aspetto', 'sun']];
+const ACC_SECTIONS = [['aura', 'Aura', 'brain'], ['usage', 'Consumi', 'chart'], ['security', 'Sicurezza', 'shield'], ['links', 'Collegamenti', 'link'], ['look', 'Aspetto', 'sun']];
 function accountTab(body) {
   const sec = S.accSec = ACC_SECTIONS.some(([k]) => k === S.accSec) ? S.accSec : 'aura';
   const hero = h('section', { class: 'acc-hero' },
@@ -3147,7 +3152,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
@@ -3264,6 +3269,88 @@ function personaCard() {
   })();
   return card;
 }
+// ------------------------------------------------------------------ consumi
+// Token usati da ogni modello (sul PC e nel cloud), quanto costano e quanto credito resta
+const fmtTok = (n) => n >= 1e6 ? `${(n / 1e6).toLocaleString('it-IT', { maximumFractionDigits: 1 })} mln` : n >= 1e3 ? `${(n / 1e3).toLocaleString('it-IT', { maximumFractionDigits: 1 })} mila` : String(n || 0);
+const fmtMoney = (x, cur = 'EUR') => x == null ? '—' : (Math.abs(x) > 0 && Math.abs(x) < 0.01 ? '< ' + (0.01).toLocaleString('it-IT', { style: 'currency', currency: cur })
+  : x.toLocaleString('it-IT', { style: 'currency', currency: cur }));
+const modelLabel = (n) => isCloudM(n) ? '☁ ' + n.slice(6) : n;
+async function loadUsage() { try { S.usage = await (await api('/api/usage')).json(); } catch { S.usage = null; } return S.usage; }
+
+function usageCards() {
+  const wrap = h('div', { class: 'stack usage' }, h('section', { class: 'card' }, h('div', { class: 'list-empty', text: 'Carico i consumi…' })));
+  (async () => {
+    const u = await loadUsage();
+    if (!u) { wrap.replaceChildren(h('section', { class: 'card' }, h('div', { class: 'list-empty', text: 'Non riesco a leggere i consumi.' }))); return; }
+    const am = activeModel();
+    const cur = u.models.find((m) => m.name === am) || { name: am, cloud: isCloudM(am), today: [0, 0, 0], month: [0, 0, 0], price: isCloudM(am) ? u.cloud_price : [0, 0], today_cost: 0, month_cost: 0, days: [] };
+    const cost = (m, k) => !m.cloud ? 'Gratis' : m[k + '_cost'] == null ? 'prezzo da impostare' : fmtMoney(m[k + '_cost']);
+    const risp = (n) => n === 1 ? '1 risposta' : `${n} risposte`;
+    const stat = (label, val, sub) => h('div', { class: 'u-stat' }, h('small', { text: label }), h('b', { class: 'tnum', text: val }), sub ? h('span', { class: 'tnum', text: sub }) : null);
+    // il modello attivo, in grande
+    const active = h('section', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', { html: icon('chart', 'sm') + 'Modello attivo' }),
+        h('p', { text: cur.cloud ? `${modelLabel(am)} · nel cloud${u.provider ? ' (' + u.provider + ')' : ''}: si paga a token.` : `${am || 'nessuno'} · sul PC di casa: non costa niente (solo corrente).` })),
+      h('div', { class: 'u-stats' },
+        stat('Oggi', fmtTok(cur.today[1] + cur.today[2]) + ' token', `${risp(cur.today[0])} · ${cost(cur, 'today')}`),
+        stat('Questo mese', fmtTok(cur.month[1] + cur.month[2]) + ' token', `${risp(cur.month[0])} · ${cost(cur, 'month')}`),
+        cur.cloud && cur.price ? stat('Prezzo', `${fmtMoney(cur.price[0])} / ${fmtMoney(cur.price[1])}`, 'per milione di token (entrata / uscita)') : null),
+      usageBars(cur.days));
+    const cards = [active];
+    // il credito
+    if (u.cloud || u.credit) {
+      const c = u.credit;
+      const low = c && c.left != null && c.total && c.left < c.total * 0.15;
+      cards.push(h('section', { class: 'card' },
+        h('div', { class: 'card-head' }, h('h2', { html: icon('globe', 'sm') + 'Credito nel cloud' }),
+          h('p', { text: !c ? 'Scrivi qui sotto quanto credito hai caricato: Aura sottrae quello che spendi.'
+            : c.real ? 'Il credito vero, letto dal fornitore.' : `Stimato: ${fmtMoney(c.total)} caricati dal ${new Date(c.since).toLocaleDateString('it-IT')}, meno ${fmtMoney(c.spent)} spesi da allora.` })),
+        c ? h('div', { class: 'u-credit' + (low || c.left < 0 ? ' low' : '') }, h('b', { class: 'tnum', text: fmtMoney(c.left, c.currency) }), h('span', { text: c.left < 0 ? 'credito finito' : 'rimasti' }),
+          c.total ? h('div', { class: 'u-meter' }, h('i', { style: `width:${Math.max(0, Math.min(100, (100 * c.left) / c.total))}%` })) : null) : null,
+        isAdmin() ? usageCfgForm(u) : null));
+    }
+    // tutti i modelli
+    cards.push(h('section', { class: 'card' },
+      h('div', { class: 'card-head' }, h('h2', { text: 'Tutti i modelli, questo mese' }),
+        h('p', { text: 'Le risposte in chat e i lavori in sottofondo (posta, diario, ricordi). Entrata = quello che legge, uscita = quello che scrive.' })),
+      u.models.length ? h('div', { class: 'u-table' },
+        h('div', { class: 'u-row head' }, h('span', { text: 'Modello' }), h('span', { text: 'Risposte' }), h('span', { text: 'Entrata' }), h('span', { text: 'Uscita' }), h('span', { text: 'Costo' })),
+        ...u.models.map((m) => h('div', { class: 'u-row' + (m.name === am ? ' on' : '') },
+          h('span', { class: 'nm', text: modelLabel(m.name), title: `${m.chat || 0} in chat · ${m.sfondo || 0} in sottofondo` }),
+          h('span', { class: 'tnum', text: String(m.month[0]) }), h('span', { class: 'tnum', text: fmtTok(m.month[1]) }), h('span', { class: 'tnum', text: fmtTok(m.month[2]) }),
+          h('span', { class: 'tnum', text: cost(m, 'month') }))))
+        : h('div', { class: 'list-empty', text: 'Ancora niente: i conti partono dalla prossima risposta.' })));
+    wrap.replaceChildren(...cards);
+  })();
+  return wrap;
+}
+function usageBars(days) {
+  if (!days?.length) return null;
+  const max = Math.max(...days.map((d) => d[1]), 1);
+  return h('div', { class: 'u-bars', 'aria-label': 'Token al giorno, ultimi 30 giorni' },
+    ...days.map(([d, n]) => h('i', { style: `height:${Math.max(4, Math.round((100 * n) / max))}%`, title: `${new Date(d).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' })}: ${fmtTok(n)} token` })));
+}
+function usageCfgForm(u) {
+  const name = u.cloud ? u.cloud.slice(6) : '';
+  const num = (v, ph, label) => h('input', { class: 'ag-in', type: 'number', step: '0.01', min: '0', value: v ?? '', placeholder: ph, 'aria-label': label });
+  const pin = num(u.cloud_price?.[0], '0,00', 'Prezzo entrata'), pout = num(u.cloud_price?.[1], '0,00', 'Prezzo uscita');
+  const cred = num(u.cfg_credit, 'es. 10', 'Credito caricato');
+  const since = h('input', { class: 'ag-in', type: 'date', value: u.cfg_since || new Date().toISOString().slice(0, 10), 'aria-label': 'Caricato il' });
+  const out = h('div', { class: 'form-msg', role: 'status' });
+  const val = (el) => el.value === '' ? null : Number(el.value);
+  return h('details', { class: 'cloud-adv' }, h('summary', { text: 'Prezzi e credito' }),
+    h('div', { class: 'stack' },
+      name ? h('div', { class: 'u-cfg' }, h('label', { class: 'ag-f' }, h('span', { text: `${name}: € per milione in entrata` }), pin),
+        h('label', { class: 'ag-f' }, h('span', { text: '€ per milione in uscita' }), pout)) : null,
+      h('div', { class: 'u-cfg' }, h('label', { class: 'ag-f' }, h('span', { text: 'Credito caricato (€)' }), cred), h('label', { class: 'ag-f' }, h('span', { text: 'Caricato il' }), since)),
+      h('small', { class: 'cloud-note', text: 'I prezzi li trovi nel listino del fornitore. Il credito vero lo vedi solo sul suo sito: qui è una stima dai token contati.' }),
+      h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Salva', onclick: async () => {
+        try {
+          await api('/api/usage/config', { prices: name ? { [name]: [val(pin), val(pout)] } : {}, credit: val(cred), credit_since: since.value }, { method: 'PUT' });
+          toast('Salvato'); renderSettings();
+        } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } })), out));
+}
+
 // Quale modello parte da solo quando apri l'app: Gemma sul PC di casa o il modello nel cloud
 function startModelCard() {
   const cloud = S.status?.cloud;

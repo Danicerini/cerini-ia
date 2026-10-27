@@ -19,7 +19,7 @@ import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -385,6 +385,7 @@ async def lifespan(_app):
     init_watch_db()
     init_agenda_db()
     init_brain_db()
+    init_usage_db()
     backfill = asyncio.create_task(conv_backfill())
     watcher = asyncio.create_task(mail_watch_loop())
     fastmail = asyncio.create_task(mail_fast_loop())
@@ -3513,6 +3514,7 @@ async def mail_triage(user: dict = Depends(require_admin)):
     r = await ollama("POST", "/api/chat", json={"model": model, "stream": False, "format": "json", "think": False,
                                                  "keep_alive": KEEP_ALIVE, "options": {"num_ctx": NUM_CTX or 8192, "temperature": 0.2},
                                                  "messages": [{"role": "user", "content": prompt}]}, timeout=180)
+    usage_ollama(model, r)
     try:
         out = json.loads(r.json()["message"]["content"])
     except (ValueError, KeyError):
@@ -6121,7 +6123,8 @@ CLOUD_PRESETS = {
     "regolo": {"name": "Regolo (Italia)", "base": "https://api.regolo.ai/v1", "model": "qwen3.5-122b",
                "note": "Azienda italiana (Seeweb), dati in Europa, non conserva i messaggi.",
                "models": [["qwen3.5-122b", "consigliato"], ["glm5.2", "il più forte"], ["mistral-small-4-119b", "costa la metà"],
-                          ["gemma4-31b", "Gemma grande"], ["gpt-oss-120b", ""]]},
+                          ["gemma4-31b", "Gemma grande"], ["gpt-oss-120b", ""]],
+               "prices": {"gpt-oss-120b": [1.0, 4.2]}},   # euro per milione di token (entrata, uscita), dal listino pubblico
     "deepseek": {"name": "DeepSeek", "base": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
     "gemini": {"name": "Google Gemini", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash"},
     "openai": {"name": "OpenAI", "base": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
@@ -6207,6 +6210,8 @@ def _cloud_body(payload: dict, stream: bool) -> dict:
         body["temperature"] = t
     if payload.get("format") == "json":
         body["response_format"] = {"type": "json_object"}
+    if stream:
+        body["stream_options"] = {"include_usage": True}   # l'ultimo pezzo porta i token usati (per i consumi)
     return body
 
 
@@ -6214,16 +6219,28 @@ def _cloud_headers() -> dict:
     return {"Authorization": f"Bearer {cloud_cfg()['api_key']}", "Content-Type": "application/json"}
 
 
+_NO_STREAM_USAGE: set = set()   # fornitori che rifiutano stream_options
+
+
 async def cloud_stream(payload: dict):
     """Come lo stream di Ollama (righe {"message": …}, poi done), ma da un'API compatibile OpenAI."""
     c = cloud_cfg()
     t0 = time.monotonic()
     calls: dict[int, dict] = {}
-    tokens = 0
-    async with client.stream("POST", c["base"].rstrip("/") + "/chat/completions", json=_cloud_body(payload, True), headers=_cloud_headers(),
+    tokens, usage = 0, {}
+    body = _cloud_body(payload, True)
+    if c.get("base") in _NO_STREAM_USAGE:
+        body.pop("stream_options", None)
+    async with client.stream("POST", c["base"].rstrip("/") + "/chat/completions", json=body, headers=_cloud_headers(),
                              timeout=httpx.Timeout(300.0, connect=10.0)) as r:
         if r.status_code != 200:
             err = (await r.aread()).decode(errors="replace")[:400]
+            if "stream_options" in err and c.get("base") not in _NO_STREAM_USAGE:
+                # il fornitore non conosce il conto dei token in streaming: si riprova senza (e i token si stimano)
+                _NO_STREAM_USAGE.add(c.get("base"))
+                async for d in cloud_stream(payload):
+                    yield d
+                return
             yield {"error": f"Modello nel cloud: errore {r.status_code} {err}"}
             return
         async for line in r.aiter_lines():
@@ -6238,6 +6255,7 @@ async def cloud_stream(payload: dict):
                 continue
             if d.get("usage"):
                 tokens = d["usage"].get("completion_tokens") or tokens
+                usage = d["usage"]
             for ch in d.get("choices") or []:
                 delta = ch.get("delta") or {}
                 if delta.get("reasoning_content"):
@@ -6260,6 +6278,9 @@ async def cloud_stream(payload: dict):
             out.append({"function": {"name": calls[k]["name"], "arguments": args}})
         yield {"message": {"role": "assistant", "content": "", "tool_calls": out}, "done": False}
     secs = max(0.001, time.monotonic() - t0)
+    # se il fornitore non manda il conto, si stima: ~4 caratteri per token
+    tin = usage.get("prompt_tokens") or len(json.dumps(payload.get("messages") or [], ensure_ascii=False)) // 4
+    usage_add(payload.get("model") or "cloud:" + c.get("model", ""), "chat", tin, usage.get("completion_tokens") or tokens)
     yield {"message": {"role": "assistant", "content": ""}, "done": True, "eval_count": tokens, "eval_duration": int(secs * 1e9)}
 
 
@@ -6278,7 +6299,10 @@ async def llm_stream(payload: dict):
             return
         async for line in r.aiter_lines():
             if line:
-                yield json.loads(line)
+                d = json.loads(line)
+                if d.get("done"):
+                    usage_add(payload.get("model"), "chat", d.get("prompt_eval_count") or 0, d.get("eval_count") or 0)
+                yield d
 
 
 async def llm_once(messages: list[dict], json_mode: bool = False, temperature: float = 0.2, model: str | None = None,
@@ -6295,11 +6319,136 @@ async def llm_once(messages: list[dict], json_mode: bool = False, temperature: f
                               timeout=httpx.Timeout(timeout, connect=10.0))
         if r.status_code != 200:
             raise HTTPException(502, f"Modello nel cloud: errore {r.status_code} {r.text[:200]}")
+        u = r.json().get("usage") or {}
+        usage_add(model if is_cloud(model) else cloud_name(), "sfondo", u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0)
         return (r.json()["choices"][0]["message"].get("content") or "").strip()
     payload.update(model=model or await _chat_model(), think=False, keep_alive=KEEP_ALIVE)
     payload["options"]["num_ctx"] = num_ctx
     r = await ollama("POST", "/api/chat", json=payload, timeout=timeout)
+    usage_ollama(payload["model"], r)
     return (r.json().get("message") or {}).get("content", "").strip()
+
+
+# ---- consumi: i token di ogni modello (sul PC e nel cloud), quanto costano e quanto credito resta.
+# Si salvano solo i numeri, niente testo dei messaggi. Il costo si calcola quando lo guardi, con i prezzi di adesso.
+
+def init_usage_db():
+    with db() as c:
+        c.execute("""CREATE TABLE IF NOT EXISTS usage (day TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
+                     calls INTEGER NOT NULL DEFAULT 0, tin INTEGER NOT NULL DEFAULT 0, tout INTEGER NOT NULL DEFAULT 0,
+                     PRIMARY KEY (day, model, kind))""")
+
+
+def usage_add(model: str | None, kind: str, tin: int, tout: int):
+    if not model:
+        return
+    try:
+        with db() as c:
+            c.execute("""INSERT INTO usage (day, model, kind, calls, tin, tout) VALUES (?, ?, ?, 1, ?, ?)
+                         ON CONFLICT (day, model, kind) DO UPDATE SET calls = calls + 1, tin = tin + excluded.tin, tout = tout + excluded.tout""",
+                      (local_now().strftime("%Y-%m-%d"), model, kind, int(tin or 0), int(tout or 0)))
+    except sqlite3.Error:
+        pass   # il contatore non deve mai rompere una risposta
+
+
+def usage_ollama(model: str, r: httpx.Response):
+    try:
+        d = r.json()
+        usage_add(model, "sfondo", d.get("prompt_eval_count") or 0, d.get("eval_count") or 0)
+    except ValueError:
+        pass
+
+
+def _price(model: str) -> list | None:
+    """Prezzo in euro per milione di token [entrata, uscita]: quello scritto nelle impostazioni o quello noto del fornitore."""
+    c = cloud_cfg()
+    name = model.removeprefix("cloud:")
+    p = (c.get("prices") or {}).get(name)
+    if p and any(p):
+        return [float(p[0] or 0), float(p[1] or 0)]
+    return (CLOUD_PRESETS.get(c.get("provider", ""), {}).get("prices") or {}).get(name)
+
+
+async def _provider_balance() -> dict | None:
+    """Il credito vero, per i fornitori che lo dicono via API (DeepSeek, OpenRouter). Per gli altri vale quello scritto a mano."""
+    c = cloud_cfg()
+    if not (c.get("api_key") and c.get("provider") in ("deepseek", "openrouter")):
+        return None
+    try:
+        if c["provider"] == "deepseek":
+            r = await client.get("https://api.deepseek.com/user/balance", headers=_cloud_headers(), timeout=8)
+            b = (r.json().get("balance_infos") or [{}])[0]
+            return {"amount": float(b.get("total_balance") or 0), "currency": b.get("currency", "USD")}
+        r = await client.get("https://openrouter.ai/api/v1/credits", headers=_cloud_headers(), timeout=8)
+        d = r.json().get("data") or {}
+        return {"amount": float(d.get("total_credits") or 0) - float(d.get("total_usage") or 0), "currency": "USD"}
+    except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
+@app.get("/api/usage")
+async def usage_get(user: dict = Depends(require_user)):
+    today = local_now().strftime("%Y-%m-%d")
+    month = today[:7]
+    with db() as c:
+        rows = c.execute("SELECT day, model, kind, calls, tin, tout FROM usage WHERE day >= ? ORDER BY day",
+                         ((local_now() - timedelta(days=90)).strftime("%Y-%m-%d"),)).fetchall()
+    cfg = cloud_cfg()
+    since = cfg.get("credit_since") or ""
+    models: dict[str, dict] = {}
+    spent_since = 0.0
+    for r in rows:
+        m = models.setdefault(r["model"], {"name": r["model"], "cloud": is_cloud(r["model"]), "today": [0, 0, 0], "month": [0, 0, 0],
+                                           "chat": 0, "sfondo": 0, "days": {}})
+        if r["day"] == today:
+            m["today"] = [m["today"][0] + r["calls"], m["today"][1] + r["tin"], m["today"][2] + r["tout"]]
+        if r["day"][:7] == month:
+            m["month"] = [m["month"][0] + r["calls"], m["month"][1] + r["tin"], m["month"][2] + r["tout"]]
+            m[r["kind"]] = m.get(r["kind"], 0) + r["calls"]
+        m["days"][r["day"]] = m["days"].get(r["day"], 0) + r["tin"] + r["tout"]
+        p = _price(r["model"]) if m["cloud"] else None
+        if p and r["day"] >= since:
+            spent_since += (r["tin"] * p[0] + r["tout"] * p[1]) / 1e6
+    for m in models.values():
+        p = _price(m["name"]) if m["cloud"] else [0, 0]
+        m["price"] = p
+        m["today_cost"] = round((m["today"][1] * p[0] + m["today"][2] * p[1]) / 1e6, 4) if p else None
+        m["month_cost"] = round((m["month"][1] * p[0] + m["month"][2] * p[1]) / 1e6, 4) if p else None
+        m["days"] = [[d, m["days"][d]] for d in sorted(m["days"])[-30:]]
+    credit = None
+    real = await _provider_balance() if user["role"] == "admin" else None
+    if real:
+        credit = {"left": round(real["amount"], 2), "currency": real["currency"], "real": True}
+    elif cfg.get("credit"):
+        credit = {"total": float(cfg["credit"]), "since": since, "spent": round(spent_since, 4),
+                  "left": round(float(cfg["credit"]) - spent_since, 2), "currency": "EUR", "real": False}
+    cloud = cloud_name()
+    return {"models": sorted(models.values(), key=lambda m: -(m["month"][1] + m["month"][2])), "credit": credit,
+            "cloud": cloud, "cloud_price": _price(cloud) if cloud else None, "cfg_credit": cfg.get("credit"), "cfg_since": since,
+            "provider": CLOUD_PRESETS.get(cfg.get("provider", ""), {}).get("name", "")}
+
+
+class UsageCfgIn(BaseModel):
+    prices: dict[str, list[float | None]] = {}
+    credit: float | None = None
+    credit_since: str = ""
+
+
+@app.put("/api/usage/config")
+async def usage_cfg(body: UsageCfgIn, _: dict = Depends(require_admin)):
+    cfg = cloud_cfg()
+    prices = cfg.get("prices") or {}
+    for name, p in body.prices.items():
+        if len(p) == 2 and all(x is None or 0 <= x < 1000 for x in p):
+            prices[name.removeprefix("cloud:")[:100]] = [x or 0 for x in p]
+    if body.credit_since and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.credit_since):
+        raise HTTPException(400, "Data non valida")
+    cfg["prices"] = prices
+    cfg["credit"] = body.credit if body.credit and body.credit > 0 else None
+    cfg["credit_since"] = body.credit_since or local_now().strftime("%Y-%m-%d")
+    CLOUD_FILE.write_text(json.dumps(cfg), encoding="utf-8")
+    os.chmod(CLOUD_FILE, 0o600)
+    return {"ok": True}
 
 
 class CloudIn(BaseModel):
@@ -6332,7 +6481,8 @@ async def cloud_put(body: CloudIn, _: dict = Depends(require_admin)):
     if base and not base.startswith("https://"):
         raise HTTPException(400, "L'indirizzo dell'API deve iniziare con https://")
     cfg = {"provider": body.provider, "base": base, "model": (body.model or preset["model"]).strip(),
-           "api_key": body.api_key.strip() or old.get("api_key", ""), "enabled": body.enabled, "background": body.background}
+           "api_key": body.api_key.strip() or old.get("api_key", ""), "enabled": body.enabled, "background": body.background,
+           **{k: old[k] for k in ("prices", "credit", "credit_since") if k in old}}
     CLOUD_FILE.write_text(json.dumps(cfg), encoding="utf-8")
     os.chmod(CLOUD_FILE, 0o600)
     return _cloud_public()
@@ -8829,6 +8979,7 @@ async def _tool_hb_procedure(user: dict, args: dict, request: Request) -> dict:
         msgs = [{"role": "system", "content": prompt}, {"role": "user", "content": ask + (f"\nIl tentativo precedente non andava: {err}. Correggi." if err else "")}]
         r = await ollama("POST", "/api/chat", json={"model": model, "stream": False, "format": "json", "think": False, "keep_alive": KEEP_ALIVE,
                                                      "options": {"num_ctx": NUM_CTX or 8192, "temperature": 0.2}, "messages": msgs}, timeout=600)
+        usage_ollama(model, r)
         try:
             pkg = _proc_normalize(json.loads(r.json()["message"]["content"]), tipo, set(images))
             break
