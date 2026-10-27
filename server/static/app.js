@@ -1292,8 +1292,12 @@ async function refreshMemoryCount() {
 }
 
 function brainGraph(data, onOpen) {
+  // grafo 3D come quello di Obsidian: le forze dispongono i pallini nello spazio, si ruota trascinando
   const box = h('div', { class: 'mem-map graph' });
-  const N = data.nodes.map((n, i) => ({ ...n, i, x: Math.cos(i * 2.4) * (40 + i * 3), y: Math.sin(i * 2.4) * (40 + i * 3), vx: 0, vy: 0 }));
+  const N = data.nodes.map((n, i) => {   // partenza su una sfera (spirale di Fibonacci): niente pallini sovrapposti
+    const k = (i + 0.5) / Math.max(1, data.nodes.length), phi = Math.acos(1 - 2 * k), th = Math.PI * (1 + Math.sqrt(5)) * i, r = 80;
+    return { ...n, i, x: r * Math.sin(phi) * Math.cos(th), y: r * Math.sin(phi) * Math.sin(th), z: r * Math.cos(phi), vx: 0, vy: 0, vz: 0 };
+  });
   const byId = new Map(N.map((n) => [n.id, n]));
   const L = data.links.map(([a, b]) => [byId.get(a), byId.get(b)]).filter(([a, b]) => a && b);
   const nb = new Map(N.map((n) => [n, new Set()]));
@@ -1301,99 +1305,87 @@ function brainGraph(data, onOpen) {
   if (!N.length) { box.append(h('div', { class: 'mem-empty-map', text: 'Il cervello è ancora vuoto.' })); return { el: box, stop() {} }; }
   const cv = h('canvas'), tip = h('div', { class: 'mem-tip hidden' });
   box.append(cv, tip);
-  // raggio in pixel dello schermo quando si guarda da lontano (se no i pallini spariscono), cresce solo avvicinandosi
-  const rad = (n) => (n.kind === 'diary' ? 3.5 : n.kind === 'me' ? 9 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2)) / Math.min(1, zoom);
-  let zoom = 1, ox = 0, oy = 0, heat = 1, hover = null, drag = null, raf = 0, fitted = false;
-  const step = () => {   // forze semplici: i pallini si respingono, i collegamenti tirano, il centro trattiene
+  const size = (n) => n.kind === 'diary' ? 3.2 : n.kind === 'me' ? 8.5 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2);
+  let rx = -0.3, ry = 0, zoom = 1, auto = true, drag = null, hover = null, raf = 0, last = performance.now(), proj = [];
+  const step = () => {   // si respingono tutti, i collegamenti tirano, il centro trattiene
     for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
-      const a = N[i], b = N[j]; let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy || 0.01;
-      const f = 1400 / d2; dx *= f; dy *= f; a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy;
+      const a = N[i], b = N[j]; let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; const d2 = dx * dx + dy * dy + dz * dz || 0.01, f = 1600 / d2;
+      dx *= f; dy *= f; dz *= f; a.vx += dx; a.vy += dy; a.vz += dz; b.vx -= dx; b.vy -= dy; b.vz -= dz;
     }
     L.forEach(([a, b]) => {
-      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, want = a.kind === 'diary' || b.kind === 'diary' ? 45 : 70;
-      const f = (d - want) * 0.05, fx = dx / d * f, fy = dy / d * f; a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, d = Math.hypot(dx, dy, dz) || 1, want = a.kind === 'diary' || b.kind === 'diary' ? 40 : 60;
+      const f = (d - want) * 0.05 / d; a.vx += dx * f; a.vy += dy * f; a.vz += dz * f; b.vx -= dx * f; b.vy -= dy * f; b.vz -= dz * f;
     });
     N.forEach((n) => {
-      n.vx -= n.x * 0.01; n.vy -= n.y * 0.01;
-      if (drag?.node === n) { n.vx = n.vy = 0; return; }
-      n.x += Math.max(-20, Math.min(20, n.vx * heat)); n.y += Math.max(-20, Math.min(20, n.vy * heat)); n.vx *= 0.55; n.vy *= 0.55;
+      n.vx -= n.x * 0.01; n.vy -= n.y * 0.01; n.vz -= n.z * 0.01;
+      n.x += Math.max(-15, Math.min(15, n.vx)); n.y += Math.max(-15, Math.min(15, n.vy)); n.z += Math.max(-15, Math.min(15, n.vz));
+      n.vx *= 0.5; n.vy *= 0.5; n.vz *= 0.5;
     });
-    heat = Math.max(0.02, heat * 0.992);
   };
-  const fit = () => {
-    const w = box.clientWidth, hh = box.clientHeight; if (!w) return;
-    const xs = N.map((n) => n.x), ys = N.map((n) => n.y), minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
-    zoom = Math.min(2.2, Math.min((w - 60) / (maxx - minx || 1), (hh - 60) / (maxy - miny || 1)));
-    ox = w / 2 - (minx + maxx) / 2 * zoom; oy = hh / 2 - (miny + maxy) / 2 * zoom;
-  };
-  for (let k = 0; k < 500; k++) step();   // parte gia' quasi ferma, senza il «big bang»
+  for (let k = 0; k < 600; k++) step();
+  const ext = Math.max(40, ...N.map((n) => Math.hypot(n.x, n.y, n.z)));   // quanto e' grande la nuvola: serve a farla stare nel riquadro
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-  const draw = () => {
-    if (heat > 0.03 || drag) step();
+  const draw = (now) => {
+    const dt = Math.min(64, now - last); last = now;
+    if (auto && !drag) ry += dt * 0.00015;
     const dpr = devicePixelRatio || 1, w = box.clientWidth, hh = box.clientHeight;
-    if (!fitted && w) { fit(); fitted = true; }
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hh * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); }
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
-    g.setTransform(dpr * zoom, 0, 0, dpr * zoom, dpr * ox, dpr * oy);
+    const S = Math.min(w, hh) * 0.42 / ext * zoom, cam = ext * 3.2, cx = w / 2, cy = hh / 2;
+    const cr = Math.cos(rx), sr = Math.sin(rx), cyw = Math.cos(ry), syw = Math.sin(ry);
+    proj = N.map((n) => {
+      const x1 = n.x * cyw + n.z * syw, z1 = -n.x * syw + n.z * cyw, y1 = n.y * cr - z1 * sr, z2 = n.y * sr + z1 * cr;
+      const f = cam / (cam - z2);   // prospettiva: quello davanti e' piu' grande
+      return { n, sx: cx + x1 * f * S, sy: cy + y1 * f * S, f, depth: (z2 / ext + 1) / 2 };
+    });
+    const P = new Map(proj.map((p) => [p.n, p]));
     const lit = hover ? new Set([hover, ...nb.get(hover)]) : null;
     const line = css('--text-3'), text = css('--text'), accent = css('--accent');
-    g.lineWidth = 1 / zoom;
+    g.lineWidth = 1;
     L.forEach(([a, b]) => {
-      const on = lit && (a === hover || b === hover);
-      g.strokeStyle = on ? accent : line; g.globalAlpha = lit ? (on ? 0.9 : 0.06) : 0.35;
-      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+      const A = P.get(a), B = P.get(b), on = lit && (a === hover || b === hover);
+      g.strokeStyle = on ? accent : line;
+      g.globalAlpha = lit ? (on ? 0.9 : 0.05) : 0.12 + 0.3 * (A.depth + B.depth) / 2;
+      g.beginPath(); g.moveTo(A.sx, A.sy); g.lineTo(B.sx, B.sy); g.stroke();
     });
-    N.forEach((n) => {
-      g.globalAlpha = lit && !lit.has(n) ? 0.15 : 1;
+    g.font = '11.5px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top';
+    [...proj].sort((p, q) => p.depth - q.depth).forEach((p) => {   // da dietro in avanti
+      const n = p.n, r = size(n) * p.f * Math.sqrt(zoom) * (n === hover ? 1.35 : 1);
+      const dim = lit && !lit.has(n);
+      g.globalAlpha = dim ? 0.12 : 0.35 + 0.65 * p.depth;
       g.fillStyle = (GRAPH_KINDS[n.kind] || GRAPH_KINDS.things)[1];
-      g.beginPath(); g.arc(n.x, n.y, rad(n) * (n === hover ? 1.3 : 1), 0, Math.PI * 2); g.fill();
-    });
-    g.font = `${11.5 / zoom}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'top'; g.fillStyle = text;
-    N.forEach((n) => {   // i nomi: sempre per le schede, per i giorni solo da vicino o se sono accanto al pallino sotto il mouse
-      const show = n.kind !== 'diary' || zoom > 1.6 || (lit && lit.has(n));
-      if (!show) return;
-      g.globalAlpha = lit && !lit.has(n) ? 0.12 : n.kind === 'diary' ? 0.6 : 0.9;
-      g.fillText(n.name, n.x, n.y + rad(n) + 3 / zoom);
+      g.beginPath(); g.arc(p.sx, p.sy, r, 0, Math.PI * 2); g.fill();
+      if (n.kind !== 'diary' || (lit && lit.has(n)) || zoom > 1.8) {   // i nomi: le schede sempre, i giorni da vicino o accanto al pallino puntato
+        g.globalAlpha = dim ? 0.08 : (n.kind === 'diary' ? 0.55 : 0.25 + 0.7 * p.depth);
+        g.fillStyle = text; g.fillText(n.name, p.sx, p.sy + r + 3);
+      }
     });
     g.globalAlpha = 1;
+    if (hover && P.get(hover)) { const p = P.get(hover); tip.style.left = p.sx + 'px'; tip.style.top = (p.sy - size(hover) * p.f - 6) + 'px'; }
     raf = requestAnimationFrame(draw);
   };
   const at = (e) => {
-    const r = cv.getBoundingClientRect(), mx = (e.clientX - r.left - ox) / zoom, my = (e.clientY - r.top - oy) / zoom;
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
     let best = null, bd = Infinity;
-    N.forEach((n) => { const d = Math.hypot(n.x - mx, n.y - my); if (d < rad(n) + 6 / zoom && d < bd) { bd = d; best = n; } });
-    return { node: best, mx, my };
+    proj.forEach((p) => { const d = Math.hypot(p.sx - mx, p.sy - my); if (d < size(p.n) * p.f * Math.sqrt(zoom) + 6 && d < bd) { bd = d; best = p; } });
+    return best?.n || null;
   };
-  box.addEventListener('pointerdown', (e) => {
-    const { node } = at(e);
-    drag = { node, x: e.clientX, y: e.clientY, ox, oy, moved: false };
-    box.setPointerCapture(e.pointerId);
-  });
+  box.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, rx, ry, moved: false, node: at(e) }; box.setPointerCapture(e.pointerId); });
   box.addEventListener('pointermove', (e) => {
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
-      if (drag.node) { const { mx, my } = at(e); drag.node.x = mx; drag.node.y = my; heat = Math.max(heat, 0.5); }
-      else { ox = drag.ox + dx; oy = drag.oy + dy; }
+      if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; auto = false; }
+      ry = drag.ry + dx * 0.008; rx = Math.max(-1.5, Math.min(1.5, drag.rx + dy * 0.008));
       return;
     }
-    const { node } = at(e);
-    hover = node; box.style.cursor = node ? 'pointer' : '';
-    tip.classList.toggle('hidden', !node);
-    if (node) {
-      const r = cv.getBoundingClientRect();
-      tip.textContent = `${node.name} · ${GRAPH_ONE[node.kind] || 'scheda'} · ${node.deg} collegament${node.deg === 1 ? 'o' : 'i'}`;
-      tip.style.left = (e.clientX - r.left) + 'px'; tip.style.top = (e.clientY - r.top - 6) + 'px';
-    }
+    hover = at(e); box.style.cursor = hover ? 'pointer' : '';
+    tip.classList.toggle('hidden', !hover);
+    if (hover) tip.textContent = `${hover.name} · ${GRAPH_ONE[hover.kind] || 'scheda'} · ${hover.deg} collegament${hover.deg === 1 ? 'o' : 'i'}`;
   });
   box.addEventListener('pointerup', () => { const d = drag; drag = null; if (d && !d.moved && d.node) onOpen(d.node); });
   box.addEventListener('pointerleave', () => { hover = null; tip.classList.add('hidden'); });
-  box.addEventListener('wheel', (e) => {
-    e.preventDefault();
-    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, k = Math.exp(-e.deltaY * 0.0015);
-    const z = Math.max(0.25, Math.min(5, zoom * k)); ox = mx - (mx - ox) * z / zoom; oy = my - (my - oy) * z / zoom; zoom = z;
-  }, { passive: false });
-  box.addEventListener('dblclick', (e) => { if (!at(e).node) fit(); });
+  box.addEventListener('wheel', (e) => { e.preventDefault(); zoom = Math.max(0.4, Math.min(4, zoom * Math.exp(-e.deltaY * 0.0015))); }, { passive: false });
+  box.addEventListener('dblclick', () => { auto = true; zoom = 1; rx = -0.3; });
   raf = requestAnimationFrame(draw);
   return { el: box, stop: () => cancelAnimationFrame(raf) };
 }
@@ -1552,7 +1544,7 @@ async function renderMemory() {
     h('div', { class: 'set-body' },
       h('section', { class: 'card' },
         h('div', { class: 'card-head' }, h('h2', { text: 'Il grafo del cervello' }),
-          h('p', { text: 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla; trascina per spostarti, rotellina per lo zoom, doppio clic per rivedere tutto.' })),
+          h('p', { text: 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla; trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.' })),
         map.el,
         h('div', { class: 'mem-legend' }, ...kinds.map(([k, [label, col]]) => h('span', {}, h('i', { style: `background:${col}` }), `${label} (${graph.nodes.filter((n) => n.kind === k).length})`)),
           h('label', { class: 'graph-opt' }, h('input', { type: 'checkbox', checked: withDiary, onchange: (e) => { pref.set('graphDiary', e.target.checked); renderMemory(); } }), 'Mostra il diario'))),
