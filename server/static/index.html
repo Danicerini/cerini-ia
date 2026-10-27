@@ -733,6 +733,10 @@ a.btn { text-decoration: none; color: inherit; }
 .mem-map { position: relative; height: 360px; border-radius: 14px; overflow: hidden; background: radial-gradient(ellipse at 50% 45%, color-mix(in oklch, var(--accent) 14%, var(--raised)), var(--raised) 70%); cursor: grab; touch-action: none; }
 .mem-map:active { cursor: grabbing; }
 .mem-map canvas { width: 100%; height: 100%; display: block; }
+.mem-map.graph { height: 520px; cursor: grab; background: var(--raised); border: 1px solid var(--border); }
+.mem-map.graph .mem-tip { transform: translate(-50%, -100%); white-space: nowrap; }
+.graph-opt { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.graph-opt input { accent-color: var(--accent); }
 .mem-tip { position: absolute; max-width: 280px; pointer-events: none; background: var(--primary-bg); color: var(--primary-fg); font-size: 12.5px; line-height: 1.4; padding: 7px 10px; border-radius: 9px; box-shadow: var(--shadow); transform: translate(-50%, calc(-100% - 12px)); }
 .mem-legend { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--text-2); margin-top: 10px; }
 .mem-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; vertical-align: 0; }
@@ -937,6 +941,7 @@ a.btn { text-decoration: none; color: inherit; }
   .tabs { overflow-x: auto; scrollbar-width: none; }
   .tab { flex: none; }
   .mem-map { height: 280px; }
+  .mem-map.graph { height: 380px; }
   .mem-row { padding: 12px 16px; }
   .mem-search { padding: 0 16px 14px; }
   .email-card { padding: 12px 14px; }

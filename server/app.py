@@ -1905,7 +1905,8 @@ async def memory_list(user: dict = Depends(require_user)):
 @app.post("/api/memory")
 async def memory_create(body: MemoryIn, user: dict = Depends(require_user)):
     try:
-        return {"id": (await brain_remember(user, body.text)).get("id")}
+        r = await brain_remember(user, body.text)
+        return {"id": r.get("id"), "already": bool(r.get("already")), "name": r.get("name")}
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -2004,6 +2005,9 @@ async def _summary_remember(args: dict) -> str:
 async def _tool_remember(user: dict, args: dict, request: Request) -> dict:
     text = str(args.get("testo", "")).strip()
     r = await brain_remember(user, text)
+    if r.get("already"):   # c'era gia': niente copia (e niente «annulla», che cancellerebbe quello vecchio)
+        return {"content": f"Questo c'era già nel cervello, nella scheda «{r['name']}» ({r['path']}). Non l'ho salvato di nuovo.",
+                "display": f"C'era già in «{r['name']}»: non l'ho salvato due volte"}
     extra = (f" Collegato a: {', '.join(r['linked'])}." if r.get("linked") else "") + (f" Schede nuove: {', '.join(r['created'])}." if r.get("created") else "")
     return {"content": f"Ricordo salvato nel cervello, nella scheda «{r['name']}» ({r['path']}).{extra}",
             "display": f"Ho salvato in «{r['name']}»: «{text}»" + (f" · collegato a {', '.join(r['linked'])}" if r.get("linked") else ""),
@@ -6545,6 +6549,7 @@ def brain_ensure(user: dict) -> Path:
         try:
             brain_upgrade(user)
             brain_layout_v2(user)
+            brain_links_v3(user)
             seed_skills(user)
         except Exception as e:
             print(f"Cervello v6: {e}", flush=True)
@@ -6619,8 +6624,8 @@ def _user_names(user: dict) -> set[str]:
     text = brain_read(user, "boot/user.md")
     for m in re.finditer(r"^# (.+)$", text, re.M):
         names |= {w.lower() for w in re.findall(r"[A-Za-zÀ-ÿ]{3,}", m.group(1))}
-    for m in re.finditer(r"(?:chiamat[oa]|si chiama|nome è)\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+)?)", text):
-        names |= {w.lower() for w in m.group(1).split()}
+    for m in re.finditer(r"(?:chiamat[oa]|si chiama|nome è)\s+([A-ZÀ-Ý][a-zà-ÿ]+(?:(?:\s+|\s*,\s*|\s+[oe]\s+|\s+oppure\s+)[A-ZÀ-Ý][a-zà-ÿ]+)*)", text):
+        names |= {w.lower() for w in re.findall(r"[A-ZÀ-Ý][a-zà-ÿ]+", m.group(1))}
     for r in memory_rows(user["id"], "ricordo")[:60]:   # anche dai ricordi ancora da spostare (es. «Marco Rossi preferisce…»)
         m = re.match(r"([A-ZÀ-Ý][a-zà-ÿ]+)(?:\s+([A-ZÀ-Ý][a-zà-ÿ]+))?\s+(?:preferisce essere chiamato|si chiama|ha \d+ anni|lavora)", r["text"])
         if m:
@@ -6744,8 +6749,8 @@ async def route_fact_ai(user: dict, fact: str) -> dict | None:
     def resolve(name, tipo):
         name = clean_name(re.sub(r"(?i)^(il |la |lo |l')?(gruppo|azienda|societ[aà]|ditta|cliente)\s+", "", str(name or "").strip()))[:60]
         tipo = OLD_KINDS.get(str(tipo or ""), str(tipo or ""))
-        if not name or _flat(name) not in flat or set(re.findall(r"\w+", name.lower())) <= me:
-            return None
+        if not name or _flat(name) not in flat or set(re.findall(r"\w+", name.lower())) <= me or _flat(name) == "aura":
+            return None   # l'utente ha la sua scheda (boot/user.md) e Aura e' l'assistente: nessuno dei due e' una scheda in wiki/
         have = next((e for e in ents if any(_same_name(n, name) for n in [e["name"], *e["aliases"]])), None)
         if have:
             return {"kind": have["kind"], "name": have["name"], "path": have["path"], "new": False}
@@ -6754,7 +6759,7 @@ async def route_fact_ai(user: dict, fact: str) -> dict | None:
         return {"kind": tipo, "name": name, "path": entity_path(tipo, _slug(name)), "new": True}
 
     subj = str(d.get("soggetto") or "").strip()
-    main = {"kind": "utente", "name": user["username"], "path": "boot/user.md", "new": False} if subj.lower() in ("utente", *me) \
+    main = {"kind": "utente", "name": user["username"], "path": "boot/user.md", "new": False} if subj.lower() in ("utente", "aura", *me) \
         else resolve(subj, d.get("tipo"))
     if not main:
         return None
@@ -6804,13 +6809,31 @@ def _route_fact_rules(user: dict, fact: str) -> tuple[str, str, str]:
     return "utente", user["username"], "boot/user.md"
 
 
+LINK_RE = re.compile(r"\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]*))?\]\]|\[([^\]\n]*)\]\(wiki:([^)\s]+)\)")
+
+
+def _link_target(rel: str) -> str:
+    """Il percorso come lo scrive Obsidian: senza «.md»."""
+    return rel[:-3] if rel.endswith(".md") else rel
+
+
+def brain_links(text: str) -> list[str]:
+    """I file a cui punta un testo: [[percorso|Nome]] (Obsidian) e il vecchio [Nome](wiki:percorso)."""
+    out = []
+    for m in LINK_RE.finditer(text or ""):
+        t = (m.group(1) or m.group(4) or "").strip()
+        if t:
+            out.append(t if t.endswith(".md") else t + ".md")
+    return out
+
+
 def _link_line(e: dict) -> str:
-    return f"- [{e['name']}](wiki:{e['path']})"
+    return f"- [[{_link_target(e['path'])}|{e['name']}]]"
 
 
 def _add_link(text: str, line: str) -> str:
     meta, body = fm_split(text)
-    if line in body:
+    if set(brain_links(line)) & set(brain_links(body)):
         return text
     return fm_join(meta, _section_edit(body, "Collegati", [line])) if meta else _section_edit(body, "Collegati", [line])
 
@@ -6832,7 +6855,8 @@ async def link_entities(user: dict, rel: str, fact: str):
             await brain_write(user, e["path"], b, f"Collegati: {e['name']} ↔ {me['name']}", reindex=False)
 
 
-TASK_FACT_RE = re.compile(r"^(?:\S+\s+){0,3}(deve|devo|dovrebbe|dovr[aà]|bisogna)\s|\bricordami\b|\bda fare\b", re.I)
+TASK_FACT_RE = re.compile(r"^(?:\S+\s+){0,3}(deve|devo|dovrebbe|dovr[aà]|bisogna)\s|\bricordami\b|\bda fare\b|"
+                          r"\bessere ricordat[oa]\b|\bricordargli\b|\bricordarle\b|\bricrea\w* i promemoria\b", re.I)
 
 
 FACT_STARTS_OK = {"il", "lo", "la", "i", "gli", "le", "l'", "un", "uno", "una", "un'", "mio", "mia", "miei", "mie", "suo", "sua", "questo", "questa",
@@ -6854,10 +6878,30 @@ def normalize_fact(user: dict, fact: str) -> str:
     return f
 
 
+def _words(s: str) -> set[str]:
+    return {w for w in re.findall(r"[a-zà-ÿ0-9]+", s.lower()) if len(w) > 2}
+
+
+def same_fact(user: dict, fact: str) -> dict | None:
+    """Un ricordo che dice gia' la stessa cosa (stesso testo, o quasi tutte le stesse parole)."""
+    fw, ff = _words(fact), _flat(fact)
+    for r in memory_rows(user["id"], "ricordo"):
+        if _flat(r["text"]) == ff:
+            return r
+        rw = _words(r["text"])
+        if fw and rw and len(fw & rw) / len(fw | rw) >= 0.8:
+            return r
+    return None
+
+
 async def brain_remember(user: dict, fact: str) -> dict:
     """Un ricordo nuovo: una riga nella scheda giusta (creata se serve). Ritorna dove e' finito."""
     brain_ensure(user)
     fact = normalize_fact(user, fact)
+    if dup := same_fact(user, fact):
+        rel = dup["doc_id"] or "boot/user.md"
+        name = next((e["name"] for e in brain_entities(user) if e["path"] == rel), "il tuo profilo")
+        return {"path": rel, "name": name, "id": dup["id"], "linked": [], "created": [], "already": True}
     routed = await route_fact_ai(user, fact)
     kind, name, rel = (routed["kind"], routed["name"], routed["path"]) if routed else _route_fact_rules(user, fact)
     text = brain_read(user, rel) or _entity_file(kind, name)
@@ -6876,7 +6920,8 @@ async def brain_remember(user: dict, fact: str) -> dict:
         if l["new"]:
             if l["kind"] not in ("people", "companies"):   # i progetti nascono solo quando li decide l'utente
                 continue
-            await brain_write(user, l["path"], _add_fact(_entity_file(l["kind"], l["name"]), fact), f"Nuova scheda: {l['name']}", reindex=False)
+            # la scheda nuova nasce vuota, col collegamento: il fatto resta in una scheda sola (niente copie)
+            await brain_write(user, l["path"], _entity_file(l["kind"], l["name"]), f"Nuova scheda: {l['name']}", reindex=False)
             created.append(l["name"])
             asyncio.create_task(brain_reindex(user, l["path"]))
         linked.append(l["name"])
@@ -7668,6 +7713,29 @@ def brain_upgrade(user: dict):
     _git(bdir, "commit", "-q", "-m", "Brain Protocol v6: brain.md, skills.yaml, indici, project-first")
 
 
+_LINKS_V3: set[str] = set()
+
+
+def brain_links_v3(user: dict):
+    """Una volta: [Nome](wiki:percorso.md) -> [[percorso|Nome]], cosi' Obsidian vede i collegamenti (e il grafo)."""
+    bdir = brain_dir(user)
+    if str(bdir) in _LINKS_V3:
+        return
+    _LINKS_V3.add(str(bdir))
+    changed = False
+    for q in bdir.rglob("*.md"):
+        if ".git" in q.parts:
+            continue
+        t = q.read_text(encoding="utf-8")
+        t2 = re.sub(r"\[([^\]\n]*)\]\(wiki:([^)\s]+)\)", lambda m: f"[[{_link_target(m.group(2))}|{m.group(1)}]]", t)
+        if t2 != t:
+            q.write_text(t2, encoding="utf-8")
+            changed = True
+    if changed:
+        _git(bdir, "add", "-A")
+        _git(bdir, "commit", "-q", "-m", "Collegamenti nel formato di Obsidian: [[percorso|Nome]]")
+
+
 def _legacy_diary(bdir: Path) -> list[Path]:
     return [q for q in (bdir / "diary").glob("*/*.md") if re.fullmatch(r"\d{4}-\d{2}-\d{2}-.+", q.stem)]
 
@@ -7786,6 +7854,46 @@ def brain_layout_v2(user: dict):
 
 
 # ---- API per il pannello del cervello
+
+def brain_graph(user: dict, diary: bool = True) -> dict:
+    """Nodi = file (schede, profilo, giorni del diario); archi = [[collegamenti]] + schede nominate nel testo."""
+    bdir = brain_dir(user)
+    ents = brain_entities(user)
+    nodes = {e["path"]: {"id": e["path"], "name": e["name"], "kind": e["kind"]} for e in ents}
+    nodes["boot/user.md"] = {"id": "boot/user.md", "name": _nick(user) if brain_read(user, "boot/user.md") else user["username"], "kind": "me"}
+    files = [*nodes]
+    if diary:
+        for q in sorted((bdir / "diary").glob("*/*.md")):
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", q.stem):
+                rel = q.relative_to(bdir).as_posix()
+                nodes[rel] = {"id": rel, "name": f"{q.stem[8:]}/{q.stem[5:7]}", "kind": "diary", "day": q.stem}
+                files.append(rel)
+    names = [(e["path"], [n for n in [e["name"], *e["aliases"]] if len(n) > 2]) for e in ents]
+    edges = set()
+    for rel in files:
+        body = fm_split(brain_read(user, rel))[1]
+        low = body.lower()
+        targets = set(brain_links(body))
+        for path, ns in names:   # una scheda nominata nel testo e' un collegamento anche senza [[ ]]
+            if path != rel and any(re.search(rf"(?<![\w]){re.escape(n.lower())}(?![\w])", low) for n in ns):
+                targets.add(path)
+        for t in targets:
+            if t in nodes and t != rel:
+                edges.add(tuple(sorted((rel, t))))
+    deg: dict[str, int] = {}
+    for a, b in edges:
+        deg[a] = deg.get(a, 0) + 1
+        deg[b] = deg.get(b, 0) + 1
+    for n in nodes.values():
+        n["deg"] = deg.get(n["id"], 0)
+    return {"nodes": list(nodes.values()), "links": [list(e) for e in sorted(edges)]}
+
+
+@app.get("/api/brain/graph")
+async def brain_graph_api(diary: int = 1, user: dict = Depends(require_user)):
+    brain_ensure(user)
+    return brain_graph(user, bool(diary))
+
 
 @app.get("/api/brain/tree")
 async def brain_tree_api(month: str = "", user: dict = Depends(require_user)):
@@ -8029,7 +8137,7 @@ async def brain_rename(user: dict, e: dict, new_name: str) -> dict:
     # anche dove era nominata: le altre schede (link), il diario, l'agenda
     for q in [*(brain_dir(user) / "wiki").rglob("*.md"), *(brain_dir(user) / "diary").rglob("*.md")]:
         t = q.read_text(encoding="utf-8")
-        t2 = t.replace(f"wiki:{old_rel}", f"wiki:{new_rel}").replace(old_name, new_name)
+        t2 = t.replace(f"wiki:{old_rel}", f"wiki:{new_rel}").replace(f"[[{_link_target(old_rel)}", f"[[{_link_target(new_rel)}").replace(old_name, new_name)
         if t2 != t:
             await brain_write(user, q.relative_to(brain_dir(user)).as_posix(), t2, f"{old_name} → {new_name}", reindex=False)
     with db() as c:

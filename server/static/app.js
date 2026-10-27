@@ -1270,8 +1270,14 @@ document.addEventListener('copy', (e) => {
 });
 
 // ================================================================= memoria
-// Ricordi e documenti dell'utente. La mappa 3D mostra ogni ricordo come un pallino: piu' sono vicini, piu' parlano di cose simili.
+// Ricordi e documenti dell'utente. In cima il grafo del cervello, come quello di Obsidian: un pallino per scheda, una linea per collegamento.
 const MEM_COLORS = { ricordo: 'oklch(0.68 0.16 262)', documento: 'oklch(0.72 0.14 150)' };
+const GRAPH_KINDS = {
+  me: ['Tu', 'oklch(0.78 0.15 85)'], projects: ['Progetti', 'oklch(0.66 0.17 262)'], people: ['Persone', 'oklch(0.72 0.15 150)'],
+  companies: ['Aziende', 'oklch(0.72 0.15 40)'], places: ['Luoghi', 'oklch(0.7 0.13 200)'], services: ['Servizi', 'oklch(0.7 0.14 310)'],
+  things: ['Cose', 'oklch(0.7 0.06 260)'], diary: ['Giorni del diario', 'oklch(0.6 0.01 260)'],
+};
+const GRAPH_ONE = { me: 'tu', projects: 'progetto', people: 'persona', companies: 'azienda', places: 'luogo', services: 'servizio', things: 'cosa', diary: 'giorno del diario' };
 let memStop = null;
 
 function closeMemory() { $('#main').classList.remove('memory-open'); if (memStop) { memStop(); memStop = null; } }
@@ -1283,6 +1289,113 @@ async function openMemory() {
 $('#memoryBtn').onclick = openMemory;
 async function refreshMemoryCount() {
   try { const d = await (await api('/api/memory')).json(); $('#memoryCount').textContent = d.items.filter((i) => i.kind === 'ricordo').length || ''; } catch {}
+}
+
+function brainGraph(data, onOpen) {
+  const box = h('div', { class: 'mem-map graph' });
+  const N = data.nodes.map((n, i) => ({ ...n, i, x: Math.cos(i * 2.4) * (40 + i * 3), y: Math.sin(i * 2.4) * (40 + i * 3), vx: 0, vy: 0 }));
+  const byId = new Map(N.map((n) => [n.id, n]));
+  const L = data.links.map(([a, b]) => [byId.get(a), byId.get(b)]).filter(([a, b]) => a && b);
+  const nb = new Map(N.map((n) => [n, new Set()]));
+  L.forEach(([a, b]) => { nb.get(a).add(b); nb.get(b).add(a); });
+  if (!N.length) { box.append(h('div', { class: 'mem-empty-map', text: 'Il cervello è ancora vuoto.' })); return { el: box, stop() {} }; }
+  const cv = h('canvas'), tip = h('div', { class: 'mem-tip hidden' });
+  box.append(cv, tip);
+  // raggio in pixel dello schermo quando si guarda da lontano (se no i pallini spariscono), cresce solo avvicinandosi
+  const rad = (n) => (n.kind === 'diary' ? 3.5 : n.kind === 'me' ? 9 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2)) / Math.min(1, zoom);
+  let zoom = 1, ox = 0, oy = 0, heat = 1, hover = null, drag = null, raf = 0, fitted = false;
+  const step = () => {   // forze semplici: i pallini si respingono, i collegamenti tirano, il centro trattiene
+    for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
+      const a = N[i], b = N[j]; let dx = a.x - b.x, dy = a.y - b.y, d2 = dx * dx + dy * dy || 0.01;
+      const f = 1400 / d2; dx *= f; dy *= f; a.vx += dx; a.vy += dy; b.vx -= dx; b.vy -= dy;
+    }
+    L.forEach(([a, b]) => {
+      const dx = b.x - a.x, dy = b.y - a.y, d = Math.hypot(dx, dy) || 1, want = a.kind === 'diary' || b.kind === 'diary' ? 45 : 70;
+      const f = (d - want) * 0.05, fx = dx / d * f, fy = dy / d * f; a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
+    });
+    N.forEach((n) => {
+      n.vx -= n.x * 0.01; n.vy -= n.y * 0.01;
+      if (drag?.node === n) { n.vx = n.vy = 0; return; }
+      n.x += Math.max(-20, Math.min(20, n.vx * heat)); n.y += Math.max(-20, Math.min(20, n.vy * heat)); n.vx *= 0.55; n.vy *= 0.55;
+    });
+    heat = Math.max(0.02, heat * 0.992);
+  };
+  const fit = () => {
+    const w = box.clientWidth, hh = box.clientHeight; if (!w) return;
+    const xs = N.map((n) => n.x), ys = N.map((n) => n.y), minx = Math.min(...xs), maxx = Math.max(...xs), miny = Math.min(...ys), maxy = Math.max(...ys);
+    zoom = Math.min(2.2, Math.min((w - 60) / (maxx - minx || 1), (hh - 60) / (maxy - miny || 1)));
+    ox = w / 2 - (minx + maxx) / 2 * zoom; oy = hh / 2 - (miny + maxy) / 2 * zoom;
+  };
+  for (let k = 0; k < 500; k++) step();   // parte gia' quasi ferma, senza il «big bang»
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+  const draw = () => {
+    if (heat > 0.03 || drag) step();
+    const dpr = devicePixelRatio || 1, w = box.clientWidth, hh = box.clientHeight;
+    if (!fitted && w) { fit(); fitted = true; }
+    if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hh * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); }
+    const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
+    g.setTransform(dpr * zoom, 0, 0, dpr * zoom, dpr * ox, dpr * oy);
+    const lit = hover ? new Set([hover, ...nb.get(hover)]) : null;
+    const line = css('--text-3'), text = css('--text'), accent = css('--accent');
+    g.lineWidth = 1 / zoom;
+    L.forEach(([a, b]) => {
+      const on = lit && (a === hover || b === hover);
+      g.strokeStyle = on ? accent : line; g.globalAlpha = lit ? (on ? 0.9 : 0.06) : 0.35;
+      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
+    });
+    N.forEach((n) => {
+      g.globalAlpha = lit && !lit.has(n) ? 0.15 : 1;
+      g.fillStyle = (GRAPH_KINDS[n.kind] || GRAPH_KINDS.things)[1];
+      g.beginPath(); g.arc(n.x, n.y, rad(n) * (n === hover ? 1.3 : 1), 0, Math.PI * 2); g.fill();
+    });
+    g.font = `${11.5 / zoom}px system-ui, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'top'; g.fillStyle = text;
+    N.forEach((n) => {   // i nomi: sempre per le schede, per i giorni solo da vicino o se sono accanto al pallino sotto il mouse
+      const show = n.kind !== 'diary' || zoom > 1.6 || (lit && lit.has(n));
+      if (!show) return;
+      g.globalAlpha = lit && !lit.has(n) ? 0.12 : n.kind === 'diary' ? 0.6 : 0.9;
+      g.fillText(n.name, n.x, n.y + rad(n) + 3 / zoom);
+    });
+    g.globalAlpha = 1;
+    raf = requestAnimationFrame(draw);
+  };
+  const at = (e) => {
+    const r = cv.getBoundingClientRect(), mx = (e.clientX - r.left - ox) / zoom, my = (e.clientY - r.top - oy) / zoom;
+    let best = null, bd = Infinity;
+    N.forEach((n) => { const d = Math.hypot(n.x - mx, n.y - my); if (d < rad(n) + 6 / zoom && d < bd) { bd = d; best = n; } });
+    return { node: best, mx, my };
+  };
+  box.addEventListener('pointerdown', (e) => {
+    const { node } = at(e);
+    drag = { node, x: e.clientX, y: e.clientY, ox, oy, moved: false };
+    box.setPointerCapture(e.pointerId);
+  });
+  box.addEventListener('pointermove', (e) => {
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+      if (drag.node) { const { mx, my } = at(e); drag.node.x = mx; drag.node.y = my; heat = Math.max(heat, 0.5); }
+      else { ox = drag.ox + dx; oy = drag.oy + dy; }
+      return;
+    }
+    const { node } = at(e);
+    hover = node; box.style.cursor = node ? 'pointer' : '';
+    tip.classList.toggle('hidden', !node);
+    if (node) {
+      const r = cv.getBoundingClientRect();
+      tip.textContent = `${node.name} · ${GRAPH_ONE[node.kind] || 'scheda'} · ${node.deg} collegament${node.deg === 1 ? 'o' : 'i'}`;
+      tip.style.left = (e.clientX - r.left) + 'px'; tip.style.top = (e.clientY - r.top - 6) + 'px';
+    }
+  });
+  box.addEventListener('pointerup', () => { const d = drag; drag = null; if (d && !d.moved && d.node) onOpen(d.node); });
+  box.addEventListener('pointerleave', () => { hover = null; tip.classList.add('hidden'); });
+  box.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, k = Math.exp(-e.deltaY * 0.0015);
+    const z = Math.max(0.25, Math.min(5, zoom * k)); ox = mx - (mx - ox) * z / zoom; oy = my - (my - oy) * z / zoom; zoom = z;
+  }, { passive: false });
+  box.addEventListener('dblclick', (e) => { if (!at(e).node) fit(); });
+  raf = requestAnimationFrame(draw);
+  return { el: box, stop: () => cancelAnimationFrame(raf) };
 }
 
 function memoryMap(items, onPick) {
@@ -1368,19 +1481,18 @@ function convCard() {
 async function renderMemory() {
   const root = $('#memoryView');
   root.replaceChildren(h('div', { class: 'set-wrap' }, h('div', { class: 'card list-empty', text: 'Carico la memoria…' })));
-  let data;
-  try { data = await (await api('/api/memory')).json(); }
+  let data, graph = { nodes: [], links: [] };
+  const withDiary = pref.get('graphDiary', true) !== false;
+  try { [data, graph] = await Promise.all([api('/api/memory').then((r) => r.json()), api(`/api/brain/graph?diary=${withDiary ? 1 : 0}`).then((r) => r.json()).catch(() => graph)]); }
   catch (e) { root.replaceChildren(h('div', { class: 'set-wrap' }, h('div', { class: 'card list-empty', text: e.message }))); return; }
   if (memStop) memStop();
   const items = data.items, ricordi = items.filter((i) => i.kind === 'ricordo');
   const docs = [...items.filter((i) => i.kind === 'documento').reduce((m, i) => m.set(i.doc_id, [...(m.get(i.doc_id) || []), i]), new Map()).values()];
   $('#memoryCount').textContent = ricordi.length || '';
   const listBox = h('div');
-  const map = memoryMap(items, (id) => {
-    listBox.querySelectorAll('.mem-row').forEach((r) => r.classList.toggle('pick', +r.dataset.id === id));
-    listBox.querySelector(`.mem-row[data-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  });
+  const map = brainGraph(graph, (n) => { closeMemory(); n.kind === 'diary' ? openBrainDay(n.day) : openBrainFile(n.id); });
   memStop = map.stop;
+  const kinds = Object.entries(GRAPH_KINDS).filter(([k]) => graph.nodes.some((n) => n.kind === k));
 
   const row = (it, score) => {
     const tx = h('div', { class: 'tx' }, it.text, h('small', { text: (it.kind === 'documento' ? `Dal documento «${it.title}» · ` : '') + 'aggiornato ' + fmtAgo(it.updated) }));
@@ -1413,7 +1525,7 @@ async function renderMemory() {
   const addForm = h('form', { class: 'stack', style: 'max-width:none', onsubmit: async (e) => {
     e.preventDefault(); if (!newText.value.trim()) return;
     addBtn.disabled = true;
-    try { await api('/api/memory', { text: newText.value }); toast('Ricordo aggiunto'); renderMemory(); } catch (ex) { toast(ex.message); addBtn.disabled = false; }
+    try { const r = await (await api('/api/memory', { text: newText.value })).json(); toast(r.already ? `C'era già (in «${r.name}»): non l'ho salvato due volte` : 'Ricordo aggiunto'); renderMemory(); } catch (ex) { toast(ex.message); addBtn.disabled = false; }
   } }, newText, h('div', { class: 'form-actions' }, addBtn));
 
   const dTitle = h('input', { placeholder: 'Titolo, es. "Ricette di casa"' });
@@ -1439,12 +1551,11 @@ async function renderMemory() {
       h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi memoria', html: icon('x'), onclick: () => { closeMemory(); focusInput(); } })),
     h('div', { class: 'set-body' },
       h('section', { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', { text: 'La mappa dei ricordi' }),
-          h('p', { text: 'Ogni pallino è un ricordo o un pezzo di documento: più sono vicini, più parlano di cose simili. Trascina per ruotarla, clicca un pallino per trovarlo nell\'elenco.' })),
+        h('div', { class: 'card-head' }, h('h2', { text: 'Il grafo del cervello' }),
+          h('p', { text: 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla; trascina per spostarti, rotellina per lo zoom, doppio clic per rivedere tutto.' })),
         map.el,
-        h('div', { class: 'mem-legend' }, h('span', {}, h('i', { style: `background:${MEM_COLORS.ricordo}` }), `Ricordi (${ricordi.length})`),
-          h('span', {}, h('i', { style: `background:${MEM_COLORS.documento}` }), `Pezzi di documento (${items.length - ricordi.length})`),
-          h('span', { style: 'margin-left:auto', text: `Solo tu vedi la tua memoria · modello ${data.model}` }))),
+        h('div', { class: 'mem-legend' }, ...kinds.map(([k, [label, col]]) => h('span', {}, h('i', { style: `background:${col}` }), `${label} (${graph.nodes.filter((n) => n.kind === k).length})`)),
+          h('label', { class: 'graph-opt' }, h('input', { type: 'checkbox', checked: withDiary, onchange: (e) => { pref.set('graphDiary', e.target.checked); renderMemory(); } }), 'Mostra il diario'))),
       h('section', { class: 'card flush' },
         h('div', { class: 'card-head pad' }, h('h2', {}, 'Ricordi ', h('span', { class: 'count', text: ricordi.length })),
           h('p', { text: 'Aura li ha sempre presenti quando parla con te. Puoi correggerli o cancellarli.' })),
@@ -2209,7 +2320,8 @@ function brainShell(title, actions, ...body) {
 }
 function bvRender(md, path) {
   // i link «chat:ID» il filtro di sicurezza li toglierebbe: diventano «#chat=ID» e li apre la pagina
-  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md.replace(/\]\(chat:([\w-]+)\)/g, '](#chat=$1)').replace(/\]\(wiki:([\w\/.-]+)\)/g, '](#brain=$1)')) });
+  const box = h('div', { class: 'md bv-md', html: renderMarkdown(md.replace(/\]\(chat:([\w-]+)\)/g, '](#chat=$1)').replace(/\]\(wiki:([\w\/.-]+)\)/g, '](#brain=$1)')
+    .replace(/\[\[([^\]|#\n]+)(?:#[^\]|\n]*)?(?:\|([^\]\n]*))?\]\]/g, (_, p, n) => `[${n || p.split('/').pop()}](#brain=${p.endsWith('.md') ? p : p + '.md'})`)) });
   box.querySelectorAll('a[href^="#brain="]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); openBrainFile(a.getAttribute('href').slice(7)); }));
   // le caselle «- [ ]» si spuntano davvero (nel diario)
   box.querySelectorAll('li').forEach((li) => {
