@@ -28,6 +28,7 @@ const ICONS = {
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
   play: '<path d="M6 3l14 9-14 9Z"/>',
   sound: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
+  box: '<path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 16v-5M13 16V7M18 16v-8"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
@@ -557,7 +558,17 @@ function renderThread() {
   const rows = []; let turn = 0;
   c.messages.forEach((m, i) => { if (m.role === 'user') turn++; const el = messageEl(c, m, i, i === lastAssist, i === c.messages.length - 1); if (el) rows.push({ m, el, turn }); });
   const grouped = new Set();
+  let lastDay = '', prevFeed = false;
   rows.forEach((r) => {
+    if (aura) {   // «Da Aura»: un'etichetta per ogni giorno, e l'avatar solo sul primo di una serie di messaggi di Aura
+      const ts = r.m.ts || (r.m.role === 'feed' ? (S.feed?.[r.m.fid]?.at || 0) * 1000 : 0);
+      const day = ts ? new Date(ts).toDateString() : lastDay;
+      if (day && day !== lastDay) { thread.append(daySep(ts)); prevFeed = false; }
+      lastDay = day;
+      const isFeed = r.m.role === 'feed';
+      if (isFeed && prevFeed) r.el.classList.add('au-cont');
+      prevFeed = isFeed;
+    }
     if (!r.m._step) { thread.append(r.el); return; }
     if (grouped.has(r.turn)) return;
     const steps = rows.filter((x) => x.turn === r.turn && x.m._step);
@@ -2133,26 +2144,68 @@ async function feedAct(it, action, mid) {
   if (isAuraChat(current())) renderThread();
 }
 const AURA_KIND = { code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
-  reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'] };
+  reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'], deadline: ['Scadenza', 'calendar'],
+  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'] };
+const PARCEL_STEPS = ['ordinato', 'spedito', 'in consegna', 'consegnato'];
+const hhmm = (sec) => new Date(sec * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+const shortDay = (iso) => { const d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'numeric' }); };
+const daysTo = (iso) => Math.round((new Date(iso + 'T12:00:00') - new Date(new Date().toDateString() + ' 12:00')) / 86400000);
+function daySep(ts) {
+  const d = new Date(ts), t = new Date(), y = new Date(Date.now() - 86400000);
+  const txt = d.toDateString() === t.toDateString() ? 'Oggi' : d.toDateString() === y.toDateString() ? 'Ieri'
+    : d.toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+  return h('div', { class: 'au-day', role: 'separator' }, h('span', { text: txt }));
+}
+// Il pacco: i quattro passaggi, con quello attuale acceso
+function parcelTrack(status) {
+  const k = PARCEL_STEPS.indexOf(status), bad = status === 'problema';
+  return h('div', { class: 'au-track' + (bad ? ' bad' : ''), 'aria-label': 'Stato: ' + status },
+    ...PARCEL_STEPS.map((st, n) => h('div', { class: 'au-step' + (n <= k ? ' on' : '') + (n === k ? ' now' : '') }, h('i'), h('span', { text: st }))));
+}
 function feedCard(it) {
   const d = it.data || {};
   const done = { keep: 'Segnato come interessante', junk: 'Non ti interessa: d\'ora in poi le cestino', restored: 'Rimesse nella posta in arrivo',
-    dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti' }[it.status];
+    dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti', added: 'Promemoria messo', delivered: 'Consegnato' }[it.status];
   const chip = (txt, ic, fn, primary) => h('button', { class: 'au-chip' + (primary ? ' primary' : ''), html: (ic ? icon(ic, 'sm') : '') + txt, onclick: fn });
   const link = d.link ? h('a', { class: 'au-chip', href: d.link, target: '_blank', rel: 'noopener', html: icon('mail', 'sm') + 'Apri la mail' }) : null;
   const [kind, kic] = AURA_KIND[it.kind] || ['Aura', 'bell'];
-  const time = new Date(it.at * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
-  const body = [h('div', { class: 'au-meta' }, h('span', { class: 'au-kind', html: icon(kic, 'sm') + kind }), h('span', { class: 'au-time tnum', text: time }))];
+  const body = [h('div', { class: 'au-meta' }, h('span', { class: 'au-kind', html: icon(kic, 'sm') + kind }), h('span', { class: 'au-time tnum', text: hhmm(it.at) }))];
   const title = it.title.replace(/^[^\p{L}\p{N}]+/u, '');
+  const chips = [];
   if (it.kind === 'code' && d.code) {
     body.push(h('div', { class: 'au-code-row' }, h('span', { class: 'au-codebox mono', text: d.code }),
       chip('Copia', 'copy', () => navigator.clipboard.writeText(d.code).then(() => toast('Codice copiato')), true)));
-    body.push(h('div', { class: 'au-text', text: `Da ${d.from || ''}${d.subject ? ' · ' + d.subject : ''}` }));
+    body.push(h('div', { class: 'au-sub', text: `Da ${d.from || ''}${d.subject ? ' · ' + d.subject : ''}` }));
+  } else if (it.kind === 'deadline') {
+    const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
+    body.push(h('div', { class: 'au-due' },
+      due ? h('div', { class: 'au-cal' + (left <= 2 ? ' soon' : '') }, h('small', { text: due.toLocaleDateString('it-IT', { month: 'short' }) }), h('b', { class: 'tnum', text: String(due.getDate()) })) : null,
+      h('div', { class: 'au-due-tx' }, h('div', { class: 'au-title', text: d.cosa || title }),
+        h('div', { class: 'au-sub', text: [d.amount, left == null ? '' : left < 0 ? 'scaduta' : left === 0 ? 'scade oggi' : left === 1 ? 'scade domani' : `tra ${left} giorni`].filter(Boolean).join(' · ') }))));
+    if (!d.agenda_id && !done) chips.push(chip('Mettimi un promemoria', 'bell', () => feedAct(it, 'deadline_add'), true));
+    else if (d.agenda_id && !done) body.push(h('div', { class: 'feed-done', html: icon('check', 'sm') + 'Promemoria in agenda' }));
+    if (link) chips.push(link);
+  } else if (it.kind === 'parcel') {
+    const p = (S.feedInfo?.parcels || []).find((x) => x.id === d.parcel_id);
+    body.push(h('div', { class: 'au-title', text: title }));
+    if (it.body) body.push(h('div', { class: 'au-text', text: it.body }));
+    body.push(parcelTrack(p?.status || d.status));
+    if (p?.tracking || p?.carrier) body.push(h('div', { class: 'au-sub mono', text: [p.carrier, p.tracking].filter(Boolean).join(' · ') }));
+    if (p && p.status !== 'consegnato' && !done) chips.push(chip('L\'ho ricevuto', 'check', () => feedAct(it, 'parcel_done')));
+    if (link) chips.push(link);
+  } else if (it.kind === 'checked') {
+    const items = d.items || [];
+    const open = !!S.auOpenChecked?.[it.id];
+    const det = h('details', { class: 'au-checked', open: open || null, ontoggle: () => { (S.auOpenChecked ||= {})[it.id] = det.open; } },
+      h('summary', {}, h('span', { text: `Ho guardato altre ${items.length} ${items.length === 1 ? 'mail' : 'mail'}: niente di urgente` }), h('span', { class: 'chev', html: icon('chevron', 'sm') })),
+      h('ul', { class: 'feed-trash' }, ...items.map((t) => h('li', {},
+        h('div', { class: 'tx' }, h('b', { text: t.from }), h('small', { text: t.why || t.subject })),
+        t.link ? h('a', { class: 'au-chip sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri' }) : null))));
+    body.push(det);
   } else {
     if (!['reminder', 'brief', 'power'].includes(it.kind) || !it.body) body.push(h('div', { class: 'au-title', text: title }));
-    if (it.body) body.push(h('div', { class: 'au-text', text: it.body }));
+    if (it.body && it.kind !== 'trashed') body.push(h('div', { class: 'au-text', text: it.body }));
   }
-  const chips = [];
   if (it.kind === 'trashed') {
     const items = d.items || [];
     body.push(h('ul', { class: 'feed-trash' }, ...items.map((t) => h('li', {},
@@ -2166,25 +2219,55 @@ function feedCard(it) {
   } else if (it.kind === 'reminder' && !done) {
     chips.push(chip('Fatto', 'check', async () => { await feedAct(it, 'dismiss'); loadToday(); if (BP.tree) renderBrainPanel(); }, true),
       chip('Tra 10 minuti', 'calendar', () => feedAct(it, 'snooze')));
-  } else if (link) chips.push(link);
+  } else if (link && !['deadline', 'parcel'].includes(it.kind)) chips.push(link);
   if (done) body.push(h('div', { class: 'feed-done', html: icon('check', 'sm') + done }));
   if (chips.length) body.push(h('div', { class: 'au-chips' }, ...chips));
-  return h('div', { class: 'msg au-row ak-' + it.kind }, h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span')), h('div', { class: 'au-bubble' }, ...body));
+  return h('div', { class: 'msg au-row ak-' + it.kind + (it.unread ? ' unread' : '') },
+    h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span')),
+    h('div', { class: 'au-bubble' }, h('span', { class: 'au-badge', 'aria-hidden': 'true', html: icon(kic, 'sm') }), h('div', { class: 'au-body' }, ...body)));
 }
-// In cima alla chat «Da Aura»: chi e' Aura, cosa sta guardando, e l'agenda di oggi
+// In cima a «Da Aura»: il saluto, cosa sta guardando Aura e quattro riquadri (agenda, posta, pacchi, scadenze)
 function auraBanner() {
-  const w = S.feedInfo?.watch || {}, today = S.today || [];
+  const f = S.feedInfo || {}, w = f.watch || {}, today = S.today || [], mt = f.mail_today || {};
+  const parcels = (f.parcels || []).filter((p) => p.status !== 'consegnato'), dls = f.deadlines || [];
+  const hr = new Date().getHours();
+  const hi = hr < 6 ? 'Ancora sveglio?' : hr < 13 ? 'Buongiorno' : hr < 18 ? 'Buon pomeriggio' : 'Buonasera';
+  const status = w.error ? `Problema con la posta: ${w.error}` : w.enabled ? `Tengo d'occhio posta e agenda${w.last ? ' · ultimo controllo alle ' + hhmm(w.last) : ''}` : 'Tengo d\'occhio la tua agenda';
+  const tile = (cls, ic, label, value, sub, onclick, extra) => h('button', { class: 'au-tile ' + cls + (S.auDrawer === cls ? ' on' : ''), type: 'button', onclick },
+    h('span', { class: 'au-tile-top' }, h('span', { class: 'au-tile-ic', html: icon(ic, 'sm') }), h('span', { class: 'au-tile-l', text: label })),
+    h('b', { class: 'au-tile-v tnum', text: value }), h('small', { class: 'au-tile-s', text: sub }), extra || null);
+  const drawer = (k) => () => { S.auDrawer = S.auDrawer === k ? null : k; renderThread(); };
+  const seg = (n, cls) => n ? h('i', { class: cls, style: `flex:${n}` }) : null;
+  const tiles = [
+    tile('t-agenda', 'calendar', 'Agenda di oggi', String(today.length), today.length ? today.slice(0, 2).map((e) => (e.allday ? '' : e.time + ' ') + e.title).join(' · ') : 'Giornata libera', openAgenda),
+    w.gmail ? tile('t-mail', 'mail', 'Mail di oggi', String(mt.total || 0),
+      mt.total ? [`${mt.interessante || 0} per te`, mt.inutile ? `${mt.inutile} nel cestino` : '', mt.codice ? `${mt.codice} codici` : ''].filter(Boolean).join(' · ') : 'Ancora niente oggi',
+      openAuraSettings, mt.total ? h('span', { class: 'au-bar' }, seg(mt.interessante, 'b-int'), seg(mt.codice, 'b-code'), seg(mt.normale, 'b-norm'), seg(mt.sospetta, 'b-sus'), seg(mt.inutile, 'b-junk')) : null) : null,
+    w.gmail ? tile('t-parcels', 'box', 'In arrivo', String(parcels.length), parcels.length ? `${parcels[0].title} · ${parcels[0].status}` : 'Nessuno in viaggio', drawer('t-parcels')) : null,
+    w.gmail ? tile('t-dead', 'bell', 'Scadenze', dls[0] ? shortDay(dls[0].due) : '—', dls[0] ? dls[0].title + (dls[0].amount ? ' · ' + dls[0].amount : '') : 'Nessuna in vista', drawer('t-dead')) : null,
+  ].filter(Boolean);
+  let panel = null;
+  if (S.auDrawer === 't-parcels') {
+    const all = f.parcels || [];
+    panel = h('div', { class: 'au-drawer' }, all.length ? all.map((p) => h('div', { class: 'au-dr-row' },
+      h('div', { class: 'tx' }, h('b', { text: p.title }), h('small', { text: [p.shop, p.carrier, p.eta && p.status !== 'consegnato' ? 'arrivo ' + shortDay(p.eta) : ''].filter(Boolean).join(' · ') })),
+      parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
+      : h('div', { class: 'au-dr-empty', text: 'Quando nelle mail arriva un ordine o una spedizione, lo segno qui e ti dico quando arriva.' }));
+  } else if (S.auDrawer === 't-dead') {
+    panel = h('div', { class: 'au-drawer' }, dls.length ? dls.map((x) => { const left = daysTo(x.due);
+      return h('div', { class: 'au-dr-row' },
+        h('div', { class: 'au-cal sm' + (left <= 2 ? ' soon' : '') }, h('small', { text: new Date(x.due + 'T12:00:00').toLocaleDateString('it-IT', { month: 'short' }) }), h('b', { class: 'tnum', text: String(new Date(x.due + 'T12:00:00').getDate()) })),
+        h('div', { class: 'tx' }, h('b', { text: x.title }), h('small', { text: [x.amount, left === 0 ? 'oggi' : left === 1 ? 'domani' : `tra ${left} giorni`].filter(Boolean).join(' · ') })),
+        h('a', { class: 'au-chip sm', href: x.link, target: '_blank', rel: 'noopener', text: 'Mail' })); })
+      : h('div', { class: 'au-dr-empty', text: 'Bollette, fatture e rinnovi che arrivano per mail: li segno qui e ti metto un promemoria il giorno prima.' }));
+  }
   return h('div', { class: 'au-banner' },
+    h('div', { class: 'au-glow', 'aria-hidden': 'true' }),
     h('div', { class: 'au-head' },
       h('div', { class: 'au-avatar', 'aria-hidden': 'true' }, h('span')),
-      h('div', { class: 'au-who' }, h('b', { text: 'Aura' }),
-        h('small', { text: w.enabled ? 'Tengo d\'occhio la tua posta e la tua agenda' : 'Tengo d\'occhio la tua agenda' })),
+      h('div', { class: 'au-who' }, h('b', { text: `${hi}, sono Aura` }), h('small', { class: w.error ? 'err' : '', text: status })),
       h('button', { class: 'icon-btn', title: 'Impostazioni', 'aria-label': 'Impostazioni di Aura', html: icon('settings'), onclick: openAuraSettings })),
-    h('button', { class: 'au-today', onclick: openAgenda },
-      h('span', { class: 'au-today-ic', html: icon('calendar') }),
-      h('span', { class: 'au-today-tx' }, h('b', { text: today.length ? `Oggi hai ${today.length} ${today.length === 1 ? 'cosa' : 'cose'} in agenda` : 'Oggi niente in agenda' }),
-        h('small', { text: today.length ? today.slice(0, 3).map((e) => (e.allday ? '' : e.time + ' ') + e.title).join(' · ') : 'Dimmi «ricordami…» e te lo scrivo io all\'ora giusta' })),
-      h('span', { class: 'au-today-go', html: icon('chevron', 'sm') })));
+    h('div', { class: 'au-tiles' + (tiles.length < 4 ? ' few' : '') }, ...tiles), panel);
 }
 // Accensione automatica del PC (ESP32): ora, giorni e interruttore
 function powerRow(p) {

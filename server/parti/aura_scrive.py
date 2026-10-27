@@ -9,6 +9,7 @@
 # («Interessante» / «Non mi interessa») e ti scrive nella sezione «Da Aura», con una notifica sul telefono.
 
 WATCH_EVERY = int(os.environ.get("WATCH_EVERY", "120"))   # secondi tra un controllo e l'altro
+WATCH_DAYS = 7   # quanti giorni indietro guarda: le mail non ancora viste in questa finestra prima o poi le guarda tutte
 CODE_WORDS_RE = re.compile(r"(codice|code|otp|verifica|verification|one[- ]?time|pin\b|conferma|confirm|password|accesso|login|"
                            r"sicurezza|security|autenticazione|authentication|2fa|reimposta|reset)", re.I)
 RESET_RE = re.compile(r"(reimpost\w+|recuper\w+|cambi\w+|reset\w*|forgot|dimenticat\w+)\W+(\w+\W+){0,3}(password|passcode|pin)", re.I)
@@ -28,6 +29,11 @@ def init_watch_db():
             body TEXT NOT NULL DEFAULT '', data TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT '', unread INTEGER NOT NULL DEFAULT 1,
             at INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS aura_feed_user ON aura_feed (user_id, at);
+        CREATE TABLE IF NOT EXISTS parcels (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, title TEXT NOT NULL, shop TEXT NOT NULL DEFAULT '',
+            carrier TEXT NOT NULL DEFAULT '', tracking TEXT NOT NULL DEFAULT '', status TEXT NOT NULL, eta TEXT NOT NULL DEFAULT '',
+            mid TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, updated INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS mail_deadlines (user_id INTEGER NOT NULL, mid TEXT NOT NULL, title TEXT NOT NULL, due TEXT NOT NULL,
+            amount TEXT NOT NULL DEFAULT '', agenda_id INTEGER, at INTEGER NOT NULL, PRIMARY KEY (user_id, mid));
         CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, user_id INTEGER NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
             agent TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
         """)
@@ -44,7 +50,7 @@ def _watch_on(uid: int) -> bool:
     row = _watch_row(uid)
     if row is None and _gmail_row(uid):
         with db() as c:
-            c.execute("INSERT OR IGNORE INTO mail_watch (user_id, enabled, since) VALUES (?,1,?)", (uid, int(time.time())))
+            c.execute("INSERT OR IGNORE INTO mail_watch (user_id, enabled, since) VALUES (?,1,?)", (uid, int(time.time()) - 86400))
         return True
     return bool(row and row["enabled"])
 
@@ -100,7 +106,8 @@ def feed_add(uid: int, kind: str, title: str, body: str = "", data: dict | None 
             "mail": f"✉️ Mail interessante — {title.split(' ', 1)[-1]}", "suspect": f"⚠️ Mail sospetta da {d.get('from', '')}",
             "trashed": f"🗑️ {title.split(' ', 1)[-1]}: {body}"}.get(kind, f"{title} — {_clip(body, 200)}" if body else title)
     try:
-        brain_log_soon(uid, line)
+        if kind != "checked":   # le mail normali non vanno nel diario
+            brain_log_soon(uid, line)
     except Exception:
         pass
     if push:
@@ -148,11 +155,20 @@ async def classify_mail(user: dict, m: dict, rule: str | None) -> dict:
               "- normale: tutto il resto (ricevute automatiche, conferme di routine, notifiche informative).\n"
               f"Mittenti che all'utente interessano: {likes}. Mittenti che non gli interessano: {dislikes}.\n"
               + core_memories_prompt(user) + _sender_facts(user["id"], m) +
+              "Nel dubbio tra interessante e normale per una mail scritta a mano da una persona, scegli interessante.\n"
+              f"Oggi è {local_now().strftime('%Y-%m-%d')} ({GIORNI[local_now().weekday()]}).\n"
               "\nRispondi SOLO con JSON: {\"tipo\": \"interessante|normale|inutile|sospetta\", \"riassunto\": \"una frase breve in italiano su "
               "cosa dice la mail\", \"messaggio\": \"se è interessante o sospetta: il messaggio che gli scrivi tu, Aura, per avvisarlo, "
               "come un assistente che lo conosce (1-2 frasi, amichevole, al maschile, chiamalo per nome). Se dai ricordi sai chi è il "
               f"mittente per lui (es. la sua ragazza, un amico, il suo capo), dillo: «{_nick(user)}, ti ha scritto Giulia, la tua ragazza: …» (con i nomi veri). "
-              "Poi in breve cosa dice o cosa vuole.\"}")
+              "Poi in breve cosa dice o cosa vuole.\", "
+              "\"scadenza\": null oppure, SOLO se la mail chiede all'utente di pagare o rinnovare qualcosa entro una data precisa "
+              "(bolletta, fattura, multa, bollo, abbonamento, assicurazione, rata), {\"cosa\": \"es. Bolletta luce Enel\", "
+              "\"data\": \"AAAA-MM-GG\", \"importo\": \"es. 45,20 € oppure vuoto\"}; "
+              "\"spedizione\": null oppure, SOLO se parla di un ordine o di un pacco dell'utente (conferma d'ordine, spedito, in consegna, "
+              "consegnato, problema di consegna), {\"cosa\": \"cosa ha ordinato, breve\", \"negozio\": \"es. Amazon\", \"corriere\": \"es. BRT o vuoto\", "
+              "\"stato\": \"ordinato|spedito|in consegna|consegnato|problema\", \"arrivo\": \"AAAA-MM-GG previsto o vuoto\", "
+              "\"tracking\": \"codice di tracciamento o vuoto\"}}")
     mail = (f"Da: {m['from']} <{m['email']}>\nOggetto: {m['subject']}\nCategoria Gmail: {m.get('category') or 'principale'}\n"
             f"Newsletter (disiscrizione): {'sì' if m.get('unsubscribe') else 'no'}\n---\n{(m.get('text') or m.get('snippet') or '')[:2500]}")
     try:
@@ -162,7 +178,35 @@ async def classify_mail(user: dict, m: dict, rule: str | None) -> dict:
         d = {}
     tipo = d.get("tipo") if d.get("tipo") in ("interessante", "normale", "inutile", "sospetta") else "normale"
     riassunto = _clip(d.get("riassunto") or m.get("snippet"), 220)
-    return {"tipo": tipo, "riassunto": riassunto, "messaggio": _clip(d.get("messaggio"), 400) or riassunto}
+    return {"tipo": tipo, "riassunto": riassunto, "messaggio": _clip(d.get("messaggio"), 400) or riassunto,
+            "scadenza": _deadline_of(d.get("scadenza")), "spedizione": _parcel_of(d.get("spedizione"))}
+
+
+def _deadline_of(x) -> dict | None:
+    """La scadenza letta dal modello, solo se ha senso: cosa e data vera, non passata da piu' di un giorno."""
+    from datetime import date, timedelta
+    if not isinstance(x, dict) or not x.get("cosa"):
+        return None
+    try:
+        due = date.fromisoformat(str(x.get("data") or "")[:10])
+    except ValueError:
+        return None
+    if due < local_now().date() - timedelta(days=1) or due > local_now().date() + timedelta(days=400):
+        return None
+    return {"cosa": _clip(clean_name(str(x["cosa"])), 80), "data": due.isoformat(), "importo": _clip(str(x.get("importo") or ""), 30)}
+
+
+PARCEL_STATES = ("ordinato", "spedito", "in consegna", "consegnato", "problema")
+
+
+def _parcel_of(x) -> dict | None:
+    if not isinstance(x, dict) or not (x.get("cosa") or x.get("tracking")):
+        return None
+    stato = str(x.get("stato") or "").lower().strip()
+    eta = str(x.get("arrivo") or "")[:10]
+    return {"cosa": _clip(clean_name(str(x.get("cosa") or "Pacco")), 80), "negozio": _clip(str(x.get("negozio") or ""), 40),
+            "corriere": _clip(str(x.get("corriere") or ""), 40), "stato": stato if stato in PARCEL_STATES else "spedito",
+            "arrivo": eta if re.fullmatch(r"\d{4}-\d{2}-\d{2}", eta) else "", "tracking": re.sub(r"[^\w-]", "", str(x.get("tracking") or ""))[:40]}
 
 
 def _sender_facts(uid: int, m: dict) -> str:
@@ -204,11 +248,14 @@ async def watch_user(uid: int) -> dict:
         if not user or not _watch_on(uid):
             return {"off": True}
         user, row = dict(user), _watch_row(uid)
-        start = max(row["since"], (row["last_full"] or row["since"]) - 3600)
-        ids = await mail_ids_for(uid, f"in:inbox after:{start}", 60)
-        new = [i for i in ids if not _seen(uid, i)][:25]
+        # sempre gli ultimi 7 giorni (da quando e' acceso): una mail non ancora guardata non esce mai dalla finestra,
+        # anche se ne arrivano tante insieme o il PC resta spento per un po'
+        start = max(row["since"], int(time.time()) - WATCH_DAYS * 86400)
+        ids = await mail_ids_for(uid, f"in:inbox after:{start}", 400)
+        new = [i for i in ids if not _seen(uid, i)]
+        new = list(dict.fromkeys(new[:10] + new[10:][-30:]))   # al massimo 40 per giro: le 10 piu' nuove (i codici) e le piu' vecchie
         pc = (await _pc_on() or cloud_bg_ready()) if new else True   # a PC spento giudica il modello nel cloud, se c'e'
-        stats, trashed = {"codici": 0, "interessanti": 0, "cestinate": 0, "sospette": 0, "rimandate": 0}, []
+        stats, trashed, normal = {"codici": 0, "interessanti": 0, "cestinate": 0, "sospette": 0, "normali": 0, "rimandate": 0}, [], []
         for mid in reversed(new):   # dalla piu' vecchia
             try:
                 m = await mail_read(uid, mid)
@@ -234,6 +281,16 @@ async def watch_user(uid: int) -> dict:
                 stats["rimandate"] += 1; pc = False; continue
             bulk = m.get("unsubscribe") or m.get("category") in ("promozioni", "social")
             tipo = v["tipo"]
+            if tipo == "inutile" and (v["scadenza"] or v["spedizione"]):
+                tipo = "normale"   # un pacco o una bolletta non finiscono nel cestino
+            if tipo != "sospetta":
+                try:
+                    if v["scadenza"]:
+                        await _deadline_found(user, info, v["scadenza"])
+                    if v["spedizione"]:
+                        _parcel_found(uid, info, v["spedizione"])
+                except Exception as e:   # una scadenza o un pacco non letti bene non fermano il resto della posta
+                    print(f"Scadenze e pacchi: {e}", flush=True)
             if rule == "keep" and tipo in ("inutile", "normale"):
                 tipo = "interessante"
             if tipo == "inutile" and not bulk:
@@ -246,7 +303,13 @@ async def watch_user(uid: int) -> dict:
             elif tipo == "sospetta":
                 feed_add(uid, "suspect", f"⚠️ Mail sospetta da {m['from']}", f"{v['messaggio']}\nNon cliccare link e non dare dati: sembra una truffa.", info)
                 stats["sospette"] += 1
+            else:
+                stats["normali"] += 1
+                if not (v["scadenza"] or v["spedizione"]):   # quelle hanno gia' la loro scheda (scadenza o pacco)
+                    normal.append({**info, "why": v["riassunto"]})
             _mark(uid, mid, tipo)
+        if normal:
+            _checked_add(uid, normal)
         if trashed:
             await mail_action(uid, "trash", [t["mid"] for t in trashed])
             stats["cestinate"] = len(trashed)
@@ -257,6 +320,117 @@ async def watch_user(uid: int) -> dict:
             if pc:
                 c.execute("UPDATE mail_watch SET last_full = ?, last_error = NULL WHERE user_id = ?", (int(time.time()), uid))
         return stats
+
+
+def _checked_add(uid: int, items: list[dict]):
+    """Le mail normali (ricevute, conferme, notifiche): niente notifica, ma una scheda al giorno che dice cosa ho guardato."""
+    today = int(local_now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    with db() as c:
+        r = c.execute("SELECT id, data FROM aura_feed WHERE user_id = ? AND kind = 'checked' AND at >= ? ORDER BY id DESC LIMIT 1",
+                      (uid, today)).fetchone()
+    if not r:
+        feed_add(uid, "checked", "📬 Altre mail di oggi", "", {"items": items}, push=False)
+        return
+    data = json.loads(r["data"] or "{}")
+    data["items"] = (data.get("items") or []) + items
+    with db() as c:
+        c.execute("UPDATE aura_feed SET data = ? WHERE id = ?", (json.dumps(data, ensure_ascii=False), r["id"]))
+
+
+async def _deadline_found(user: dict, info: dict, sc: dict):
+    """Una bolletta o un rinnovo: promemoria la mattina del giorno prima (o oggi, se scade a breve) e un messaggio in «Da Aura»."""
+    from datetime import date, timedelta
+    uid = user["id"]
+    with db() as c:
+        if c.execute("SELECT 1 FROM mail_deadlines WHERE user_id = ? AND mid = ?", (uid, info["mid"])).fetchone():
+            return
+    due = date.fromisoformat(sc["data"])
+    when = max(local_now().date(), due - timedelta(days=1))
+    title = f"Scade il {due.day}/{due.month}: {sc['cosa']}" + (f" · {sc['importo']}" if sc["importo"] else "")
+    data = {**info, "cosa": sc["cosa"], "due": sc["data"], "amount": sc["importo"], "remind": when.isoformat()}
+    aid = None
+    if autonomy(user).get("calendario") == "auto":
+        args = {"testo": title, "data": when.isoformat(), "note": f"Dalla mail di {info['from']}: {info['subject']}\n{info['link']}", "_uid": uid}
+        out = await _cal_create("promemoria")(user, args, None)
+        aid = (out.get("undo") or {}).get("id")
+        data["agenda_id"] = aid
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO mail_deadlines (user_id, mid, title, due, amount, agenda_id, at) VALUES (?,?,?,?,?,?,?)",
+                  (uid, info["mid"], sc["cosa"], sc["data"], sc["importo"], aid, int(time.time())))
+    days = (due - local_now().date()).days
+    quando = "oggi" if days <= 0 else "domani" if days == 1 else f"tra {days} giorni ({GIORNI[due.weekday()]} {due.day}/{due.month})"
+    body = (f"{sc['cosa']}{' da ' + sc['importo'] if sc['importo'] else ''}: scade {quando}. "
+            + ("Ti ho messo un promemoria." if aid else "Vuoi un promemoria?"))
+    feed_add(uid, "deadline", f"📅 Scadenza: {sc['cosa']}", body, data, push=days <= 3)
+
+
+def _parcel_found(uid: int, info: dict, sp: dict):
+    """Un ordine o un pacco: si aggiorna lo stesso pacco (stesso tracciamento, o stesso negozio e stessa cosa), non se ne crea un altro."""
+    now = int(time.time())
+    with db() as c:
+        rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND updated > ? ORDER BY id DESC", (uid, now - 45 * 86400)).fetchall()
+    same = next((r for r in rows if sp["tracking"] and r["tracking"] == sp["tracking"]), None) or next(
+        (r for r in rows if r["status"] != "consegnato" and (not sp["negozio"] or not r["shop"] or sp["negozio"].lower() == r["shop"].lower())
+         and _same_thing(r["title"], sp["cosa"])), None)
+    order = list(PARCEL_STATES)
+    with db() as c:
+        if same:
+            # lo stato va solo avanti (una mail vecchia letta dopo non riporta indietro un pacco gia' consegnato)
+            status = sp["stato"] if sp["stato"] == "problema" or order.index(sp["stato"]) >= order.index(same["status"] if same["status"] in order else "ordinato") else same["status"]
+            changed = status != same["status"]
+            c.execute("UPDATE parcels SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking = COALESCE(NULLIF(?, ''), tracking), "
+                      "eta = COALESCE(NULLIF(?, ''), eta), mid = ?, updated = ? WHERE id = ?",
+                      (status, sp["corriere"], sp["tracking"], sp["arrivo"], info["mid"], now, same["id"]))
+            pid, title = same["id"], same["title"]
+        else:
+            status, changed, title = sp["stato"], True, sp["cosa"]
+            pid = c.execute("INSERT INTO parcels (user_id, title, shop, carrier, tracking, status, eta, mid, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                            (uid, title, sp["negozio"], sp["corriere"], sp["tracking"], status, sp["arrivo"], info["mid"], now, now)).lastrowid
+    if not changed:
+        return
+    eta = ""
+    if sp["arrivo"] and status not in ("consegnato", "problema"):
+        from datetime import date
+        d = date.fromisoformat(sp["arrivo"])
+        days = (d - local_now().date()).days
+        eta = " Arriva oggi." if days <= 0 else " Arriva domani." if days == 1 else f" Arrivo previsto {GIORNI[d.weekday()]} {d.day}/{d.month}."
+    say = {"ordinato": "ordine confermato", "spedito": "è partito", "in consegna": "è in consegna oggi", "consegnato": "è stato consegnato",
+           "problema": "ha un problema con la consegna"}[status]
+    shop = f" ({sp['negozio']})" if sp["negozio"] else ""
+    feed_add(uid, "parcel", f"📦 {title}", f"Il tuo pacco{shop} {say}.{eta}", {**info, "parcel_id": pid, "status": status},
+             push=status in ("in consegna", "consegnato", "problema"))
+
+
+def parcels_active(uid: int) -> list[dict]:
+    """I pacchi in arrivo, piu' quelli consegnati negli ultimi 2 giorni."""
+    with db() as c:
+        rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND (status != 'consegnato' OR updated > ?) AND updated > ? ORDER BY updated DESC",
+                         (uid, int(time.time()) - 2 * 86400, int(time.time()) - 30 * 86400)).fetchall()
+    return [{"id": r["id"], "title": r["title"], "shop": r["shop"], "carrier": r["carrier"], "tracking": r["tracking"], "status": r["status"],
+             "eta": r["eta"], "link": _mail_link(r["mid"]) if r["mid"] else ""} for r in rows]
+
+
+def deadlines_next(uid: int) -> list[dict]:
+    with db() as c:
+        rows = c.execute("SELECT * FROM mail_deadlines WHERE user_id = ? AND due >= ? ORDER BY due LIMIT 8",
+                         (uid, local_now().strftime("%Y-%m-%d"))).fetchall()
+    return [{"title": r["title"], "due": r["due"], "amount": r["amount"], "link": _mail_link(r["mid"])} for r in rows]
+
+
+async def _tool_parcels(user: dict, args: dict, request: Request) -> dict:
+    ps = parcels_active(user["id"])
+    if not ps:
+        return {"content": "Nessun pacco in arrivo tra quelli che ho visto nelle mail.", "display": "Nessun pacco in arrivo"}
+    lines = [f"- {p['title']}{' (' + p['shop'] + ')' if p['shop'] else ''}: {p['status']}"
+             f"{', arrivo previsto ' + p['eta'] if p['eta'] and p['status'] != 'consegnato' else ''}"
+             f"{', ' + p['carrier'] if p['carrier'] else ''}{', tracciamento ' + p['tracking'] if p['tracking'] else ''}" for p in ps]
+    return {"content": "Pacchi (dalle mail):\n" + "\n".join(lines), "display": f"Ha guardato i pacchi: {len(ps)}"}
+
+
+TOOLS["pacchi"] = {
+    "admin": True, "gmail": True, "confirm": False, "run": _tool_parcels,
+    "spec": _fn("pacchi", "I pacchi e gli ordini dell'utente che Aura ha visto nelle mail: cosa arriva, quando, con che corriere, "
+                "cosa è già stato consegnato. Usalo quando chiede dei suoi pacchi, ordini, spedizioni o consegne.", {})}
 
 
 MAIL_FAST = int(os.environ.get("MAIL_FAST", "10"))   # secondi: i codici scadono in fretta
@@ -422,7 +596,13 @@ async def aura_feed(user: dict = Depends(require_user)):
         rows = c.execute("SELECT * FROM aura_feed WHERE user_id = ? ORDER BY id DESC LIMIT 100", (uid,)).fetchall()
         devices = c.execute("SELECT COUNT(*) FROM push_subs WHERE user_id = ?", (uid,)).fetchone()[0]
     row = _watch_row(uid)
+    today = int(local_now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+    with db() as c:
+        seen = {r["verdict"]: r["n"] for r in c.execute("SELECT verdict, COUNT(*) AS n FROM mail_seen WHERE user_id = ? AND at >= ? GROUP BY verdict",
+                                                       (uid, today))}
     return {"items": [{**dict(r), "data": json.loads(r["data"] or "{}")} for r in rows],
+            "parcels": parcels_active(uid), "deadlines": deadlines_next(uid),
+            "mail_today": {"total": sum(n for k, n in seen.items() if k != "vecchia"), **seen},
             "unread": sum(r["unread"] for r in rows), "devices": devices,
             "power": _power_sched(uid) if user["role"] == "admin" and ESP32_URL else None,
             "watch": {"gmail": bool(_gmail_row(uid)), "enabled": _watch_on(uid) if _gmail_row(uid) else False,
@@ -467,6 +647,20 @@ async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_
         with db() as c:
             c.execute("UPDATE agenda SET remind_at = ?, reminded = 0 WHERE id = ? AND user_id = ?", (int(time.time()) + 600, data["agenda_id"], uid))
         status, msg = "snoozed", "Ok, te lo ricordo tra 10 minuti"
+    elif body.action == "deadline_add" and data.get("due") and not data.get("agenda_id"):
+        args = {"testo": f"Scade il {data['due'][8:10].lstrip('0')}/{data['due'][5:7].lstrip('0')}: {data.get('cosa', '')}"
+                         + (f" · {data['amount']}" if data.get("amount") else ""),
+                "data": data.get("remind") or data["due"], "note": f"Dalla mail di {data.get('from', '')}: {data.get('subject', '')}\n{data.get('link', '')}",
+                "_uid": uid}
+        out = await _cal_create("promemoria")(user, args, None)
+        data["agenda_id"] = (out.get("undo") or {}).get("id")
+        with db() as c:
+            c.execute("UPDATE mail_deadlines SET agenda_id = ? WHERE user_id = ? AND mid = ?", (data["agenda_id"], uid, data.get("mid", "")))
+        status, msg = "added", "Promemoria messo"
+    elif body.action == "parcel_done" and data.get("parcel_id"):
+        with db() as c:
+            c.execute("UPDATE parcels SET status = 'consegnato', updated = ? WHERE id = ? AND user_id = ?", (int(time.time()), data["parcel_id"], uid))
+        status, msg = "delivered", "Segnato come consegnato"
     elif body.action == "dismiss":
         status = "dismissed"
         if data.get("agenda_id"):   # «Fatto» su un promemoria: fatto anche in agenda
@@ -489,7 +683,7 @@ async def aura_watch_set(body: WatchIn, user: dict = Depends(require_admin)):
     _watch_on(user["id"])
     with db() as c:
         c.execute("UPDATE mail_watch SET enabled = ?, since = CASE WHEN ? THEN ? ELSE since END WHERE user_id = ?",
-                  (int(body.enabled), int(body.enabled), int(time.time()), user["id"]))
+                  (int(body.enabled), int(body.enabled), int(time.time()) - 86400, user["id"]))
     return {"ok": True}
 
 
