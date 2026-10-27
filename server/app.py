@@ -874,7 +874,7 @@ async def status(_: dict = Depends(require_user)):
     helper = {n for n, c in caps.items() if "embedding" in c and "completion" not in c}
     helpers = [{"name": n, "loaded": any(l["name"] == n for l in loaded),
                 "size_vram": next((l["size_vram"] for l in loaded if l["name"] == n), 0)} for n in sorted(helper)]
-    return {"online": True, "version": version, "host": host, "helpers": helpers, "cloud": cloud_name(),
+    return {"online": True, "version": version, "host": host, "helpers": helpers, "cloud": cloud_name(), "default_model": DEFAULT_MODEL,
             "loaded": [l for l in loaded if l["name"] not in helper], "models": [m for m in models if m["name"] not in helper]}
 
 
@@ -2248,10 +2248,17 @@ def _topic_tools(tools: list, messages: list[dict]) -> list:
     return [x for x in tools if _tool_group(x["function"]["name"]) in t | {""}]
 
 
-def system_prompt(user: dict, with_tools: bool, site: bool = True) -> str:
+def system_prompt(user: dict, with_tools: bool, site: bool = True, model: str = "") -> str:
     now = local_now()
     giorni = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
-    txt = (f"Tu sei Aura, l'assistente personale (app Cerini IA), e giri in locale sul PC di casa. Oggi è {giorni[now.weekday()]} "
+    if is_cloud(model):
+        prov = CLOUD_PRESETS.get(cloud_cfg().get("provider", ""), {}).get("name") or "un fornitore esterno"
+        where = (f"In questa chat stai usando il modello «{model[6:]}» NEL CLOUD ({prov}), NON Gemma e NON il PC di casa: "
+                 f"i messaggi partono verso {prov}. Se ti chiedono che modello sei, rispondi esattamente così")
+    else:
+        where = (f"In questa chat stai usando il modello «{model or 'locale'}», che gira in locale sul PC di casa (niente esce di casa). "
+                 "Se ti chiedono che modello sei, rispondi esattamente così")
+    txt = (f"Tu sei Aura, l'assistente personale (app Cerini IA). {where}. Oggi è {giorni[now.weekday()]} "
            f"{now.strftime('%d/%m/%Y')}, ore {now.strftime('%H:%M')}. Stai parlando con il tuo utente (account \"{user['username']}\""
            f"{', amministratore' if user['role'] == 'admin' else ''}): è una persona, NON è Aura. Il suo nome e chi è li trovi tra "
            f"le cose che sai di lui. Aura sei tu: quando l'utente scrive «Aura, …» sta parlando a te. Parla di te in prima persona "
@@ -2380,7 +2387,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             if skill and skill["tools"]:   # /homebase: gli strumenti di quella skill (piu' quelli per ricordare)
                 keep = tuple(skill["tools"]) + ("ricorda", "cervello_cerca")
                 tools = [t for t in tools_for(user) if t["function"]["name"].startswith(keep)] or tools
-            sys_txt = (system_prompt(user, bool(tools), site=any(SITE_TOOL.match(t["function"]["name"]) for t in tools))
+            sys_txt = (system_prompt(user, bool(tools), site=any(SITE_TOOL.match(t["function"]["name"]) for t in tools), model=body.model)
                        + (MEMORY_PROMPT if tools else "") + core_memories_prompt(user))
             ap = active_project(user, body.chat_id or "", body.messages)
             yield ev(event="project", project={"id": ap["id"], "name": ap["name"], "path": ap["path"]} if ap else None)
@@ -3514,9 +3521,15 @@ async def mail_triage(user: dict = Depends(require_admin)):
     return data
 
 
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "gemma4:e4b")
+
+
 async def _chat_model() -> str:
-    """Il modello di chat gia' caricato, altrimenti il primo che sa usare gli strumenti."""
+    """Il modello per i lavori di sottofondo: quello di partenza (Gemma e4b) se c'e', altrimenti uno gia' caricato o il primo."""
     try:
+        tags = (await ollama("GET", "/api/tags", timeout=5)).json().get("models", [])
+        if any(m["name"] == DEFAULT_MODEL for m in tags):
+            return DEFAULT_MODEL
         ps = (await ollama("GET", "/api/ps", timeout=5)).json().get("models", [])
         for m in ps:
             if "embed" not in m["name"]:

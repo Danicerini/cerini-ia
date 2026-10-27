@@ -1183,7 +1183,7 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 
 
 /* cervello: pannello a destra (diario, wiki, skill) e pagina dei file */
-#brainPanel { display: none; width: 300px; flex: none; background: var(--side); border-left: 1px solid var(--border); flex-direction: column; min-height: 0; }
+#brainPanel { display: none; width: var(--brain-w, 300px); flex: none; background: var(--side); border-left: 1px solid var(--border); flex-direction: column; min-height: 0; }
 #app.brain-on #brainPanel { display: flex; }
 #brainScrim { display: none; }
 #brainToggle.on, #app.brain-on #brainToggle { color: var(--accent); background: var(--accent-soft); }
@@ -1337,6 +1337,14 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .ag-dots i.done { opacity: .35; }
 .upd-bar { position: fixed; left: 50%; bottom: calc(18px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 90; padding: 10px 16px;
   border-radius: 99px; background: var(--accent); color: var(--primary-fg); font-weight: 600; font-size: 13.5px; box-shadow: var(--shadow); }
+#brainResize { display: none; }
+.bp-cal { max-width: 340px; margin-left: auto; margin-right: auto; }
+@media (min-width: 821px) {
+  #app.brain-on ~ #brainResize, body:has(#app.brain-on) #brainResize { display: block; position: fixed; top: 0; bottom: 0; right: calc(var(--brain-w, 300px) - 4px);
+    width: 8px; z-index: 45; cursor: col-resize; }
+  #brainResize:hover, body.brain-resizing #brainResize { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
+}
+body.brain-resizing { cursor: col-resize; user-select: none; }
 .msg.note { display: flex; }
 .brain-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--border-strong);
   background: color-mix(in oklch, var(--accent) 6%, transparent); font-size: 13px; }

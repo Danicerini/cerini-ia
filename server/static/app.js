@@ -147,7 +147,7 @@ const Store = {
 
 // =================================================================== state
 const S = {
-  chats: [], currentId: null, status: null, model: pref.get('model', null), busyModel: null, busySince: 0,
+  chats: [], currentId: null, status: null, model: String(pref.get('model', '') || '').startsWith('cloud:') ? null : pref.get('model', null), busyModel: null, busySince: 0,
   stream: null, attachments: [], think: pref.get('think', false), caps: {}, wol: false, editing: null, me: null,
 };
 const current = () => S.chats.find((c) => c.id === S.currentId) || null;
@@ -240,7 +240,8 @@ async function refresh() {
   if (S.status?.online && S.status.models.length) {
     const names = S.status.models.map((m) => m.name);
     if (!S.model || !names.includes(S.model)) {
-      S.model = (S.status.loaded[0] && names.includes(S.status.loaded[0].name)) ? S.status.loaded[0].name : names[0];
+      S.model = names.includes(S.status.default_model) ? S.status.default_model
+        : (S.status.loaded[0] && names.includes(S.status.loaded[0].name)) ? S.status.loaded[0].name : names[0];
       pref.set('model', S.model);
     }
   }
@@ -331,7 +332,7 @@ $('#modelBtn').onclick = (e) => { e.stopPropagation(); togglePicker(); };
 document.addEventListener('click', (e) => { if (!$('#picker').contains(e.target)) togglePicker(false); });
 
 function selectModel(name) {
-  S.model = name; pref.set('model', name);
+  S.model = name; if (!isCloudM(name)) pref.set('model', name);   // il cloud vale per questa chat, non diventa il predefinito
   const c = current(); if (c) { c.model = name; saveChat(c); }
   togglePicker(false); renderStatus(); loadCaps(name); focusInput();
 }
@@ -607,7 +608,9 @@ function memoryNotesEl(chat, owner) {
 function renderHero() {
   const s = S.status, hr = new Date().getHours();
   $('#heroTitle').textContent = hr < 6 ? 'Ancora sveglio?' : hr < 13 ? 'Buongiorno. Di cosa hai bisogno?' : hr < 18 ? 'Di cosa hai bisogno?' : 'Buonasera. Di cosa hai bisogno?';
-  $('#heroSub').textContent = !s ? '' : !s.online ? 'Il PC è spento: accendilo per iniziare.' : activeModel() ? `Sono Aura · ${activeModel()}, sul PC di casa.` : '';
+  const am = activeModel();
+  $('#heroSub').textContent = !s ? '' : isCloudM(am) && canChat() ? `Sono Aura · ${am.slice(6)}, nel cloud: i messaggi escono da casa.`
+    : !s.online ? 'Il PC è spento: accendilo per iniziare.' : am ? `Sono Aura · ${am}, sul PC di casa.` : '';
   $('#heroToday')?.remove();
 
 }
@@ -973,6 +976,26 @@ async function checkUpdate() {
 setInterval(checkUpdate, 120000);
 document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
 
+// al massimo: la chat deve restare larga almeno 520 px (barra laterale compresa), e mai oltre 720 px di pannello
+const BRAIN_MIN = 300, brainMax = () => Math.max(BRAIN_MIN, Math.min(720, innerWidth - ($('#side')?.getBoundingClientRect().width || 0) - 520));
+function setBrainW(w, save) {
+  w = Math.max(BRAIN_MIN, Math.min(brainMax(), Math.round(w)));
+  document.documentElement.style.setProperty('--brain-w', w + 'px');
+  if (save) pref.set('brainW', w);
+}
+setBrainW(Number(pref.get('brainW', BRAIN_MIN)) || BRAIN_MIN);
+addEventListener('resize', () => setBrainW(Number(pref.get('brainW', BRAIN_MIN)) || BRAIN_MIN));
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.id !== 'brainResize') return;
+  e.preventDefault();
+  document.body.classList.add('brain-resizing');
+  const move = (ev) => setBrainW(innerWidth - ev.clientX);
+  const up = (ev) => { setBrainW(innerWidth - ev.clientX, true); document.body.classList.remove('brain-resizing');
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up); };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+});
+document.addEventListener('dblclick', (e) => { if (e.target.id === 'brainResize') setBrainW(BRAIN_MIN, true); });
+
 const input = $('#input');
 function focusInput() { if (!isMobile()) setTimeout(() => input.focus(), 0); }
 function autosize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, innerHeight * 0.4) + 'px'; }
@@ -1039,7 +1062,7 @@ function renderComposer() {
     else if (S.wol && !s.unreachable) hint.append(h('button', { class: 'btn sm', html: icon('power', 'sm') + 'Accendi il PC', onclick: wake }));
   } else if (S.busyModel) hint.append(h('span', { class: 'spinner' }), h('span', { text: `Accendo ${S.busyModel}…` }));
   else if (m && !loadedNames().has(m)) hint.textContent = `${m} è spento: il primo messaggio lo accende, ci vorrà qualche secondo in più.`;
-  else { hint.textContent = 'Le risposte sono generate sul PC di casa e possono contenere errori.'; hint.classList.add('quiet'); }
+  else { hint.textContent = isCloudM(m) ? `Le risposte arrivano da ${m.slice(6)}, nel cloud (fuori casa), e possono contenere errori.` : 'Le risposte sono generate sul PC di casa e possono contenere errori.'; hint.classList.add('quiet'); }
   if ($('#main').classList.contains('empty')) renderHero();
 }
 $('#thinkBtn').onclick = () => { S.think = !S.think; pref.set('think', S.think); renderComposer(); };
@@ -2102,6 +2125,7 @@ $('#brainScrim').onclick = () => toggleBrain(false);
 
 async function renderBrainPanel() {
   const root = $('#brainPanel');
+  if (!$('#brainResize')) document.body.append(h('div', { id: 'brainResize', title: 'Trascina per allargare · doppio clic per tornare stretto' }));
   const now = new Date();
   BP.month = BP.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   BP.sel = BP.sel || isoDay(now);
