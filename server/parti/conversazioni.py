@@ -219,7 +219,6 @@ async def _tool_mail_prepare(user: dict, args: dict, request: Request) -> dict:
             note = " Un indirizzo non era tra quelli conosciuti e l'ho lasciato vuoto: l'utente lo scrive nella scheda."
         to = ", ".join(keep)
     atts = _mail_attachments(uid, args)
-    body = _aura_signed(user, body)
     view = {"kind": "email", "to": to, "subject": subj, "body": body, "reply_to": reply_id, "status": "draft", "attachments": atts}
     att_txt = f" Allegati: {', '.join(a['name'] for a in atts)}." if atts else ""
     return {"content": "Mail preparata e mostrata all'utente in una scheda che può modificare, con i pulsanti «Invia» e «Salva "
@@ -254,16 +253,6 @@ def _mail_attachments(uid: int, args: dict) -> list[dict]:
             seen.add(r["id"])
             out.append({"id": r["id"], "name": r["name"], "size": r["size"]})
     return out[:10]
-
-
-AURA_SIGN = "Scritta da Aura, l'assistente personale di"
-
-
-def _aura_signed(user: dict, body: str) -> str:
-    """In fondo alle mail scritte da Aura: si capisce che le ha scritte lui (l'utente puo' toglierlo nella scheda)."""
-    if AURA_SIGN.lower() in body.lower():
-        return body
-    return body.rstrip() + f"\n\n--\n{AURA_SIGN} {_user_display(user)}."
 
 
 
