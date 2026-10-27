@@ -237,6 +237,8 @@ async function refresh() {
   try { S.status = await (await api('/api/status')).json(); }
   catch (e) { if (!$('#app').classList.contains('hidden')) S.status = { online: false, loaded: [], models: [], unreachable: true }; }
   if (S.status?.cloud && !S.status.models.some((m) => m.name === S.status.cloud)) S.status.models.push({ name: S.status.cloud, cloud: true });
+  // all'avvio: il modello scelto nelle impostazioni (Gemma di casa o il cloud, se e' configurato)
+  if (!S.startSet && S.me && S.status) { S.startSet = true; if (S.me.start_model === 'cloud' && S.status.cloud) S.model = S.status.cloud; }
   if (S.status?.online && S.status.models.length) {
     const names = S.status.models.map((m) => m.name);
     if (!S.model || !names.includes(S.model)) {
@@ -546,7 +548,28 @@ function renderThread() {
   if (aura) thread.append(auraBanner());
   const lastAssist = c.messages.map((m) => m.role).lastIndexOf('assistant');
   groupMemoryNotes(c.messages);
-  c.messages.forEach((m, i) => { const el = messageEl(c, m, i, i === lastAssist, i === c.messages.length - 1); if (el) thread.append(el); });
+  // i passaggi intermedi di un turno (strumenti usati, ragionamenti tra uno e l'altro) finiscono in una riga sola, apribile
+  const rows = []; let turn = 0;
+  c.messages.forEach((m, i) => { if (m.role === 'user') turn++; const el = messageEl(c, m, i, i === lastAssist, i === c.messages.length - 1); if (el) rows.push({ m, el, turn }); });
+  const grouped = new Set();
+  rows.forEach((r) => {
+    if (!r.m._step) { thread.append(r.el); return; }
+    if (grouped.has(r.turn)) return;
+    const steps = rows.filter((x) => x.turn === r.turn && x.m._step);
+    if (steps.length < 2) { thread.append(r.el); return; }
+    grouped.add(r.turn); thread.append(stepsEl(steps));
+  });
+}
+function stepsEl(steps) {
+  const owner = steps[0].m;
+  const tools = steps.filter((s) => s.m.role === 'tool').length;
+  const ms = steps.reduce((t, s) => t + (s.m.role === 'assistant' ? s.m.thinkMs || 0 : 0), 0);
+  const secs = ms ? Math.max(1, Math.round(ms / 1000)) : 0;
+  const label = (tools ? `${tools === 1 ? 'Un passaggio' : tools + ' passaggi'}` : 'Ha ragionato') + (secs ? (tools ? ` · ${secs} s` : ` per ${secs} s`) : '');
+  const d = h('details', { class: 'think steps', open: owner._stepsOpen ? true : null, ontoggle: () => { owner._stepsOpen = d.open; } },
+    h('summary', {}, h('span', { html: icon('tool', 'sm') }), h('span', { text: label }), h('span', { class: 'chev', html: icon('chevron', 'sm') })),
+    h('div', { class: 'steps-body' }, steps.map((s) => s.el)));
+  return h('div', { class: 'msg step' }, d);
 }
 
 // Strumenti della memoria: i loro esiti non compaiono uno per uno nella chat, ma raccolti sotto la risposta del turno
@@ -566,6 +589,12 @@ function groupMemoryNotes(msgs) {
     const anchor = [...turn].reverse().find((m) => m.role === 'assistant' && (m.content || m._streaming));
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
+    // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad'];
+    turn.forEach((m) => {
+      m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
+        || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
+    });
     turn.forEach((m) => {
       if (m.role !== 'assistant') return;
       const mine = m === anchor;
@@ -3118,7 +3147,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), autonomyCard()] : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
@@ -3234,6 +3263,21 @@ function personaCard() {
       h('div', { class: 'form-actions' }, save), out));
   })();
   return card;
+}
+// Quale modello parte da solo quando apri l'app: Gemma sul PC di casa o il modello nel cloud
+function startModelCard() {
+  const cloud = S.status?.cloud;
+  const seg = segmented([['local', 'Gemma (PC di casa)'], ['cloud', 'Cloud']], S.me.start_model || 'local', async (v) => {
+    try {
+      S.me.start_model = (await (await api('/api/me/autonomy', { start_model: v }, { method: 'PUT' })).json()).start_model;
+      // vale subito per le chat nuove
+      S.model = v === 'cloud' && cloud ? cloud : (pref.get('model', '') && !isCloudM(pref.get('model', '')) ? pref.get('model', '') : null);
+      if (!S.model) refresh(); else renderStatus();
+      toast(v === 'cloud' ? (cloud ? "All'avvio parte il modello nel cloud" : 'Salvato: configura prima il cloud in Collegamenti') : "All'avvio parte Gemma sul PC di casa");
+    } catch (e) { toast(e.message); }
+  }, "Modello all'avvio");
+  return h('section', { class: 'card row-card' }, h('div', { class: 'card-head' }, h('h2', { text: "Modello all'avvio" }),
+    h('p', { text: cloud ? `Quello che parte quando apri Aura. Il cloud è ${cloud.slice(6)}; puoi sempre cambiarlo dal menu in alto.` : 'Quello che parte quando apri Aura. Per il cloud configuralo prima in Collegamenti.' })), seg);
 }
 function autonomyCard() {
   const groups = S.me.autonomy_groups || [];

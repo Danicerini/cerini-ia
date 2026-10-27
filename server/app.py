@@ -689,7 +689,7 @@ async def me(user: dict = Depends(require_user)):
             "gmail": admin and bool(_gmail_row(user["id"])), "calendar": admin,
             "homebase": admin and homebase_on(),
             "autonomy": autonomy(user), "autonomy_groups": [g for g, d in AUTONOMY.items() if admin or not d["admin"]], "aura_chat": aura_chat_id(user["id"]),
-            "mem_display": _prefs(user).get("mem_display", "list")}
+            "mem_display": _prefs(user).get("mem_display", "list"), "start_model": _prefs(user).get("start_model", "local")}
 
 
 def _prefs(user: dict) -> dict:
@@ -725,6 +725,7 @@ def autonomy(user: dict) -> dict:
 class AutonomyIn(BaseModel):
     autonomy: dict[str, str] = {}
     mem_display: str | None = None   # "list" = elenco sotto la risposta, "icon" = solo un simbolo
+    start_model: str | None = None   # "local" = Gemma sul PC di casa, "cloud" = il modello nel cloud
 
 
 @app.put("/api/me/autonomy")
@@ -737,9 +738,11 @@ async def set_autonomy(body: AutonomyIn, user: dict = Depends(require_user)):
     prefs["autonomy"] = cur
     if body.mem_display in ("list", "icon"):
         prefs["mem_display"] = body.mem_display
+    if body.start_model in ("local", "cloud"):
+        prefs["start_model"] = body.start_model
     with db() as c:
         c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
-    return {"autonomy": cur, "mem_display": prefs.get("mem_display", "list")}
+    return {"autonomy": cur, "mem_display": prefs.get("mem_display", "list"), "start_model": prefs.get("start_model", "local")}
 
 
 PERSONA_OPTS = {
