@@ -6123,6 +6123,7 @@ CLOUD_PRESETS = {
     "custom": {"name": "Altro (compatibile OpenAI)", "base": "", "model": ""},
 }
 CLOUD_CTX = int(os.environ.get("CLOUD_CTX", "64000"))
+CLOUD_MAX_TOKENS = int(os.environ.get("CLOUD_MAX_TOKENS", "8192"))   # lunghezza massima di una risposta
 
 
 def cloud_cfg() -> dict:
@@ -6190,7 +6191,8 @@ def _oa_messages(msgs: list[dict]) -> list[dict]:
 
 def _cloud_body(payload: dict, stream: bool) -> dict:
     c = cloud_cfg()
-    body = {"model": c["model"], "messages": _oa_messages(payload.get("messages") or []), "stream": stream}
+    # max_tokens sempre: senza, alcuni fornitori (Regolo) riservano tutto il contesto alla risposta e rifiutano la richiesta
+    body = {"model": c["model"], "messages": _oa_messages(payload.get("messages") or []), "stream": stream, "max_tokens": CLOUD_MAX_TOKENS}
     if payload.get("tools"):
         body["tools"] = payload["tools"]
     t = (payload.get("options") or {}).get("temperature")
