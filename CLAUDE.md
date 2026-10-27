@@ -13,12 +13,12 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 
 ## Dove sta il codice
 
-- `server/app.py`: il nucleo del backend (configurazione, database, sessioni, avvio). Il resto sta in `server/parti/` (un file per argomento: modelli, strumenti, chat, gmail, agenda, web, file, homebase, aura_scrive, cloud, cervello, conversazioni, procedure). Le parti NON sono moduli: `app.py` le esegue nel proprio spazio di nomi, nell'ordine di `PARTI`, quindi si usano i nomi l'una dell'altra senza import e `import app` vede tutto. Una funzione nuova va nella parte del suo argomento.
+- `server/app.py`: il nucleo del backend (configurazione, database, sessioni, avvio). Il resto sta in `server/parti/` (un file per argomento: modelli, strumenti, chat, gmail, agenda, web, file, homebase, aura_scrive, homebase_admin, cloud, cervello, conversazioni, procedure). Le parti NON sono moduli: `app.py` le esegue nel proprio spazio di nomi, nell'ordine di `PARTI`, quindi si usano i nomi l'una dell'altra senza import e `import app` vede tutto. Una funzione nuova va nella parte del suo argomento.
 - `server/static/app.js`: tutto il frontend in JS semplice (niente build). Helper `h(tag, attrs, ...children)`, `$()`, `api()`, `toast()`, `icon(nome)` (icone in `ICONS` in cima al file), `pref.get/set` (localStorage).
 - `server/static/index.html`: HTML + tutto il CSS. Colori solo con i token (`--bg`, `--text`, `--text-2`, `--text-3`, `--border`, `--accent`, `--accent-soft`, …), tema chiaro e scuro.
 - `server/brain/brain.md`: la specifica Brain Protocol v6 copiata nel cervello di ogni utente.
 - `server/install-ct.sh`, `server/.env.example`: installazione sul container.
-- `pc/`: script per il PC con Ollama. `homebase/`: integrazione con la Homebase. `tools/`: deploy e controllo privacy.
+- `pc/`: script per il PC con Ollama. `homebase/`: integrazione con la Homebase (`api/aura.php`, la porta con l'elenco chiuso di azioni: va copiata a mano nel container della Homebase, vedi `install-aura-homebase.sh`). `tools/`: deploy e controllo privacy.
 
 ## Concetti chiave
 

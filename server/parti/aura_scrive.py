@@ -617,8 +617,10 @@ async def aura_feed_read(user: dict = Depends(require_user)):
 
 
 class FeedActIn(BaseModel):
-    action: str             # keep | junk | restore | dismiss
+    action: str             # keep | junk | restore | dismiss | deadline_add | parcel_done | hb_* (richieste della Homebase)
     mid: str | None = None  # per le mail dentro un riepilogo di cestinate
+    text: str | None = None   # risposta a un messaggio della Homebase
+    value: str | None = None  # stato da dare a un messaggio della Homebase
 
 
 @app.post("/api/aura/feed/{fid}/act")
@@ -629,7 +631,12 @@ async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_
     if not r:
         raise HTTPException(404, "Messaggio non trovato")
     data, status, msg = json.loads(r["data"] or "{}"), r["status"], ""
-    if body.action == "keep" and data.get("email"):
+    if r["kind"] == "homebase" and body.action.startswith("hb_"):
+        try:
+            status, msg, data = await hb_feed_act(uid, r, body)
+        except ValueError as e:   # es. gia' gestita nella Homebase
+            raise HTTPException(400, str(e))
+    elif body.action == "keep" and data.get("email"):
         _set_rule(uid, data["email"], "keep"); status, msg = "keep", f"Ok: le mail di {data['from']} te le segnalo sempre"
     elif body.action == "junk" and data.get("email"):
         _set_rule(uid, data["email"], "junk")

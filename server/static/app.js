@@ -28,6 +28,7 @@ const ICONS = {
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
   play: '<path d="M6 3l14 9-14 9Z"/>',
   sound: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
+  home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
   box: '<path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 16v-5M13 16V7M18 16v-8"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
@@ -606,7 +607,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -696,7 +697,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       : null;
     const tIcon = isMem ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
     return h('div', { class: 'msg step' }, h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo),
-      m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : null);
+      m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -2135,9 +2136,9 @@ async function pushDisable() {
   } catch (e) { toast(e.message); }
 }
 
-async function feedAct(it, action, mid) {
+async function feedAct(it, action, mid, extra) {
   try {
-    const r = await (await api(`/api/aura/feed/${it.id}/act`, { action, mid })).json();
+    const r = await (await api(`/api/aura/feed/${it.id}/act`, { action, mid, ...(extra || {}) })).json();
     if (r.message) toast(r.message);
   } catch (e) { toast(e.message); }
   try { await loadAuraFeed(); } catch {}
@@ -2145,7 +2146,7 @@ async function feedAct(it, action, mid) {
 }
 const AURA_KIND = { code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
   reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'], deadline: ['Scadenza', 'calendar'],
-  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'] };
+  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'] };
 const PARCEL_STEPS = ['ordinato', 'spedito', 'in consegna', 'consegnato'];
 const hhmm = (sec) => new Date(sec * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 const shortDay = (iso) => { const d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'numeric' }); };
@@ -2162,7 +2163,70 @@ function parcelTrack(status) {
   return h('div', { class: 'au-track' + (bad ? ' bad' : ''), 'aria-label': 'Stato: ' + status },
     ...PARCEL_STEPS.map((st, n) => h('div', { class: 'au-step' + (n <= k ? ' on' : '') + (n === k ? ' now' : '') }, h('i'), h('span', { text: st }))));
 }
+// ------------------------------------------------------------------ Homebase (amministrazione)
+// Le richieste della Homebase in «Da Aura» e le risposte degli strumenti admin in chat: con lo stile della Homebase
+const HB_KIND = { reg: ['Nuova registrazione', 'user', 'amber'], pwd: ['Password dimenticata', 'key', 'violet'], msg: ['Messaggio di un utente', 'mail', 'blue'] };
+const HB_DONE = { hb_approved: ['Approvato: ora può entrare', 'green'], hb_rejected: ['Registrazione rifiutata', 'red'], hb_pwd_done: ['Password nuova creata', 'green'],
+  hb_done: ['Richiesta completata', 'green'], hb_completato: ['Risposta inviata, completato', 'green'], hb_in_valutazione: ['In valutazione', 'blue'],
+  hb_archiviato: ['Archiviato', 'gray'], hb_nuovo: ['Rimesso come nuovo', 'blue'], hb_elsewhere: ['Gestita direttamente nella Homebase', 'gray'] };
+const initials = (s) => String(s || '?').replace(/^@/, '').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('') || '?';
+function hbHead(title, time) {
+  return h('div', { class: 'hb-top' }, h('span', { class: 'hb-logo', html: icon('home', 'sm') }), h('b', { text: 'HomeBase' }),
+    h('span', { class: 'hb-sub', text: title }), time ? h('span', { class: 'hb-time tnum', text: time }) : null);
+}
+function hbCard(it) {
+  const d = it.data || {}, [label, ic, tone] = HB_KIND[d.hb] || ['Richiesta', 'home', 'blue'];
+  const done = HB_DONE[it.status];
+  const btn = (txt, cls, ic2, fn) => h('button', { class: 'hb-btn ' + cls, html: (ic2 ? icon(ic2, 'sm') : '') + txt, onclick: async (e) => {
+    const b = e.currentTarget; b.disabled = true; b.classList.add('busy'); await fn(); } });
+  const body = [hbHead('Amministrazione', hhmm(it.at)),
+    h('div', { class: 'hb-kind t-' + tone, html: icon(ic, 'sm') + label }),
+    h('div', { class: 'hb-person' }, h('span', { class: 'hb-av t-' + tone, text: initials(d.nome) }),
+      h('div', { class: 'tx' }, h('b', { text: d.nome || '@' + (d.username || '') }), h('small', { text: ['@' + (d.username || ''), d.email].filter(Boolean).join(' · ') })))];
+  const acts = [];
+  if (d.hb === 'msg') {
+    body.push(h('div', { class: 'hb-tags' }, d.tipo ? h('span', { class: 'hb-tag', text: d.tipo }) : null,
+      d.priorita ? h('span', { class: 'hb-tag p-' + d.priorita, text: 'priorità ' + d.priorita }) : null));
+    body.push(h('div', { class: 'hb-subj', text: d.oggetto || '' }), h('div', { class: 'hb-msg', text: d.messaggio || '' }));
+    if (d.risposta) body.push(h('div', { class: 'hb-reply-done' }, h('small', { text: 'La tua risposta' }), h('div', { text: d.risposta })));
+    if (!done) {
+      const ta = h('textarea', { class: 'hb-reply', rows: 2, placeholder: `Rispondi a @${d.username || ''}…`, 'aria-label': 'Risposta' });
+      body.push(ta);
+      acts.push(btn('Rispondi e completa', 'hb-btn--primary', 'check', () => feedAct(it, 'hb_reply', null, { text: ta.value, value: 'completato' })),
+        btn('In valutazione', '', 'eye', () => feedAct(it, 'hb_msg_state', null, { value: 'in_valutazione' })),
+        btn('Archivia', '', null, () => feedAct(it, 'hb_msg_state', null, { value: 'archiviato' })));
+    }
+  } else if (d.hb === 'reg') {
+    body.push(h('div', { class: 'hb-msg', text: 'Chiede di entrare nella Homebase. Se approvi, gli preparo la dashboard iniziale.' }));
+    if (!done) acts.push(btn('Approva', 'hb-btn--success', 'check', () => feedAct(it, 'hb_approve')), btn('Rifiuta', 'hb-btn--danger', 'x', () => feedAct(it, 'hb_reject')));
+  } else if (d.hb === 'pwd') {
+    body.push(h('div', { class: 'hb-msg', text: 'Ha chiesto di reimpostare la password. La genera la Homebase e te la do dentro un link segreto da mandargli: si apre una volta sola.' }));
+    if (!done) acts.push(btn('Crea password e link', 'hb-btn--primary', 'key', () => feedAct(it, 'hb_pwd_reset')),
+      btn('Segna come fatta', '', 'check', () => feedAct(it, 'hb_pwd_done')));
+  }
+  if (d.secret_link && it.status === 'hb_pwd_done') {
+    body.push(h('div', { class: 'hb-secret' }, h('small', { text: 'Link segreto per @' + (d.username || '') + ' (una sola apertura, 24 ore)' }),
+      h('div', { class: 'hb-secret-row' }, h('code', { class: 'mono', text: d.secret_link }),
+        h('button', { class: 'hb-btn hb-btn--sm', html: icon('copy', 'sm') + 'Copia', onclick: () => navigator.clipboard.writeText(d.secret_link).then(() => toast('Link copiato')) }))));
+  }
+  if (done) body.push(h('div', { class: 'hb-done t-' + done[1], html: icon('check', 'sm') + done[0] }));
+  if (acts.length) body.push(h('div', { class: 'hb-actions' }, ...acts));
+  if (d.admin_url) body.push(h('a', { class: 'hb-open', href: d.admin_url, target: '_blank', rel: 'noopener', html: 'Apri nella Homebase ' + icon('chevron', 'sm') }));
+  return h('div', { class: 'msg au-row ak-homebase' + (it.unread ? ' unread' : '') }, h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span')),
+    h('div', { class: 'hb-card' }, ...body));
+}
+// Risposta di homebase_admin in chat: un pannello con le righe (utenti, richieste, strumenti, accessi…)
+function hbView(v) {
+  return h('div', { class: 'hb-card hb-view' }, hbHead(v.title || 'Amministrazione'),
+    v.note ? h('div', { class: 'hb-note', text: v.note }) : null,
+    (v.rows || []).length ? h('div', { class: 'hb-rows' }, ...v.rows.map((r) => h('div', { class: 'hb-row' },
+      h('i', { class: 'hb-dot t-' + (r.tone || 'gray') }),
+      h('div', { class: 'tx' }, h('b', { text: r.title || '' }), r.sub ? h('small', { text: r.sub }) : null),
+      r.badge ? h('span', { class: 'hb-tag t-' + (r.tone || 'gray'), text: r.badge }) : null))) : null,
+    v.url ? h('a', { class: 'hb-open', href: v.url, target: '_blank', rel: 'noopener', html: 'Apri nella Homebase ' + icon('chevron', 'sm') }) : null);
+}
 function feedCard(it) {
+  if (it.kind === 'homebase') return hbCard(it);
   const d = it.data || {};
   const done = { keep: 'Segnato come interessante', junk: 'Non ti interessa: d\'ora in poi le cestino', restored: 'Rimesse nella posta in arrivo',
     dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti', added: 'Promemoria messo', delivered: 'Consegnato' }[it.status];

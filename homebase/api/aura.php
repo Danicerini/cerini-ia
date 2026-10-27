@@ -79,7 +79,39 @@ $OPS = [
     'secret_create'       => ['secret_share.php', 'create', ['POST']],
     'tts_voices'          => ['tts.php', 'voices', ['GET']],
     'tts_generate'        => ['tts.php', 'generate', ['POST']],
+    // Amministrazione (Aura agisce come l'utente configurato, che deve essere admin): richieste, utenti, permessi,
+    // strumenti, avviso globale, messaggi, registri. Niente eliminazioni e niente password scelte a mano: solo generate.
+    'adm_stats'           => ['admin.php', 'system_stats', ['GET']],
+    'adm_reg_list'        => ['admin.php', 'registrations_list', ['GET']],
+    'adm_reg_approve'     => ['admin.php', 'approve_registration', ['POST']],
+    'adm_reg_reject'      => ['admin.php', 'reject_registration', ['POST']],
+    'adm_pwd_list'        => ['admin.php', 'password_requests_list', ['GET']],
+    'adm_pwd_complete'    => ['admin.php', 'complete_password_request', ['POST']],
+    'adm_users'           => ['admin.php', 'users_list', ['GET']],
+    'adm_user'            => ['admin.php', 'get_user_resources', ['GET']],
+    'adm_user_active'     => ['admin.php', 'toggle_user_active', ['POST']],
+    'adm_user_role'       => ['admin.php', 'change_user_role', ['POST']],
+    'adm_user_password'   => ['admin.php', 'reset_user_password', ['POST']],
+    'adm_perms_get'       => ['admin.php', 'get_user_tool_permissions', ['GET']],
+    'adm_perms_save'      => ['admin.php', 'save_user_tool_permissions', ['POST']],
+    'adm_tools'           => ['admin.php', 'tools_list', ['GET']],
+    'adm_tool_status'     => ['admin.php', 'update_tool_status', ['POST']],
+    'adm_announce_get'    => ['admin.php', 'get_announcement', ['GET']],
+    'adm_announce_save'   => ['admin.php', 'save_announcement', ['POST']],
+    'adm_msgs'            => ['admin.php', 'admin_messages_list', ['GET']],
+    'adm_msg_update'      => ['admin.php', 'admin_message_update', ['POST']],
+    'adm_access_log'      => ['admin.php', 'access_log_list', ['GET']],
+    'adm_audit'           => ['admin.php', 'audit_logs_list', ['GET']],
+    'adm_terminal'        => ['admin.php', 'terminal_sessions_list', ['GET']],
+    'adm_procs'           => ['admin.php', 'procedures_supervision_list', ['GET']],
+    'adm_proc_visibility' => ['admin.php', 'toggle_procedure_visibility', ['POST']],
+    'adm_defaults'        => ['admin.php', 'default_services_list', ['GET']],
+    'adm_defaults_sync'   => ['admin.php', 'sync_default_services_to_users', ['POST']],
 ];
+// Le password le genera sempre la Homebase: Aura non puo' sceglierne una
+if (str_starts_with((string)($_GET['op'] ?? ''), 'adm_')) {
+    unset($_POST['password'], $_GET['password'], $_REQUEST['password']);
+}
 
 $op = (string)($_GET['op'] ?? '');
 if (!isset($OPS[$op])) {
