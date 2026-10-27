@@ -2004,7 +2004,9 @@ async def _summary_remember(args: dict) -> str:
 async def _tool_remember(user: dict, args: dict, request: Request) -> dict:
     text = str(args.get("testo", "")).strip()
     r = await brain_remember(user, text)
-    return {"content": f"Ricordo salvato nel cervello ({r['path']}).", "display": f"Ho salvato in «{r['name']}»: «{text}»",
+    extra = (f" Collegato a: {', '.join(r['linked'])}." if r.get("linked") else "") + (f" Schede nuove: {', '.join(r['created'])}." if r.get("created") else "")
+    return {"content": f"Ricordo salvato nel cervello, nella scheda «{r['name']}» ({r['path']}).{extra}",
+            "display": f"Ho salvato in «{r['name']}»: «{text}»" + (f" · collegato a {', '.join(r['linked'])}" if r.get("linked") else ""),
             "undo": {"type": "memory", "id": r["id"]} if r.get("id") else None}
 
 
@@ -6630,6 +6632,9 @@ COMPANY_RES = [   # un'azienda nominata come tale: va in companies/, non tra le 
 
 
 def _company_in(fact: str) -> str:
+    m = re.search(r"\bil gruppo\s+([A-ZÀ-Ý][\w&.'-]*(?:\s+[A-ZÀ-Ý][\w&.'-]*){0,2})", fact)
+    if m:
+        return clean_name(m.group(1))
     for rx in COMPANY_RES:
         m = rx.search(fact)
         if m and not re.match(r"(?i)(il|la|lo|un|una|mio|mia)$", m.group(1)):
@@ -6674,8 +6679,83 @@ def _user_title(user: dict, text: str) -> str:
     return text
 
 
+ROUTE_PROMPT = """Devi archiviare un fatto nel cervello dell'utente. Capisci DI CHI parla il fatto e quali altre entità nomina.
+Fatto: «{fact}»
+
+L'utente è: {who}. Per lui la scheda è «utente» (mai una scheda col suo nome).
+Schede che esistono già (nome · tipo):
+{known}
+
+Regole:
+- «soggetto» è l'entità di cui il fatto dice qualcosa (chi è, cosa fa, cosa ha), scritta come nel fatto. NON è il contesto: in «X è un cliente di Y», «X lavora in Y», «sotto X ci sono Y e Z» il soggetto è X.
+- Parole come gruppo, azienda, società, ditta, il cliente NON fanno parte del nome («il gruppo Rossi» → «Rossi»).
+- tipo: people (solo esseri umani con un nome), companies (aziende, clienti, fornitori, negozi, gruppi), projects (un lavoro che dura), places, services (siti, server, account), things.
+- «collegati»: le ALTRE entità con un nome proprio nominate nel fatto (aziende, persone, progetti), escluso l'utente.
+
+Esempi:
+«Il gruppo Rossi Impianti è un cliente di Acme» → {{"soggetto": "Rossi Impianti", "tipo": "companies", "collegati": [{{"nome": "Acme", "tipo": "companies"}}]}}
+«Rossi Impianti è la capogruppo di Beta Srl e Gamma: tre aziende diverse» → {{"soggetto": "Rossi Impianti", "tipo": "companies", "collegati": [{{"nome": "Beta Srl", "tipo": "companies"}}, {{"nome": "Gamma", "tipo": "companies"}}]}}
+«Luca è un collega commerciale in Acme» → {{"soggetto": "Luca", "tipo": "people", "collegati": [{{"nome": "Acme", "tipo": "companies"}}]}}
+«{me} lavora in Acme come tecnico» → {{"soggetto": "utente", "tipo": "", "collegati": [{{"nome": "Acme", "tipo": "companies"}}]}}
+
+Rispondi SOLO con il JSON."""
+
+
+def _same_name(a: str, b: str) -> bool:
+    fa, fb = _flat(a), _flat(b)
+    return bool(fa) and (fa == fb or (min(len(fa), len(fb)) >= 5 and (fa in fb or fb in fa)))
+
+
+async def route_fact_ai(user: dict, fact: str) -> dict | None:
+    """Il modello decide di chi parla il fatto e cosa nomina; il codice controlla che i nomi siano davvero nella frase."""
+    me = _user_names(user)
+    ents = [e for e in brain_entities(user) if e["name"].lower() not in me and e["id"] not in me]
+    who = ", ".join(sorted(x.capitalize() for x in me))
+    known = "\n".join(f"- {e['name']} · {e['kind']}" for e in ents[:120]) or "(nessuna)"
+    try:
+        d = json.loads(await llm_once([{"role": "user", "content": ROUTE_PROMPT.format(
+            fact=fact, who=who, known=known, me=_user_display(user).split()[0])}], json_mode=True, temperature=0, timeout=60) or "{}")
+    except (HTTPException, httpx.HTTPError, ValueError):
+        return None
+    if not isinstance(d, dict):
+        return None
+    flat = _flat(fact)
+
+    def resolve(name, tipo):
+        name = clean_name(re.sub(r"(?i)^(il |la |lo |l')?(gruppo|azienda|societ[aà]|ditta|cliente)\s+", "", str(name or "").strip()))[:60]
+        tipo = OLD_KINDS.get(str(tipo or ""), str(tipo or ""))
+        if not name or _flat(name) not in flat or set(re.findall(r"\w+", name.lower())) <= me:
+            return None
+        have = next((e for e in ents if any(_same_name(n, name) for n in [e["name"], *e["aliases"]])), None)
+        if have:
+            return {"kind": have["kind"], "name": have["name"], "path": have["path"], "new": False}
+        if tipo not in WIKI_KINDS:
+            return None
+        return {"kind": tipo, "name": name, "path": entity_path(tipo, _slug(name)), "new": True}
+
+    subj = str(d.get("soggetto") or "").strip()
+    main = {"kind": "utente", "name": user["username"], "path": "boot/user.md", "new": False} if subj.lower() in ("utente", *me) \
+        else resolve(subj, d.get("tipo"))
+    if not main:
+        return None
+    linked = []
+    for l in d.get("collegati") or []:
+        r = resolve((l or {}).get("nome"), (l or {}).get("tipo")) if isinstance(l, dict) else None
+        if r and r["path"] != main["path"] and all(x["path"] != r["path"] for x in linked):
+            linked.append(r)
+    return {**main, "linked": linked[:6]}
+
+
 async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
-    """In quale scheda va un fatto: (kind, nome, percorso). L'utente stesso -> boot/user.md."""
+    """In quale scheda va un fatto: prima decide il modello (route_fact_ai), le regole qui sotto servono solo se non risponde."""
+    r = await route_fact_ai(user, fact)
+    if r:
+        return r["kind"], r["name"], r["path"]
+    return _route_fact_rules(user, fact)
+
+
+def _route_fact_rules(user: dict, fact: str) -> tuple[str, str, str]:
+    """Riserva senza modello: (kind, nome, percorso). L'utente stesso -> boot/user.md."""
     me = _user_names(user)
     ents = [e for e in brain_entities(user) if e["name"].lower() not in me and e["id"] not in me]
     low = fact.lower()
@@ -6701,31 +6781,6 @@ async def _route_fact(user: dict, fact: str) -> tuple[str, str, str]:
                 best = (pos, e)
     if best:
         return best[1]["kind"], best[1]["name"], best[1]["path"]
-    first = (re.match(r"[A-Za-zÀ-ÿ]+", fact.strip()) or [""])[0].lower()
-    if first in me:   # «Marco preferisce…», «Marco lavora…»: e' lui
-        return "utente", user["username"], "boot/user.md"
-    known = "\n".join(f"- {e['path']} ({e['name']})" for e in ents[:80]) or "(nessuna)"
-    who = ", ".join(sorted(x.capitalize() for x in me))
-    try:
-        d = json.loads(await llm_once([{"role": "user", "content":
-            "Devi archiviare questo fatto nel cervello dell'utente, in una scheda.\nFatto: «" + fact + "»\n\n"
-            f"L'UTENTE è lui: {who}. Non creare mai una scheda per lui.\nSchede che esistono:\n" + known +
-            "\n\nSe il fatto parla dell'utente stesso (chi è, età, lavoro, gusti, salute, come vuole essere chiamato) la scheda è «utente». "
-            "Se parla soprattutto di un'ALTRA persona (anche se nomina l'utente, es. «il migliore amico di Marco è Luca» → la scheda di Luca), "
-            "di un progetto, di un luogo, di un servizio o di una cosa, usa quella scheda (esistente, o nuova con tipo e nome proprio "
-            "dell'entità). Un lavoro che dura è «projects»; un'azienda, un cliente o un negozio è «companies»; un sito o un account è «services»: MAI "
-            "«people», che è solo per esseri umani con un nome. Tipi: " + ", ".join(WIKI_KINDS) +
-            ". Rispondi SOLO JSON: {\"scheda\": \"utente\" | \"esistente\" | \"nuova\", \"percorso\": \"wiki/…md se esistente\", \"tipo\": \"…\", \"nome\": \"…\"}"}],
-            json_mode=True, temperature=0, timeout=60) or "{}")
-    except (HTTPException, httpx.HTTPError, ValueError):
-        d = {}
-    if d.get("scheda") == "esistente" and any(e["path"] == d.get("percorso") for e in ents):
-        e = next(e for e in ents if e["path"] == d["percorso"])
-        return e["kind"], e["name"], e["path"]
-    name = clean_name(str(d.get("nome") or ""))[:60]
-    tipo = OLD_KINDS.get(str(d.get("tipo") or ""), str(d.get("tipo") or ""))
-    if d.get("scheda") == "nuova" and tipo in WIKI_KINDS and name and not set(re.findall(r"\w+", name.lower())) <= me:
-        return tipo, name, entity_path(tipo, _slug(name))
     return "utente", user["username"], "boot/user.md"
 
 
@@ -6760,6 +6815,10 @@ async def link_entities(user: dict, rel: str, fact: str):
 TASK_FACT_RE = re.compile(r"^(?:\S+\s+){0,3}(deve|devo|dovrebbe|dovr[aà]|bisogna)\s|\bricordami\b|\bda fare\b", re.I)
 
 
+FACT_STARTS_OK = {"il", "lo", "la", "i", "gli", "le", "l'", "un", "uno", "una", "un'", "mio", "mia", "miei", "mie", "suo", "sua", "questo", "questa",
+                  "quel", "quella", "ogni", "tutti", "tutte", "nel", "nella", "a", "da", "in", "per", "con", "su", "dal", "al", "alla", "del", "della"}
+
+
 def normalize_fact(user: dict, fact: str) -> str:
     """«è un tecnico helpdesk» scritto nella mappa: il soggetto e' l'utente. Le cose da fare vanno nel diario, non qui."""
     f = re.sub(r"\s+", " ", str(fact or "")).strip()
@@ -6767,8 +6826,11 @@ def normalize_fact(user: dict, fact: str) -> str:
         raise ValueError("Il ricordo è vuoto")
     if TASK_FACT_RE.search(f):
         raise ValueError("Questa è una cosa da fare, non un ricordo: va nel diario (diario_nota) o in agenda (promemoria)")
-    if f[0].islower():
+    first = (re.match(r"[\wà-ÿ']+", f.lower()) or [""])[0]
+    if f[0].islower() and first not in FACT_STARTS_OK:   # «è un tecnico…», «si occupa di…»: manca il soggetto, e' l'utente
         f = f"{_user_display(user)} {f}"
+    elif f[0].islower():   # «il gruppo X è…»: il soggetto c'e', solo la maiuscola
+        f = f[0].upper() + f[1:]
     return f
 
 
@@ -6776,7 +6838,8 @@ async def brain_remember(user: dict, fact: str) -> dict:
     """Un ricordo nuovo: una riga nella scheda giusta (creata se serve). Ritorna dove e' finito."""
     brain_ensure(user)
     fact = normalize_fact(user, fact)
-    kind, name, rel = await _route_fact(user, fact)
+    routed = await route_fact_ai(user, fact)
+    kind, name, rel = (routed["kind"], routed["name"], routed["path"]) if routed else _route_fact_rules(user, fact)
     text = brain_read(user, rel) or _entity_file(kind, name)
     if rel.startswith("wiki/"):
         meta, body = fm_split(text)
@@ -6788,6 +6851,20 @@ async def brain_remember(user: dict, fact: str) -> dict:
         t = re.search(r"^# (.+)$", text, re.M)
         name = t.group(1).strip() if t else name
     await brain_write(user, rel, text, f"Ricordo in {rel}: {fact[:80]}", reindex=False)
+    created, linked = [], []
+    for l in (routed or {}).get("linked") or []:
+        if l["new"]:
+            if l["kind"] not in ("people", "companies"):   # i progetti nascono solo quando li decide l'utente
+                continue
+            await brain_write(user, l["path"], _add_fact(_entity_file(l["kind"], l["name"]), fact), f"Nuova scheda: {l['name']}", reindex=False)
+            created.append(l["name"])
+            asyncio.create_task(brain_reindex(user, l["path"]))
+        linked.append(l["name"])
+        if rel.startswith("wiki/"):
+            ents = {e["path"]: e for e in brain_entities(user)}
+            if rel in ents and l["path"] in ents:
+                await brain_write(user, rel, _add_link(brain_read(user, rel), _link_line(ents[l["path"]])), f"Collegati: {name} ↔ {l['name']}", reindex=False)
+                await brain_write(user, l["path"], _add_link(brain_read(user, l["path"]), _link_line(ents[rel])), f"Collegati: {l['name']} ↔ {name}", reindex=False)
     if rel.startswith("wiki/"):
         await link_entities(user, rel, fact)
     await brain_reindex(user, rel)
@@ -6796,7 +6873,7 @@ async def brain_remember(user: dict, fact: str) -> dict:
     with db() as c:
         r = c.execute("SELECT id FROM memories WHERE user_id = ? AND kind = 'ricordo' AND doc_id = ? AND text = ? ORDER BY id DESC LIMIT 1",
                       (user["id"], rel, line)).fetchone()
-    return {"path": rel, "name": name, "id": r["id"] if r else None}
+    return {"path": rel, "name": name, "id": r["id"] if r else None, "linked": linked, "created": created}
 
 
 async def brain_fact_edit(user: dict, row: dict, new: str | None):
