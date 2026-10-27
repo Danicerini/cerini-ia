@@ -13,7 +13,7 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 
 ## Dove sta il codice
 
-- `server/app.py`: tutto il backend (un file solo, ~9000 righe). Sezioni con banner `# ====`: chat e strumenti, memoria, posta, agenda, cloud, cervello (Brain Protocol), diario, skill, Homebase.
+- `server/app.py`: il nucleo del backend (configurazione, database, sessioni, avvio). Il resto sta in `server/parti/` (un file per argomento: modelli, strumenti, chat, gmail, agenda, web, file, homebase, aura_scrive, cloud, cervello, conversazioni, procedure). Le parti NON sono moduli: `app.py` le esegue nel proprio spazio di nomi, nell'ordine di `PARTI`, quindi si usano i nomi l'una dell'altra senza import e `import app` vede tutto. Una funzione nuova va nella parte del suo argomento.
 - `server/static/app.js`: tutto il frontend in JS semplice (niente build). Helper `h(tag, attrs, ...children)`, `$()`, `api()`, `toast()`, `icon(nome)` (icone in `ICONS` in cima al file), `pref.get/set` (localStorage).
 - `server/static/index.html`: HTML + tutto il CSS. Colori solo con i token (`--bg`, `--text`, `--text-2`, `--text-3`, `--border`, `--accent`, `--accent-soft`, …), tema chiaro e scuro.
 - `server/brain/brain.md`: la specifica Brain Protocol v6 copiata nel cervello di ogni utente.
@@ -27,12 +27,13 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 - **Ricordi**: una riga `- fatto.` in UNA scheda sola (`brain_remember`). Lo smistamento lo decide il modello (`route_fact_ai`, prompt `ROUTE_PROMPT`), con riserva a regole (`_route_fact_rules`). Le schede collegate nuove nascono vuote col solo link. `same_fact()` impedisce i doppioni. L'utente e Aura non diventano mai schede di persone.
 - La tabella SQLite `memories` è solo l'indice di ricerca (vettori): **i file del cervello sono la verità**; dopo aver cambiato una scheda chiama `brain_reindex`.
 - **Modelli**: `DEFAULT_MODEL` (Gemma locale) all'avvio e per i lavori di sottofondo; modelli cloud con prefisso `cloud:` (`is_cloud`, `cloud_stream`, preset in `CLOUD_PRESETS`). Il prompt di sistema dice ad Aura con che modello sta girando davvero.
+- **Consumi**: tabella `usage` (giorno, modello, tipo chat/sfondo, token entrata/uscita), scritta da `usage_add` in `llm_stream`/`llm_once`/chiamate dirette a Ollama; prezzi e credito in `cloud.json`; pagina Impostazioni → Consumi.
 - **Grafo** del cervello: `/api/brain/graph` + `brainGraph()` in app.js (3D, canvas). Esportazione per Obsidian: `/api/brain/export` (zip).
 
 ## Come si lavora
 
-1. Modifica nel repo. Per sostituzioni grandi in app.py/app.js usa piccoli script Python con `assert s.count(vecchio) == 1` (gli heredoc rovinano `\n` e `\\`).
-2. Controllo sintassi: `python -c "import ast; ast.parse(open('server/app.py', encoding='utf-8').read())"`. Node non è installato sul PC.
+1. Modifica nel repo. Per sostituzioni grandi in app.py/app.js e nelle parti usa piccoli script Python con `assert s.count(vecchio) == 1` (gli heredoc rovinano `\n` e `\\`).
+2. Controllo sintassi: `python -c "import ast, glob; [ast.parse(open(f, encoding='utf-8').read(), f) for f in ['server/app.py', *glob.glob('server/parti/*.py')]]"` (lo fa anche il deploy). Node non è installato sul PC.
 3. Prova in locale con `tools/serve_local.py` (copia dell'app su `http://127.0.0.1:8099` con una copia del cervello; venv e come prendere la copia in `CLAUDE.local.md`). Verifica nel browser integrato.
 4. Commit (l'hook controlla la privacy), `git push`, poi `bash tools/deploy.sh` (legge `~/.cerini-ia/deploy.env`, fa il backup, copia `server/`, riavvia, controlla HTTP 200).
 5. **Dopo ogni deploy apri la pagina vera** e controlla che l'app si carichi: una volta un errore in app.js ha lasciato la pagina nera.

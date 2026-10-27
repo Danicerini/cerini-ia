@@ -13,6 +13,7 @@ id ollamaweb &>/dev/null || useradd --system --home "$DEST" --shell /usr/sbin/no
 mkdir -p "$DEST"
 install -m 644 "$SRC/app.py" "$SRC/requirements.txt" "$DEST/"
 rm -rf "$DEST/static.new" && cp -r "$SRC/static" "$DEST/static.new" && rm -rf "$DEST/static" && mv "$DEST/static.new" "$DEST/static"
+rm -rf "$DEST/parti" && cp -r "$SRC/parti" "$DEST/parti"
 mkdir -p "$DEST/brain" && install -m 644 "$SRC/brain/brain.md" "$DEST/brain/"
 install -m 755 "$SRC/set-password.sh" "$SRC/set-smtp.sh" "$SRC/set-google.sh" "$DEST/"
 
