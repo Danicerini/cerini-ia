@@ -16,7 +16,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 python "$ROOT/tools/check_private.py" --all >/dev/null || { echo "Prima togli i dati personali (tools/check_private.py --all)"; exit 1; }
 # niente pubblicazione se il Python ha errori di sintassi (app.py e le parti)
-python -c "import ast, glob, sys; [ast.parse(open(f, encoding='utf-8').read(), f) for f in ['$ROOT/server/app.py'] + glob.glob('$ROOT/server/parti/*.py')]" || { echo "Errore di sintassi nel Python: non pubblico"; exit 1; }
+(cd "$ROOT/server" && python -c "import ast, glob; [ast.parse(open(f, encoding='utf-8').read(), f) for f in ['app.py'] + glob.glob('parti/*.py')]") || { echo "Errore di sintassi nel Python: non pubblico"; exit 1; }
 PKG=$(mktemp -t cerini-ia-XXXX.tgz)
 tar -czf "$PKG" -C "$ROOT/server" app.py parti requirements.txt static brain set-password.sh set-smtp.sh set-google.sh
 "${SCP[@]}" "$PKG" "$PROXMOX_HOST:/tmp/cerini-ia.tgz"
