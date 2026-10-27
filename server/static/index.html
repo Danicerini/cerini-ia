@@ -601,6 +601,63 @@ button:disabled { cursor: default; }
   .sv-dm-head h3 { font-size: 1.6rem; }
 }
 
+/* clienti: attivita' della zona senza sito o con un sito da rifare */
+#clientiView { display: none; flex: 1; overflow-y: auto; }
+#main.clienti-open #clientiView { display: block; }
+#main.clienti-open .center-wrap, #main.clienti-open #toBottom, #main.clienti-open #modelBtn { display: none; }
+.cl-wrap { max-width: 980px; margin: 0 auto; padding: 18px 22px 60px; display: grid; gap: 16px; }
+.cl-head { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.cl-head .tx { flex: 1; min-width: 220px; }
+.cl-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+.cl-head p { margin: 4px 0 0; color: var(--text-2); font-size: 14px; }
+.cl-head .acts { display: flex; gap: 6px; align-items: center; }
+.cl-src { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 12.5px; color: var(--text-3); }
+.cl-src.warn { color: var(--warn); }
+.cl-job { display: grid; gap: 6px; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--raised); font-size: 13.5px; }
+.cl-job .bar { height: 6px; border-radius: 99px; background: var(--border); overflow: hidden; }
+.cl-job .bar i { display: block; height: 100%; background: var(--accent); transition: width .4s; }
+.cl-job.err { border-color: var(--err); color: var(--err); }
+.cl-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.cl-stat { --k: var(--accent); text-align: left; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--raised); color: var(--text); font: inherit; cursor: pointer; display: grid; gap: 2px; }
+.cl-stat:hover, .cl-stat.on { border-color: var(--k); }
+.cl-stat.on { background: color-mix(in oklch, var(--k) 8%, var(--raised)); }
+.cl-stat small { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.cl-stat small::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--k); }
+.cl-stat b { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
+.s-nosite { --k: var(--err); } .s-bad { --k: var(--warn); } .s-cont { --k: var(--accent); } .s-cli { --k: var(--ok); }
+.cl-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.cl-bar .seg { flex-wrap: wrap; }
+.cl-bar .ag-in { width: auto; flex: 1; min-width: 160px; height: 38px; }
+.cl-bar select.ag-in { flex: 0 0 auto; min-width: 140px; }
+.cl-list { display: grid; gap: 10px; }
+.cl-card { --k: var(--warn); display: grid; gap: 10px; padding: 14px 16px; border-radius: 16px; border: 1px solid var(--border); background: var(--raised);
+  border-left: 4px solid var(--k); }
+.cl-card.k-nosite { --k: var(--err); }
+.cl-card.st-no { opacity: .55; } .cl-card.st-cliente { --k: var(--ok); } .cl-card.st-contattato, .cl-card.st-risposto { --k: var(--accent); }
+.cl-top { display: flex; align-items: flex-start; gap: 10px; }
+.cl-name { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.cl-name b { font-size: 16px; font-weight: 650; }
+.cl-name small { font-size: 13px; color: var(--text-2); text-transform: capitalize; }
+.cl-badge { flex: none; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 99px; color: var(--k); background: color-mix(in oklch, var(--k) 12%, transparent);
+  border: 1px solid color-mix(in oklch, var(--k) 35%, transparent); white-space: nowrap; }
+.cl-issues { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.cl-issues li { font-size: 13.5px; color: var(--text); display: flex; gap: 7px; align-items: baseline; }
+.cl-issues li::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--k); flex: none; transform: translateY(-1px); }
+.cl-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.cl-link { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 11px; border-radius: 99px; border: 1px solid var(--border-strong);
+  color: var(--text); text-decoration: none; font-size: 13px; font-weight: 500; max-width: 100%; }
+.cl-link i { display: inline-flex; font-style: normal; }
+.cl-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-link:hover { background: var(--hover); }
+.cl-link.tel { border-color: color-mix(in oklch, var(--ok) 50%, var(--border)); color: var(--ok); font-weight: 600; }
+.cl-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cl-acts select { height: 34px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 0 8px; }
+.cl-note { font-size: 13px; color: var(--text-2); }
+.cl-empty { padding: 30px 20px; text-align: center; color: var(--text-2); border: 1px dashed var(--border-strong); border-radius: 16px; }
+.cl-more { justify-self: center; }
+.cl-sheet { width: min(640px, 100%); }
+@media (max-width: 640px) { .cl-wrap { padding: 12px 14px 40px; } .cl-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cl-head h1 { font-size: 19px; } }
+
 /* agenda */
 #agendaView { display: none; flex: 1; overflow-y: auto; }
 #main.agenda-open #agendaView { display: block; }
@@ -1190,7 +1247,7 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
   border-radius: 6px 20px 20px 20px; padding: 12px 15px 13px 12px; box-shadow: 0 8px 22px -16px oklch(0.2 0.02 260 / .45); }
 .au-row.unread .au-bubble { border-color: color-mix(in oklch, var(--k) 45%, var(--border)); }
 .au-badge { width: 32px; height: 32px; border-radius: 10px; flex: none; display: grid; place-items: center; color: var(--k); background: color-mix(in oklch, var(--k) 14%, transparent); }
-.au-body { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.au-body { flex: 1; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
 .au-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .au-kind { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; color: var(--k); }
 .au-kind .i { display: none; }
@@ -1218,7 +1275,18 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .au-checked summary { display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none; font-size: 14px; color: var(--text-2); }
 .au-checked summary::-webkit-details-marker { display: none; }
 .au-checked[open] > summary .chev { transform: rotate(180deg); }
-.au-chip.sm { height: 28px; padding: 0 10px; font-size: 12.5px; }
+.au-chip.sm { height: 28px; padding: 0 10px; font-size: 12.5px; flex: none; }
+.au-chip.sm .i { width: 13px; height: 13px; }
+.au-list { display: grid; gap: 4px; margin: 2px 0 0; padding: 0; list-style: none; min-width: 0; }
+.au-bubble .au-list li { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 7px 8px 7px 7px; border: 0; border-radius: 12px;
+  background: color-mix(in oklch, var(--bg) 70%, transparent); transition: background .15s; }
+.au-bubble .au-list li:hover { background: var(--hover); }
+.au-bubble .au-list li.restored { opacity: .65; }
+.au-list .tx { flex: 1; min-width: 0; }
+.au-list .tx b { font-size: 13.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.au-ini { width: 30px; height: 30px; border-radius: 9px; flex: none; display: grid; place-items: center; font-size: 12px; font-weight: 700;
+  color: var(--text-2); background: var(--raised); border: 1px solid var(--border); }
+.au-list small.ok { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 12px; }
 /* Homebase: le sue schede hanno i suoi colori (blu notte, azzurro), in tutti e due i temi */
 .hb-card { --hb-bg: #111a2e; --hb-bg2: #0b1222; --hb-line: rgba(148, 163, 184, .16); --hb-text: #e2e8f0; --hb-text2: #94a3b8; --hb-text3: #64748b;
   --t-blue: #38bdf8; --t-green: #34d399; --t-amber: #fbbf24; --t-red: #f87171; --t-violet: #a78bfa; --t-gray: #94a3b8;
@@ -1576,6 +1644,7 @@ body.brain-resizing { cursor: col-resize; user-select: none; }
     <button class="side-link" id="memoryBtn"><span data-icon="brain"></span>Memoria<span class="n" id="memoryCount"></span></button>
     <button class="side-link hidden" id="mailBtn"><span data-icon="mail"></span>Posta<span class="n" id="mailCount"></span></button>
     <button class="side-link hidden" id="agendaBtn"><span data-icon="calendar"></span>Agenda</button>
+    <button class="side-link hidden" id="clientiBtn"><span data-icon="globe"></span>Clienti</button>
     <nav id="chatList"></nav>
     <div class="side-foot">
       <div class="foot-actions">
@@ -1626,6 +1695,7 @@ body.brain-resizing { cursor: col-resize; user-select: none; }
     <section id="memoryView" aria-label="Memoria"></section>
     <section id="mailView" aria-label="Posta"></section>
     <section id="agendaView" aria-label="Agenda"></section>
+    <section id="clientiView" aria-label="Clienti"></section>
     <section id="auraView" aria-label="Da Aura"></section>
     <section id="brainView" aria-label="Cervello"></section>
     <button id="toBottom" class="hidden" aria-label="Vai in fondo" data-icon="down"></button>

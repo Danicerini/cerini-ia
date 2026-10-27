@@ -29,6 +29,7 @@ const ICONS = {
   play: '<path d="M6 3l14 9-14 9Z"/>',
   sound: '<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/>',
   home: '<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
   box: '<path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/>',
   chart: '<path d="M3 3v18h18"/><path d="M8 16v-5M13 16V7M18 16v-8"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
@@ -184,6 +185,7 @@ async function showApp() {
   S.currentId = null; closeViews(); refreshMemoryCount();
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
+  $('#clientiBtn').classList.toggle('hidden', !isAdmin());
   refreshAuraBadge();
   if (new URLSearchParams(location.search).get('aura')) { history.replaceState(null, '', '/'); openAura(); }
   if (!isMobile() && pref.get('brainPanel', true)) toggleBrain(true);
@@ -1820,6 +1822,163 @@ async function runTriage() {
   paintMailSide();
 }
 
+// ================================================================== clienti (siti vetrina)
+// Le attivita' della zona (scelta nelle impostazioni) senza sito o con un sito da rifare: numero, mail, motivo e una mail pronta da mandare.
+const CL = { tab: 'nuovo', q: '', town: '', shown: 60 };
+const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['cliente', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
+const CL_STATUS = [['nuovo', 'Da contattare'], ['contattato', 'Contattato'], ['risposto', 'Ha risposto'], ['cliente', 'Cliente'], ['no', 'Non interessa']];
+function closeClienti() { $('#main').classList.remove('clienti-open'); clearTimeout(CL.timer); }
+async function openClienti() {
+  closeSide(); togglePicker(false); closeViews();
+  $('#main').classList.add('clienti-open');
+  await renderClienti();
+}
+$('#clientiBtn').onclick = openClienti;
+async function renderClienti() {
+  const root = $('#clientiView');
+  clearTimeout(CL.timer);
+  const ps = new URLSearchParams();
+  if (['nosite', 'bad'].includes(CL.kind)) ps.set('kind', CL.kind);
+  if (CL.tab !== 'tutti') ps.set('status', CL.tab);
+  let d;
+  try { d = CL.data = await (await api('/api/clienti?' + ps)).json(); }
+  catch (e) { root.replaceChildren(h('div', { class: 'cl-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return; }
+  const cnt = (f) => Object.entries(d.counts || {}).filter(([k]) => f(...k.split(':'))).reduce((t, [, n]) => t + n, 0);
+  const job = d.job;
+  const head = h('div', { class: 'cl-head' },
+    h('div', { class: 'tx' }, h('h1', { text: 'Clienti per siti vetrina' }),
+      h('p', { text: `Attività ${d.zona?.nome ? d.zona.nome + ' ' : 'della tua zona '}senza un sito o con un sito da rifare. Contattale una per volta: la mail la prepara Aura, la mandi tu.` }),
+      h('div', { class: 'cl-src' + (d.has_key ? '' : ' warn'), html: icon(d.has_key ? 'check' : 'globe', 'sm') +
+        (d.has_key ? 'Dati da Google Maps' : 'Dati dai siti dei Comuni e dalle ricerche sul web (Google, DuckDuckGo, Brave)') })),
+    h('div', { class: 'acts' },
+      h('button', { class: 'btn primary', html: icon('retry', 'sm') + (job?.running ? 'Sto cercando…' : 'Cerca in zona'), disabled: !!job?.running, onclick: async () => {
+        try { await api('/api/clienti/cerca', {}); } catch (e) { toast(e.message); } renderClienti(); } }),
+      h('button', { class: 'icon-btn', title: 'Impostazioni', 'aria-label': 'Impostazioni dei clienti', html: icon('settings'), onclick: () => clientiSettings(d) }),
+      h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { closeClienti(); focusInput(); } })));
+  const jobEl = job && (job.running || job.error) ? h('div', { class: 'cl-job' + (job.error ? ' err' : '') },
+    h('div', { text: job.error ? 'La ricerca si è fermata: ' + job.error : `${job.phase} ${job.total ? job.done + ' di ' + job.total : ''}` }),
+    job.running ? h('div', { class: 'bar' }, h('i', { style: `width:${job.total ? Math.round((100 * job.done) / job.total) : 5}%` })) : null) : null;
+  const stat = (cls, label, n, kind, tab) => h('button', { class: 'cl-stat ' + cls + ((CL.kind || '') === (kind || '') && CL.tab === tab ? ' on' : ''), onclick: () => { CL.kind = kind; CL.tab = tab; CL.shown = 60; renderClienti(); } },
+    h('small', { text: label }), h('b', { class: 'tnum', text: String(n) }));
+  const stats = h('div', { class: 'cl-stats' },
+    stat('s-nosite', 'Senza sito', cnt((k, s) => k === 'nosite' && s === 'nuovo'), 'nosite', 'nuovo'),
+    stat('s-bad', 'Sito da rifare', cnt((k, s) => k === 'bad' && s === 'nuovo'), 'bad', 'nuovo'),
+    stat('s-cont', 'Contattati', cnt((k, s) => k !== 'ok' && ['contattato', 'risposto'].includes(s)), '', 'contattato'),
+    stat('s-cli', 'Clienti', cnt((k, s) => s === 'cliente'), '', 'cliente'));
+  const towns = [...new Set((d.leads || []).map((l) => l.town).filter(Boolean))].sort();
+  const search = h('input', { class: 'ag-in', type: 'search', placeholder: 'Cerca per nome, mestiere o paese', value: CL.q, 'aria-label': 'Cerca',
+    oninput: (e) => { CL.q = e.target.value; paintList(); } });
+  const town = h('select', { class: 'ag-in', 'aria-label': 'Paese', onchange: (e) => { CL.town = e.target.value; paintList(); } },
+    h('option', { value: '', text: 'Tutti i paesi' }), ...towns.map((t) => h('option', { value: t, text: t, selected: CL.town === t ? true : null })));
+  const tabs = segmented(CL_TABS.map(([v, t]) => [v, t]), CL.tab, (v) => { CL.tab = v; CL.kind = ''; CL.shown = 60; renderClienti(); }, 'Stato');
+  const list = h('div', { class: 'cl-list' });
+  function paintList() {
+    const q = CL.q.trim().toLowerCase();
+    const rows = (d.leads || []).filter((l) => (!CL.town || l.town === CL.town) && (!q || `${l.name} ${l.category} ${l.town}`.toLowerCase().includes(q)));
+    list.replaceChildren(...(rows.length ? rows.slice(0, CL.shown).map(leadCard) : [h('div', { class: 'cl-empty', text: (d.leads || []).length
+      ? 'Nessuna attività con questi filtri.' : 'Ancora niente qui. Premi «Cerca in zona»: in qualche minuto trovo le attività e controllo i loro siti.' })]),
+      rows.length > CL.shown ? h('button', { class: 'btn cl-more', text: `Mostra altre ${Math.min(60, rows.length - CL.shown)} (di ${rows.length - CL.shown})`, onclick: () => { CL.shown += 60; paintList(); } }) : '');
+  }
+  paintList();
+  root.replaceChildren(h('div', { class: 'cl-wrap' }, head, jobEl, stats, h('div', { class: 'cl-bar' }, tabs), h('div', { class: 'cl-bar' }, search, towns.length ? town : null), list));
+  if (job?.running) CL.timer = setTimeout(() => { if ($('#main').classList.contains('clienti-open')) renderClienti(); }, 2500);
+}
+function leadCard(l) {
+  const patch = async (body) => {
+    try { Object.assign(l, await (await api(`/api/clienti/${l.id}`, body, { method: 'PATCH' })).json()); } catch (e) { toast(e.message); }
+    renderClienti();
+  };
+  const gq = encodeURIComponent(`${l.name} ${l.town || ''}`);
+  const st = h('select', { 'aria-label': 'Stato', onchange: (e) => patch({ status: e.target.value }) },
+    ...CL_STATUS.map(([v, t]) => h('option', { value: v, text: t, selected: l.status === v ? true : null })));
+  return h('div', { class: `cl-card k-${l.kind} st-${l.status}` },
+    h('div', { class: 'cl-top' },
+      h('div', { class: 'cl-name' }, h('b', { text: l.name }), h('small', { text: [l.category, l.town].filter(Boolean).join(' · ') + (l.reviews ? ` · ${l.rating ?? ''}★ (${l.reviews})` : '') })),
+      h('span', { class: 'cl-badge', text: l.kind === 'nosite' ? 'Senza sito' : `Sito da rifare · ${l.score}/100` })),
+    l.issues?.length ? h('ul', { class: 'cl-issues' }, ...l.issues.slice(0, 5).map((i) => h('li', { text: i }))) : null,
+    h('div', { class: 'cl-links' },
+      l.phone ? h('a', { class: 'cl-link tel', href: 'tel:' + l.phone.replace(/\s+/g, '') }, h('i', { html: icon('phone', 'sm') }), h('span', { text: l.phone }))
+        : h('a', { class: 'cl-link', href: `https://www.google.com/search?q=${gq}+telefono`, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + '<span>Cerca il numero</span>' }),
+      l.email ? h('a', { class: 'cl-link', href: 'mailto:' + l.email }, h('i', { html: icon('mail', 'sm') }), h('span', { text: l.email })) : null,
+      l.website ? h('a', { class: 'cl-link', href: l.website, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + `<span>${l.kind === 'nosite' ? 'La loro pagina' : 'Il loro sito'}</span>` }) : null,
+      h('a', { class: 'cl-link', href: l.maps_url || `https://www.google.com/maps/search/${gq}`, target: '_blank', rel: 'noopener', html: icon('pin', 'sm') + '<span>Maps</span>' }),
+      !l.website || l.kind === 'nosite' ? h('a', { class: 'cl-link', href: `https://www.google.com/search?q=${gq}`, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + '<span>Cerca su Google</span>' }) : null),
+    l.note ? h('div', { class: 'cl-note', text: '📝 ' + l.note }) : null,
+    h('div', { class: 'cl-acts' },
+      h('button', { class: 'btn primary sm', html: icon('mail', 'sm') + 'Prepara mail', onclick: () => clientiMail(l) }), st,
+      h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Nota', onclick: () => { const n = prompt('Nota su ' + l.name, l.note || ''); if (n !== null) patch({ note: n }); } })));
+}
+// La mail per proporre il sito: Aura la scrive, tu la guardi, la cambi e la mandi (o la salvi in bozze)
+async function clientiMail(l) {
+  const close = () => modal.remove();
+  const to = h('input', { class: 'ag-in', value: l.email || '', placeholder: l.email ? '' : 'Non ho trovato la loro mail: scrivila tu', 'aria-label': 'A' });
+  const subj = h('input', { class: 'ag-in', 'aria-label': 'Oggetto', disabled: true, value: 'Scrivo la mail…' });
+  const body = h('textarea', { class: 'ag-in', rows: 12, 'aria-label': 'Testo', disabled: true });
+  const gm = !!CL.data?.gmail;
+  const send = (kind) => async (e) => {
+    const b = e.currentTarget; b.disabled = true;
+    try {
+      await api(`/api/mail/compose/${kind}`, { to: to.value.trim(), subject: subj.value, body: body.value, attachments: [] });
+      if (kind === 'send') await api(`/api/clienti/${l.id}`, { status: 'contattato', ...(to.value.trim() && to.value.trim() !== l.email ? { email: to.value.trim() } : {}) }, { method: 'PATCH' });
+      toast(kind === 'send' ? `Mail inviata a ${l.name}: segnato come contattato` : 'Salvata nelle bozze di Gmail');
+      close(); renderClienti();
+    } catch (ex) { b.disabled = false; toast(ex.message); }
+  };
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet cl-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Mail per ' + l.name },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Mail per ' + l.name }), h('span', { class: 'grow' }),
+        h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('label', { class: 'ag-f' }, h('span', { text: 'A' }), to), h('label', { class: 'ag-f' }, h('span', { text: 'Oggetto' }), subj),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Testo' }), body),
+      h('div', { class: 'ag-sheet-f' },
+        h('button', { class: 'btn sm', html: icon('copy', 'sm') + 'Copia', onclick: () => copyText(`${subj.value}\n\n${body.value}`) }),
+        h('span', { class: 'grow' }),
+        gm ? h('button', { class: 'btn', text: 'Salva in bozze', onclick: send('draft') }) : null,
+        gm ? h('button', { class: 'btn primary', html: icon('mail', 'sm') + 'Invia', onclick: send('send') }) : h('small', { text: 'Collega Gmail per inviarla da qui' }))));
+  document.body.append(modal);
+  try {
+    const m = await (await api(`/api/clienti/${l.id}/mail`, {})).json();
+    subj.value = m.subject; body.value = m.body; to.value = to.value || m.to || '';
+  } catch (e) { subj.value = ''; toast('Non sono riuscito a scriverla: ' + e.message); }
+  subj.disabled = false; body.disabled = false; body.focus();
+}
+function clientiSettings(d) {
+  const close = () => modal.remove();
+  const f = d.firma || {};
+  const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', placeholder: d.has_key ? 'Chiave salvata: lascia vuoto per tenerla' : 'Incolla la chiave di Google Places', 'aria-label': 'Chiave Google Places' });
+  const nome = h('input', { class: 'ag-in', value: f.nome || '', placeholder: 'Come ti firmi' });
+  const tel = h('input', { class: 'ag-in', value: f.telefono || '', placeholder: 'Il tuo numero' });
+  const sito = h('input', { class: 'ag-in', value: f.sito || '', placeholder: 'Il tuo sito o portfolio (facoltativo)' });
+  const off = h('textarea', { class: 'ag-in', rows: 2, placeholder: 'Es. sito vetrina da 390 €, pronto in 2 settimane (vuoto = niente prezzi nella mail)' }); off.value = d.offerta || '';
+  const mest = h('textarea', { class: 'ag-in', rows: 4 }); mest.value = (d.mestieri || []).join(', ');
+  const z = d.zona || {};
+  const zNome = h('input', { class: 'ag-in', value: z.nome || '', placeholder: 'Es. tra Paese A e Paese B' });
+  const zCom = h('textarea', { class: 'ag-in', rows: 2, placeholder: 'I comuni dove cercare, separati da virgola' }); zCom.value = (z.comuni || []).join(', ');
+  const zAree = h('input', { class: 'ag-in', value: (z.aree || []).join(', '), placeholder: 'Facoltativo: dove fare le ricerche web (di base i comuni)' });
+  const zProv = h('input', { class: 'ag-in', value: z.provincia || '', maxlength: 2, placeholder: 'Es. mi' });
+  const csv = (el) => el.value.split(',').map((x) => x.trim()).filter(Boolean);
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Impostazioni clienti' },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Impostazioni' }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Zona (come la chiami nelle mail)' }), zNome),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Comuni' }), zCom),
+      h('div', { class: 'ag-row2' }, h('label', { class: 'ag-f' }, h('span', { text: 'Aree di ricerca' }), zAree), h('label', { class: 'ag-f' }, h('span', { text: 'Sigla provincia' }), zProv)),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Chiave Google Places (facoltativa, resta sul server)' }), key),
+      h('div', { class: 'ag-row2' }, h('label', { class: 'ag-f' }, h('span', { text: 'Firma: nome' }), nome), h('label', { class: 'ag-f' }, h('span', { text: 'Telefono' }), tel)),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Sito o portfolio' }), sito),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Offerta da citare nella mail' }), off),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Mestieri da cercare (con Google), separati da virgola' }), mest),
+      h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }),
+        h('button', { class: 'btn primary', text: 'Salva', onclick: async () => {
+          try {
+            await api('/api/clienti/config', { places_key: key.value.trim(), firma: { nome: nome.value, telefono: tel.value, sito: sito.value }, offerta: off.value,
+              mestieri: mest.value.split(',').map((x) => x.trim()).filter(Boolean),
+              zona: { nome: zNome.value, comuni: csv(zCom), aree: csv(zAree), provincia: zProv.value } }, { method: 'PUT' });
+            toast('Salvato'); close(); renderClienti();
+          } catch (e) { toast(e.message); } } }))));
+  document.body.append(modal);
+}
+
 // ================================================================== agenda
 // I prossimi giorni del calendario Google: gli impegni li crea Aura (o tu, da Google Calendar).
 function closeAgenda() { $('#main').classList.remove('agenda-open'); }
@@ -2262,8 +2421,9 @@ function feedCard(it) {
     const open = !!S.auOpenChecked?.[it.id];
     const det = h('details', { class: 'au-checked', open: open || null, ontoggle: () => { (S.auOpenChecked ||= {})[it.id] = det.open; } },
       h('summary', {}, h('span', { text: `Ho guardato altre ${items.length} ${items.length === 1 ? 'mail' : 'mail'}: niente di urgente` }), h('span', { class: 'chev', html: icon('chevron', 'sm') })),
-      h('ul', { class: 'feed-trash' }, ...items.map((t) => h('li', {},
-        h('div', { class: 'tx' }, h('b', { text: t.from }), h('small', { text: t.why || t.subject })),
+      h('ul', { class: 'feed-trash au-list' }, ...items.map((t) => h('li', {},
+        h('span', { class: 'au-ini', 'aria-hidden': 'true', text: initials(t.from) }),
+        h('div', { class: 'tx' }, h('b', { text: t.from }), h('small', { text: t.why || t.subject, title: t.why || t.subject })),
         t.link ? h('a', { class: 'au-chip sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri' }) : null))));
     body.push(det);
   } else {
@@ -2272,9 +2432,11 @@ function feedCard(it) {
   }
   if (it.kind === 'trashed') {
     const items = d.items || [];
-    body.push(h('ul', { class: 'feed-trash' }, ...items.map((t) => h('li', {},
-      h('div', { class: 'tx' }, h('b', { text: t.from }), h('small', { text: t.subject })),
-      t.restored ? h('small', { class: 'ok', text: 'ripristinata' }) : chip('Ripristina', null, () => feedAct(it, 'restore', t.mid))))));
+    body.push(h('ul', { class: 'feed-trash au-list' }, ...items.map((t) => h('li', { class: t.restored ? 'restored' : '' },
+      h('span', { class: 'au-ini', 'aria-hidden': 'true', text: initials(t.from) }),
+      h('div', { class: 'tx' }, h('b', { text: t.from }), h('small', { text: t.subject, title: t.subject })),
+      t.restored ? h('small', { class: 'ok', html: icon('check', 'sm') + 'rimessa' })
+        : h('button', { class: 'au-chip sm', html: icon('retry', 'sm') + 'Ripristina', title: 'Rimettila nella posta in arrivo', onclick: () => feedAct(it, 'restore', t.mid) })))));
     if (items.filter((t) => !t.restored).length > 1) chips.push(chip('Ripristina tutte', null, () => feedAct(it, 'restore')));
   } else if ((it.kind === 'mail' || it.kind === 'suspect') && !done) {
     if (it.kind === 'mail') chips.push(chip('Interessante', 'check', () => feedAct(it, 'keep'), true));
@@ -3247,7 +3409,7 @@ const hueOf = (name) => [...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 
 const avatar = (name, cls = '') => h('span', { class: 'avatar c ' + cls, style: `--h:${hueOf(name)}`, text: (name[0] || '?') });
 
 function closeSettings() { $('#main').classList.remove('settings-open'); }
-function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
+function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeClienti === 'function') closeClienti(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
 async function openSettings(tab) {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('settings-open');

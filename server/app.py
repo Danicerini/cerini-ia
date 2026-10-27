@@ -387,6 +387,7 @@ async def lifespan(_app):
     init_brain_db()
     init_usage_db()
     init_hb_db()
+    init_clienti_db()
     backfill = asyncio.create_task(conv_backfill())
     watcher = asyncio.create_task(mail_watch_loop())
     fastmail = asyncio.create_task(mail_fast_loop())
@@ -488,7 +489,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # Il resto dell'app sta in parti/, un file per argomento. Ogni parte viene eseguita qui dentro, nello stesso spazio
 # di nomi di app.py: per il codice e' come se fosse ancora un file solo (e «import app» vede tutto, come prima).
 # L'ordine conta: le rotte si registrano in quest'ordine.
-PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "cervello", "conversazioni", "procedure"]
+PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "cervello", "conversazioni", "procedure", "clienti"]
 for _parte in PARTI:
     _f = Path(__file__).parent / "parti" / f"{_parte}.py"
     exec(compile(_f.read_text(encoding="utf-8"), str(_f), "exec"))
