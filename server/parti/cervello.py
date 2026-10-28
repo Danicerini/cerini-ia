@@ -1429,7 +1429,8 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "indizio. Esempi: reset password o sblocco account 30; analisi di una mail sospetta e risposta al ticket 30; configurazione o "
                "problema VPN 30-60; recesso o pratica con più passaggi 60-90; installazione o intervento su un PC 60-120;\n"
                "- entra tutto il lavoro FATTO quel giorno, anche le cose da fare spuntate come fatte ([x]); restano fuori solo le cose "
-               "ancora da fare ([ ]), quelle annullate o tolte dalla lista, quelle solo nominate e mai fatte, e quelle che non sono lavoro;\n"
+               "ancora da fare ([ ]), quelle annullate o tolte dalla lista, quelle solo nominate e mai fatte, e quelle che non sono lavoro "
+               "(togliere un promemoria, sistemare la lista delle cose da fare, chiedere riepiloghi all'assistente NON sono lavoro);\n"
                "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
                "- «descrizione» = la Descrizione attività da scrivere nel gestionale: UNA frase professionale e concreta (max 120 caratteri) "
                "che dice cosa è stato fatto e per quale utente o reparto, niente di inventato (es. «Reset password VPN utente amministrazione», "
@@ -1448,10 +1449,7 @@ CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESA
              "parte); CONS = consulenza; DC = data center e macchine virtuali. Se il cliente ha un solo fascicolo, quello. Il lavoro interno "
              "per {azienda} va nel fascicolo di assistenza interna di {azienda}. Nel dubbio tra NOC ed EXTRA scegli NOC e metti dubbio=true. "
              "Se il cliente non è nell'elenco, fascicolo vuoto. Un fascicolo tra parentesi ha la ragione sociale: i nomi brevi che usa "
-             "l'utente possono essere diversi (sigle, gruppo).\n"
-             "IL CLIENTE è l'azienda di cui parla il lavoro (il servizio, il dominio, la mail o gli utenti coinvolti: es. una mail che si "
-             "spaccia per un servizio di un cliente va su quel cliente), NON chi apre o segnala il ticket. Il fascicolo interno di {azienda} "
-             "solo per lavoro che riguarda {azienda} stessa.\n")
+             "l'utente possono essere diversi (sigle, gruppo).\n")
 
 
 def _fasc_file() -> dict:
@@ -1521,6 +1519,8 @@ async def consuntivo(user: dict, day: str) -> dict:
     pref = _fasc_file().get("predefinito") or {}
     fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" + (f"  [descrizione nel formato: {f['descrizione']}]" if f.get("descrizione") else "")
                                               for f in fl), azienda=main["name"])
+            + ("REGOLE DELL'UTENTE (correzioni sue: valgono sopra ogni altra regola):\n" + "\n".join(f"- {r}" for r in rules) + "\n"
+               if (rules := _fasc_file().get("regole") or []) else "")
             + ("FASCICOLO DI SOLITO USATO per questi clienti (usalo salvo motivi chiari): "
                + "; ".join(f"{k} → {v}" for k, v in pref.items()) + "\n" if pref else "")
             + ("SIGLE DEI CLIENTI (nome usato dall'utente = sigla del fascicolo): " + ", ".join(f"{k} = {v}" for k, v in alias.items()) + "\n"
@@ -1560,14 +1560,38 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
     view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"]}
     return {"content": "L'UTENTE VEDE GIÀ IL CONSUNTIVO in una tabella sopra la tua risposta (fascicoli, descrizioni, ore, totale). "
                        "Rispondi con UNA o DUE frasi al massimo, senza tabelle né elenchi e senza ripetere le voci: solo quanto manca alle 8 ore "
-                       f"e cosa gli chiedi, oppure le voci «da controllare». Stato: {note}\n\n"
+                       f"e cosa gli chiedi, oppure le voci «da controllare». Stato: {note}\n"
+                       "Se l'utente corregge un fascicolo, un cliente o un tempo, salva la correzione come regola generale con consuntivo_regola "
+                       "(es. «I reset password di quel cliente vanno sul suo fascicolo NOC») e poi rifai il consuntivo.\n\n"
                        "Dati, solo per quando l'utente aggiunge lavori o cambia un tempo (allora rifai il consuntivo con le stesse regole: "
                        "mezz'ore, minimo 30 minuti, fascicolo esatto, descrizione di una frase):\n" + "\n".join(lines)
                        + f"\nTotale {_hm(tot)} su 8h." + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else ""),
             "display": f"Consuntivo del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
 
 
+async def _tool_cons_rule(user: dict, args: dict, request: Request) -> dict:
+    rule = re.sub(r"\s+", " ", str(args.get("regola") or "")).strip()[:240]
+    if len(rule) < 8:
+        raise ValueError("scrivi la regola per intero")
+    d = _fasc_file()
+    if not d.get("fascicoli"):
+        raise ValueError("non c'è l'elenco dei fascicoli sul server")
+    rules = d.get("regole") or []
+    if any(_same_thing(rule, r) for r in rules):
+        return {"content": "Questa regola c'era già.", "display": "Regola del consuntivo già presente"}
+    d["regole"] = rules + [rule]
+    p = DATA_DIR / "fascicoli.json"
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp.replace(p)
+    return {"content": f"Regola salvata: «{rule}». Vale da ora per tutti i consuntivi.", "display": f"Regola del consuntivo: {_clip(rule, 120)}"}
+
+
 TOOLS.update({
+    "consuntivo_regola": {
+        "admin": False, "confirm": False, "run": _tool_cons_rule,
+        "spec": _fn("consuntivo_regola", "Salva una correzione dell'utente sul consuntivo come regola che vale per sempre (quale fascicolo "
+                    "per quale cliente o tipo di lavoro, cosa non va mai a consuntivo, tempi tipici).", {"regola": _S}, ["regola"])},
     "consuntivo": {
         "admin": False, "confirm": False, "run": _tool_consuntivo,
         "spec": _fn("consuntivo", "Il consuntivo di una giornata di lavoro: l'elenco di quello che l'utente ha fatto per l'azienda e i suoi "

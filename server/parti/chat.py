@@ -512,7 +512,7 @@ def _tool_group(name: str) -> str:
         return "tech"
     if name in ADMIN_TOOLS:
         return "admin"
-    if name == "consuntivo":
+    if name.startswith("consuntivo"):
         return "cons"
     if name.startswith("homebase_"):
         return "hb"
