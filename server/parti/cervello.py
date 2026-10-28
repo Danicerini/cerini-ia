@@ -884,6 +884,36 @@ async def _episode_later(user: dict, chat_id: str, messages: list[dict]):
         print(f"Diario dalla chat {chat_id}: {e}", flush=True)
 
 
+def _episode_project(user: dict, chat_id: str, new: list[dict], ap: dict | None, chosen: str, before: list[dict] | None = None) -> dict | None:
+    """Il progetto di QUESTO pezzo di conversazione, non di tutta la chat: una chat che ha parlato una volta di un progetto
+    non deve infilarci tutto quello che viene dopo.
+    - se l'utente lo nomina in questo pezzo, e' quello;
+    - se il modello sceglie il progetto della chat (in una chat normale), va bene solo se e' stato nominato in questo pezzo
+      o nei messaggi subito prima: si sta ancora parlando del suo lavoro;
+    - se il modello ne sceglie un altro, solo se in questo pezzo e' nominato;
+    - in «Da Aura» (parla di tutto) solo se e' nominato."""
+    said = project_in_text(user, "\n".join(str(m.get("content") or "") for m in new if m["role"] == "user"))
+    if said:
+        return said
+    pick = next((x for x in projects(user) if x["id"] == chosen), None)
+    if not pick:
+        return None
+    near = "\n".join(str(m.get("content") or "") for m in (before or [])[-6:] + new)
+    if ap and pick["id"] == ap["id"] and not chat_id.startswith("aurafeed") and _mentions(user, near, pick):
+        return pick
+    return pick if _mentions(user, "\n".join(str(m.get("content") or "") for m in new), pick) else None
+
+
+def _mentions(user: dict, text: str, p: dict) -> bool:
+    """Il progetto e' nominato nel testo (nome, alias o scritto attaccato), anche se non e' l'ultimo nominato."""
+    low, flat = str(text or "").lower(), _flat(text)
+    for n in [p["name"], *p["aliases"], p["id"].replace("-", " ")]:
+        nf = _flat(n)
+        if len(nf) >= 4 and (re.search(rf"\b{re.escape(n.lower())}\b", low) or (len(nf) >= 6 and nf in flat)):
+            return True
+    return False
+
+
 async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str | None:
     with db() as c:
         row = c.execute("SELECT * FROM brain_episodes WHERE chat_id = ?", (chat_id,)).fetchone()
@@ -909,10 +939,11 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
               "ATTENZIONE: un'azione (mail inviata, promemoria creato, file salvato…) è successa SOLO se c'è il suo [Esito strumento] o se "
               "l'utente dice di averla fatta lui. Se Aura dice di averla fatta ma non c'è l'esito, NON è successa: non scriverla tra i fatti.\n"
               f"Oggi è {GIORNI[local_now().weekday()]} {local_now().strftime('%Y-%m-%d')}. Progetti esistenti: {plist}."
-              + (f" Il progetto di questa chat è {ap['id']} ({ap['name']})." if ap else "") + "\n"
+              + (f" Prima, in questa chat, si parlava di {ap['id']} ({ap['name']}): indicalo SOLO se anche QUESTA parte riguarda "
+                 f"davvero {ap['name']}; se parla d'altro, il progetto è un altro o vuoto." if ap else "") + "\n"
               "Rispondi SOLO JSON: {\"utile\": true|false, \"titolo\": \"breve, 3-7 parole\", \"riassunto\": \"2-5 frasi\", "
               "\"fatti\": [\"cosa è stato fatto o deciso, una riga concreta ciascuna\"], \"stato\": \"una riga: a che punto è il progetto\", "
-              "\"progetto\": \"id di un progetto esistente, o vuoto\", \"progetto_nuovo\": \"nome di un progetto nuovo, o vuoto\", "
+              "\"progetto\": \"id di un progetto esistente SOLO se questa conversazione parla proprio del suo lavoro, altrimenti vuoto (nel dubbio vuoto)\", \"progetto_nuovo\": \"nome di un progetto nuovo, o vuoto\", "
               "\"descrizione_progetto\": \"se è nuovo: cos'è, 1 frase\", "
               "\"da_fare\": [{\"cosa\": \"…\", \"quando\": \"AAAA-MM-GG o vuoto\"}]}\n"
               "In da_fare metti OGNI cosa che l'utente ha detto di dover ancora fare (non quelle già fatte, non i promemoria già messi in "
@@ -928,7 +959,7 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
                   (chat_id, user["id"], len(convo), row["path"] if row else "", row["day"] if row else ""))
     if not d.get("utile") or not str(d.get("titolo") or "").strip():
         return None
-    pr = ap or next((x for x in plist_ if x["id"] == d.get("progetto")), None)
+    pr = _episode_project(user, chat_id, new, ap, str(d.get("progetto") or ""), convo[:upto])
     new_p = str(d.get("progetto_nuovo") or "").strip()[:60]
     if not pr and new_p and _slug(new_p) not in _user_names(user):   # un lavoro che dura: nasce la sua scheda di progetto
         pr = await project_create(user, new_p, str(d.get("descrizione_progetto") or ""))
@@ -1127,7 +1158,8 @@ def chat_project_set(uid: int, chat_id: str, pid: str):
 def active_project(user: dict, chat_id: str = "", messages: list[dict] | None = None) -> dict | None:
     """Il progetto di questa chat: quello nominato negli ultimi messaggi dell'utente, se no quello che c'era gia'."""
     users = [str(m.get("content") or "") for m in (messages or []) if m.get("role") == "user"]
-    for t in reversed(users[-3:]):
+    # «Da Aura» salta da un argomento all'altro: conta solo l'ultimo messaggio
+    for t in reversed(users[-1:] if chat_id.startswith("aurafeed") else users[-3:]):
         p = project_in_text(user, t)
         if p:
             chat_project_set(user["id"], chat_id, p["id"])
