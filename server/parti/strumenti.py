@@ -811,7 +811,7 @@ if SITE_API_URL and SITE_API_KEY:
                         {"id": {"type": "integer"}}, ["id"])},
     })
 
-SITE_PROMPT += ("\\n\\nEVENTI: il sito ha anche la pagina Eventi & novità con due tipi: SERATE (feste, musica, serate a tema) e "
+SITE_PROMPT += ("\n\nEVENTI: il sito ha anche la pagina Eventi & novità con due tipi: SERATE (feste, musica, serate a tema) e "
                 "APPUNTAMENTI GOLOSI (una proposta di cucina legata a una data, es. 'Venerdì Galletto': il piatto entra da solo nel "
                 "menu in quei giorni). Prima di creare un evento chiama eventi_leggi: se esiste già uno uguale o simile, anche passato "
                 "o nascosto, chiedi all'utente se vuole ripeterlo per la nuova data (evento_duplica), ripubblicarlo/modificarlo "

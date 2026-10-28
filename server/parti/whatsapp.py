@@ -157,6 +157,10 @@ async def _tool_wa_contacts(user: dict, args: dict, request: Request) -> dict:
             "display": f"Ha guardato la rubrica di WhatsApp: {len(found)}"}
 
 
+WA_PROMPT = ("\n\nWHATSAPP: «scrivi a X …», «manda a X …», «di' a X che …» senza la parola mail = messaggio WhatsApp: chiama subito "
+             "whatsapp_invia con a=X e testo = quello che va scritto (le parole dopo il nome o tra virgolette). Mail solo se l'utente dice mail.")
+
+
 TOOLS.update({
     "whatsapp_invia": {"admin": True, "whatsapp": True, "confirm": True, "always_confirm": True, "run": _tool_wa_send, "summary": _summary_wa,
         "spec": _fn("whatsapp_invia", "Manda un messaggio WhatsApp dal numero dell'utente a una persona della sua rubrica (nome come l'ha "

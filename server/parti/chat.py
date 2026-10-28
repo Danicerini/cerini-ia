@@ -515,11 +515,18 @@ def _topics(messages: list[dict]) -> set:
     return found
 
 
+# Ogni strumento mandato al modello costa token a ogni chiamata (tutti insieme ~15 mila). Se il messaggio non tocca un
+# argomento preciso partono solo quelli di base; gli altri il modello li chiede con strumenti_extra e li riceve al volo.
+EXTRA_GROUPS = {"posta": "mail", "agenda": "cal", "homebase": "hb", "sito": "site", "file": "file"}
+EXTRA_TOOLS_SPEC = _fn("strumenti_extra", "Se per la richiesta ti serve uno strumento che non vedi tra i tuoi (posta, agenda e promemoria, "
+                       "Homebase, sito del locale, file allegati), chiedilo qui: te lo do subito e poi lo usi.",
+                       {"argomento": {"type": "string", "enum": list(EXTRA_GROUPS)}}, ["argomento"])
+
+
 def _topic_tools(tools: list, messages: list[dict]) -> list:
     t = _topics(messages)
-    if not t:
-        return tools
-    return [x for x in tools if _tool_group(x["function"]["name"]) in t | {""}]
+    sel = [x for x in tools if _tool_group(x["function"]["name"]) in t | {""}]
+    return sel + [EXTRA_TOOLS_SPEC] if len(sel) < len(tools) else tools
 
 
 def system_prompt(user: dict, with_tools: bool, site: bool = True, model: str = "") -> str:
@@ -561,6 +568,9 @@ PROC_HINT = ("\n\nPROCEDURE: se in questa chat avete appena risolto un problema 
              "come procedura nella Homebase. Se dice sì, chiama homebase_procedura con tipo «procedura» e nel testo metti il problema, "
              "la causa e i passaggi che avete fatto davvero, con i comandi esatti. Non chiederlo per domande semplici, "
              "se avete già creato la procedura o se lui ha già detto di no.")
+
+
+CLOUD_HISTORY_CTX = int(os.environ.get("CLOUD_HISTORY_CTX", "24000"))   # col cloud si paga ogni token: la chat vecchia si taglia prima
 
 
 def _fit_history(messages: list[dict], fixed_chars: int, ctx: int = 0) -> list[dict]:
@@ -692,6 +702,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 sys_txt += FILES_PROMPT
             if any(t["function"]["name"] == "homebase_note" for t in tools):
                 sys_txt += HOMEBASE_PROMPT
+            if any(t["function"]["name"] == "whatsapp_invia" for t in tools):
+                sys_txt += WA_PROMPT
             if any(t["function"]["name"] == "web_cerca" for t in tools):
                 sys_txt += WEB_PROMPT.format(oggi=local_now().strftime("%d/%m/%Y"))
             sys_txt += await recall_prompt(user, body.messages)
@@ -701,7 +713,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             no_confirm = _wants_no_confirm(body.messages)
             if no_confirm:
                 sys_txt += "\n\nIn questo messaggio l'utente ha chiesto di NON chiedere conferma: le azioni vengono eseguite subito."
-            msgs = [{"role": "system", "content": sys_txt}] + _fit_history(files_for_prompt(user, body.messages), len(sys_txt) + len(json.dumps(tools)), ctx)
+            hist_ctx = min(ctx, CLOUD_HISTORY_CTX) if is_cloud(body.model) else ctx
+            msgs = [{"role": "system", "content": sys_txt}] + _fit_history(files_for_prompt(user, body.messages), len(sys_txt) + len(json.dumps(tools)), hist_ctx)
             answered = False   # la risposta all'utente e' gia' scritta: i passaggi successivi sistemano solo i ricordi
             saved = False      # in questo turno ha chiamato davvero ricorda / aggiorna_ricordo
             retried = False    # risposta vuota gia' ritentata
@@ -834,6 +847,19 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         close = difflib.get_close_matches(name, list(TOOLS), n=1, cutoff=0.8)
                         if close:
                             name = close[0]
+                    if name == "strumenti_extra":   # il modello chiede altri strumenti: glieli si da' e si va avanti
+                        arg = str(args.get("argomento") or "").lower().strip()
+                        g = EXTRA_GROUPS.get(arg, "")
+                        have = {t["function"]["name"] for t in tools}
+                        add = [t for t in tools_for(user) if g and _tool_group(t["function"]["name"]) == g and t["function"]["name"] not in have]
+                        tools = tools + add
+                        hint = {"mail": lambda: MAIL_PROMPT.format(email=_gmail_row(user["id"])["email"]) if _gmail_row(user["id"]) else "",
+                                "cal": lambda: CAL_PROMPT, "hb": lambda: HOMEBASE_PROMPT, "file": lambda: FILES_PROMPT,
+                                "site": lambda: SITE_PROMPT}.get(g, lambda: "")()
+                        msgs.append({"role": "tool", "tool_name": name, "content": (
+                            f"Ora hai anche gli strumenti per «{arg}»: {', '.join(t['function']['name'] for t in add)}. Usali adesso per la richiesta."
+                            if add else f"Non ci sono altri strumenti per «{arg}»: rispondi con quello che hai.") + (f"\n{hint.strip()}" if add and hint else "")})
+                        continue
                     if name in ("dimentica", "aggiorna_ricordo", "ricorda", "promemoria", "whatsapp_invia") or name.startswith(("mail_", "calendario_")):
                         args = {**args, "_uid": user["id"]}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
