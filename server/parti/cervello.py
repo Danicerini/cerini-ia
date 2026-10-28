@@ -1408,6 +1408,8 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "- per ogni voce un tempo REALISTICO per un tecnico helpdesk, in minuti multipli di 30 (minimo 30). Usa gli orari del diario come "
                "indizio. Esempi: reset password o sblocco account 30; analisi di una mail sospetta e risposta al ticket 30; configurazione o "
                "problema VPN 30-60; recesso o pratica con più passaggi 60-90; installazione o intervento su un PC 60-120;\n"
+               "- entra tutto il lavoro FATTO quel giorno, anche le cose da fare spuntate come fatte ([x]); restano fuori solo le cose "
+               "ancora da fare ([ ]) e quelle che non sono lavoro;\n"
                "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
                "- «attivita» = descrizione breve e professionale, come in un consuntivo (es. «Reset password VPN utente», «Analisi mail di "
                "phishing segnalata e blocco mittente su antispam»); «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
