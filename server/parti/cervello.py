@@ -1429,7 +1429,7 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "indizio. Esempi: reset password o sblocco account 30; analisi di una mail sospetta e risposta al ticket 30; configurazione o "
                "problema VPN 30-60; recesso o pratica con più passaggi 60-90; installazione o intervento su un PC 60-120;\n"
                "- entra tutto il lavoro FATTO quel giorno, anche le cose da fare spuntate come fatte ([x]); restano fuori solo le cose "
-               "ancora da fare ([ ]) e quelle che non sono lavoro;\n"
+               "ancora da fare ([ ]), quelle annullate o tolte dalla lista, quelle solo nominate e mai fatte, e quelle che non sono lavoro;\n"
                "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
                "- «descrizione» = la Descrizione attività da scrivere nel gestionale: UNA frase professionale e concreta (max 120 caratteri) "
                "che dice cosa è stato fatto e per quale utente o reparto, niente di inventato (es. «Reset password VPN utente amministrazione», "
