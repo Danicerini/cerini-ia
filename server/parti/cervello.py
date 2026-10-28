@@ -697,7 +697,10 @@ def _day_add(body: str, title: str, lines: list[str]) -> str:
     lines = [l for l in lines if str(l).strip()]
     if not lines:
         return body
-    if re.search(rf"^## {re.escape(title)}[ \t]*$", body, re.M) or title in DAY_TAIL:
+    found = re.search(rf"^## ({re.escape(title)})[ \t]*$", body, re.M | re.I)   # «coover» e «Coover» sono la stessa sezione
+    if found and title not in DAY_TAIL:
+        title = found.group(1)
+    if found or title in DAY_TAIL:
         if title == "Aura" and re.search(r"^## Da fare[ \t]*$", body, re.M) is None and not re.search(r"^## Aura[ \t]*$", body, re.M):
             return body.rstrip("\n") + "\n\n## Aura\n" + "\n".join(lines) + "\n"
         if title == "Da fare" and not re.search(r"^## Da fare[ \t]*$", body, re.M):
