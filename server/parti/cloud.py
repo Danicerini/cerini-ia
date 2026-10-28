@@ -15,7 +15,7 @@ CLOUD_PRESETS = {
                "note": "Azienda italiana (Seeweb), dati in Europa, non conserva i messaggi.",
                "models": [["qwen3.5-122b", "consigliato"], ["glm5.2", "il più forte"], ["mistral-small-4-119b", "costa la metà"],
                           ["gemma4-31b", "Gemma grande"], ["gpt-oss-120b", ""]],
-               "prices": {"gpt-oss-120b": [1.0, 4.2]}},   # euro per milione di token (entrata, uscita), dal listino pubblico
+               "prices": {"gpt-oss-120b": [1.0, 4.2], "glm5.2": [2.0, 5.2], "mistral-small-4-119b": [0.5, 2.1]}},   # euro per milione di token (entrata, uscita), dal listino pubblico
     "deepseek": {"name": "DeepSeek", "base": "https://api.deepseek.com/v1", "model": "deepseek-chat"},
     "gemini": {"name": "Google Gemini", "base": "https://generativelanguage.googleapis.com/v1beta/openai", "model": "gemini-2.5-flash"},
     "openai": {"name": "OpenAI", "base": "https://api.openai.com/v1", "model": "gpt-4o-mini"},
@@ -171,7 +171,8 @@ async def cloud_stream(payload: dict):
     secs = max(0.001, time.monotonic() - t0)
     # se il fornitore non manda il conto, si stima: ~4 caratteri per token
     tin = usage.get("prompt_tokens") or len(json.dumps(payload.get("messages") or [], ensure_ascii=False)) // 4
-    usage_add(payload.get("model") or "cloud:" + c.get("model", ""), "chat", tin, usage.get("completion_tokens") or tokens)
+    usage_add("cloud:" + c.get("model", ""), "chat",   # il modello chiamato davvero, non il nome rimasto nella chat
+              tin, usage.get("completion_tokens") or tokens)
     yield {"message": {"role": "assistant", "content": ""}, "done": True, "eval_count": tokens, "eval_duration": int(secs * 1e9)}
 
 
@@ -211,7 +212,7 @@ async def llm_once(messages: list[dict], json_mode: bool = False, temperature: f
         if r.status_code != 200:
             raise HTTPException(502, f"Modello nel cloud: errore {r.status_code} {r.text[:200]}")
         u = r.json().get("usage") or {}
-        usage_add(model if is_cloud(model) else cloud_name(), "sfondo", u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0)
+        usage_add(cloud_name(), "sfondo", u.get("prompt_tokens") or 0, u.get("completion_tokens") or 0)
         return (r.json()["choices"][0]["message"].get("content") or "").strip()
     payload.update(model=model or await _chat_model(), think=False, keep_alive=KEEP_ALIVE)
     payload["options"]["num_ctx"] = num_ctx

@@ -156,7 +156,8 @@ const S = {
 };
 const current = () => S.chats.find((c) => c.id === S.currentId) || null;
 const loadedNames = () => new Set((S.status?.loaded || []).map((m) => m.name));
-const activeModel = () => current()?.model || S.model;
+// una chat aperta con un modello cloud di prima usa quello impostato adesso (e lo mostra)
+const activeModel = () => { const m = current()?.model || S.model; return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
 const isAdmin = () => S.me?.role === 'admin';
 
 // I campi che iniziano con _ sono stato dell'interfaccia (streaming, ragionamento aperto) e non si salvano.

@@ -657,6 +657,9 @@ def ev(**kw) -> str:
 
 @app.post("/api/chat")
 async def chat(body: ChatReq, request: Request, user: dict = Depends(require_user)):
+    if is_cloud(body.model) and cloud_name() and body.model != cloud_name():
+        body.model = cloud_name()   # chat aperta con un modello cloud di prima: si usa (e si dice) quello impostato adesso
+
     async def stream():
         try:
             # Verifica rapida (ed eventuale ricerca del PC) prima di aprire lo stream
