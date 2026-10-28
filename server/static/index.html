@@ -1375,6 +1375,23 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .hb-btn--success { background: rgba(16, 185, 129, .16); border-color: rgba(52, 211, 153, .4); color: #a7f3d0; } .hb-btn--success:hover { background: rgba(16, 185, 129, .28); border-color: var(--t-green); }
 .hb-btn--danger { background: rgba(239, 68, 68, .1); border-color: rgba(248, 113, 113, .35); color: #fecaca; } .hb-btn--danger:hover { background: rgba(239, 68, 68, .22); border-color: var(--t-red); }
 .hb-btn--sm { height: 28px; padding: 0 10px; font-size: 12px; }
+/* consuntivo di un giorno */
+.cs-card { margin-top: 8px; max-width: 620px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); padding: 12px 14px; }
+.cs-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.cs-copy { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border);
+  background: transparent; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.cs-copy:hover { background: var(--accent-soft); border-color: var(--accent); }
+.cs-rows { display: flex; flex-direction: column; }
+.cs-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
+.cs-row .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.cs-row small { color: var(--text-3); font-size: 12px; }
+.cs-time { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.cs-total { display: flex; justify-content: space-between; padding: 9px 0 6px; border-top: 1px solid var(--border); }
+.cs-bar { height: 6px; border-radius: 4px; background: var(--border); overflow: hidden; }
+.cs-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.cs-bar.full i { background: #10b981; } .cs-bar.over i { background: #ef4444; }
+.cs-note { margin-top: 8px; font-size: 13px; color: var(--text-2); }
+.cs-ex { margin-top: 6px; font-size: 12px; color: var(--text-3); } .cs-ex summary { cursor: pointer; } .cs-ex ul { margin: 4px 0 0 18px; padding: 0; }
 .hb-btn:disabled { opacity: .6; cursor: wait; }
 .hb-done { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 600; color: var(--tc); }
 .hb-secret { display: grid; gap: 5px; padding: 10px 11px; border-radius: 12px; border: 1px dashed rgba(52, 211, 153, .45); background: rgba(16, 185, 129, .07); }

@@ -1062,6 +1062,12 @@ async def brain_prompt(user: dict, messages: list[dict], ap: dict | None = None)
         parts.append(f"Nessun progetto attivo in questa chat. Progetti che esistono: {names}. Se l'utente parla di un lavoro che dura (un "
                      "cliente, un posto dove va a lavorare, un lavoro in più passi) e nessuno di questi c'entra: crealo SUBITO con "
                      "progetto_nuovo e diglielo in una frase.")
+    wp = work_projects(user)
+    if wp:
+        main = next((p for p in wp if p["main"]), wp[0])
+        parts.append(f"LAVORO (va nel consuntivo delle ore): progetti {', '.join(p['name'] for p in wp)}. Quando l'utente dice di aver fatto "
+                     "qualcosa di lavoro (un ticket, un reset, un intervento per un cliente), anche di passaggio, chiama SUBITO lavoro_fatto: "
+                     f"progetto = quello del cliente se c'è, se no {main['name']}; una riga concreta (cosa, per chi, quanto è durato se lo dice).")
     # schede pertinenti: quelle nominate nel messaggio + quelle con righe simili alla domanda
     ents, picked = brain_entities(user), ([ap["path"]] if ap else [])
     low = last.lower()
@@ -1131,6 +1137,12 @@ BUILTIN_SKILLS = {
                  "1. Find the project by name (cervello_cerca); if it does not exist and the work lasts, create it (progetto_nuovo).\n"
                  "2. Log what was done with lavoro_fatto, with a one-line status.\n3. People involved go in people/, the client company in companies/: "
                  "save them with ricorda, they get linked to the project."),
+    "consuntivo": ("Consuntivo", "Il lavoro di un giorno con i tempi a mezz'ore, da copiare nel gestionale.", "consuntivo, ore lavorate",
+                   "consuntivo,lavoro_fatto,diario_giorno", False,
+                   "1. Call consuntivo with the day (empty = today; «ieri», «lunedì» → the date). It reads the diary and the chats of that day.\n"
+                   "2. Show the table it returns; do not repeat it line by line. Say clearly how much is missing to 8 hours, never pad times.\n"
+                   "3. Only work for the user's company and its clients goes in: personal projects, the assistant itself and friends' sites never.\n"
+                   "4. Times are multiples of 30 minutes, at least 30 per item. If the user adds work, log it with lavoro_fatto and redo the table."),
     "web": ("Web", "Cercare su internet e leggere le pagine.", "cerca su internet, cerca online, notizie, meteo",
             "web_", False, "1. Search with web_cerca, then read the best result with web_leggi.\n2. Answer citing the sources (site name)."),
 }
@@ -1339,6 +1351,119 @@ TOOLS.update({
                      "da_fare": {"type": "array", "items": {"type": "string"}, "description": "Cose ancora da fare oggi su quel progetto"},
                      "stato": {"type": "string", "description": "Una riga: a che punto è il progetto adesso"},
                      "progetto": {"type": "string", "description": "Nome del progetto (vuoto = quello di questa chat)"}}, ["cosa"])},
+})
+
+
+# ---- consuntivo: il lavoro di un giorno (solo quello per l'azienda e i suoi clienti), a mezz'ore, verso le 8 ore
+
+WORK_DAY_MIN = 480
+
+
+def work_projects(user: dict) -> list[dict]:
+    """I progetti che vanno a consuntivo: quelli con «lavoro: true» nella scheda."""
+    out = []
+    for p in projects(user):
+        meta = fm_split(brain_read(user, p["path"]))[0]
+        if str(meta.get("lavoro") or "").lower() in ("true", "si", "sì", "yes", "1", "principale"):
+            out.append({**p, "main": str(meta.get("lavoro")).lower() == "principale"})
+    return out
+
+
+def _half_hours(m) -> int:
+    try:
+        m = int(float(m))
+    except (TypeError, ValueError):
+        m = 30
+    return max(30, int(round(m / 30.0)) * 30)
+
+
+def _hm(m: int) -> str:
+    return f"{m // 60}h{m % 60:02d}" if m % 60 else f"{m // 60}h"
+
+
+def _day_chats_text(user: dict, day: str) -> str:
+    """Quello che l'utente ha scritto nelle chat nate quel giorno: il diario a volte riassume troppo."""
+    t0 = int(datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=local_now().tzinfo).timestamp())
+    with db() as c:
+        rows = c.execute("SELECT id, title, messages FROM chats WHERE user_id = ? AND created >= ? AND created < ? ORDER BY created",
+                         (user["id"], t0, t0 + 86400)).fetchall()
+    out = []
+    for r in rows:
+        if str(r["id"]).startswith("aurafeed"):
+            continue
+        try:
+            msgs = json.loads(r["messages"] or "[]")
+        except ValueError:
+            continue
+        said = [str(m.get("content") or "")[:400] for m in msgs if m.get("role") == "user" and str(m.get("content") or "").strip()]
+        if said:
+            out.append(f"[chat «{r['title'][:50]}»] " + " | ".join(said))
+    return _clip_block("\n".join(out), 7000)
+
+
+CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruolo}. Lo copierà nel gestionale dell'azienda, quindi conta "
+               "SOLO il lavoro per l'azienda {azienda} e per i suoi clienti ({clienti}). Escludi tutto il resto: progetti personali, l'assistente "
+               "stesso, siti per amici, WhatsApp personali, chiacchiere, e le richieste fatte all'assistente che non sono lavoro per un cliente.\n"
+               "Regole:\n- una voce per ogni attività distinta (lo stesso ticket nominato più volte = una voce sola);\n"
+               "- per ogni voce un tempo REALISTICO per un tecnico helpdesk, in minuti multipli di 30 (minimo 30). Usa gli orari del diario come "
+               "indizio. Esempi: reset password o sblocco account 30; analisi di una mail sospetta e risposta al ticket 30; configurazione o "
+               "problema VPN 30-60; recesso o pratica con più passaggi 60-90; installazione o intervento su un PC 60-120;\n"
+               "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
+               "- «attivita» = descrizione breve e professionale, come in un consuntivo (es. «Reset password VPN utente», «Analisi mail di "
+               "phishing segnalata e blocco mittente su antispam»); «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
+               "Giorno: {giorno}.\n\nDIARIO DEL GIORNO:\n{diario}\n\nMESSAGGI SCRITTI DALL'UTENTE QUEL GIORNO:\n{chat}\n\n"
+               "Rispondi SOLO JSON: {{\"voci\": [{{\"attivita\": \"…\", \"cliente\": \"…\", \"minuti\": 30}}], "
+               "\"esclusi\": [\"cose del giorno lasciate fuori perché non sono lavoro, brevi\"]}}")
+
+
+async def consuntivo(user: dict, day: str) -> dict:
+    wp = work_projects(user)
+    if not wp:
+        raise ValueError("nessun progetto è segnato come lavoro (lavoro: true nella scheda del progetto)")
+    main = next((p for p in wp if p["main"]), wp[0])
+    text = brain_read(user, day_path(day))
+    secs = [(t, b) for t, b in day_sections(text) if t not in ("Aura",)] if text else []
+    other = {p["name"].lower() for p in projects(user)} - {p["name"].lower() for p in wp}
+    secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
+    diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
+    chats = _day_chats_text(user, day) or "(nessuna)"
+    if diary == "(vuoto)" and chats == "(nessuna)":
+        return {"day": day, "rows": [], "total": 0, "excluded": []}
+    comp = [e for e in brain_entities(user) if e["kind"] == "companies" and e["name"].lower() != main["name"].lower()]
+    prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
+                                clienti=", ".join(e["name"] for e in comp) or "quelli nominati", giorno=day, diario=diary, chat=chats)
+    raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
+    d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
+    rows = [{"what": str(v.get("attivita") or "").strip()[:160], "client": str(v.get("cliente") or main["name"]).strip()[:60],
+             "min": _half_hours(v.get("minuti"))} for v in d.get("voci") or [] if isinstance(v, dict) and str(v.get("attivita") or "").strip()]
+    return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows),
+            "excluded": [str(x)[:120] for x in d.get("esclusi") or [] if str(x).strip()][:8]}
+
+
+async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
+    day = str(args.get("giorno") or "").strip() or local_now().strftime("%Y-%m-%d")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+        raise ValueError("giorno nel formato AAAA-MM-GG")
+    c = await consuntivo(user, day)
+    tot, rows = c["total"], c["rows"]
+    gap = WORK_DAY_MIN - tot
+    note = ("Nel diario di quel giorno non c'è lavoro da mettere a consuntivo." if not rows else
+            f"Mancano {_hm(gap)} alle 8 ore: nel diario non c'è altro lavoro, dimmi cos'altro hai fatto." if gap > 0 else
+            f"Superi le 8 ore di {_hm(-gap)}: dimmi cosa accorciare." if gap < 0 else "Fanno 8 ore giuste.")
+    lines = [f"- {r['what']} ({r['client']}): {_hm(r['min'])}" for r in rows]
+    view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"]}
+    return {"content": f"Consuntivo del {day[8:]}/{day[5:7]}, mostrato all'utente in una tabella (non ripeterla voce per voce):\n" + "\n".join(lines)
+                       + f"\nTotale {_hm(tot)} su 8h. {note}" + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else "")
+                       + "\nSe l'utente aggiunge lavori o cambia un tempo, rifai la tabella a mano con le stesse regole (mezz'ore, minimo 30 minuti).",
+            "display": f"Consuntivo del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
+
+
+TOOLS.update({
+    "consuntivo": {
+        "admin": False, "confirm": False, "run": _tool_consuntivo,
+        "spec": _fn("consuntivo", "Il consuntivo di una giornata di lavoro: l'elenco di quello che l'utente ha fatto per l'azienda e i suoi "
+                    "clienti, con un tempo a mezz'ore per ciascuna cosa, verso le 8 ore. Usalo quando chiede il consuntivo o il riepilogo "
+                    "delle ore di un giorno.", {"giorno": {"type": "string", "description": "AAAA-MM-GG; vuoto = oggi"}})},
 })
 
 

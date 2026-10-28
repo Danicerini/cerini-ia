@@ -596,7 +596,7 @@ function stepsEl(steps) {
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
-const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa'];
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)' };
@@ -708,7 +708,8 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
     return h('div', { class: 'msg step' }, card,
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
-        : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat)) : null);
+        : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
+        : m.view?.kind === 'consuntivo' ? consView(m.view) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -2384,6 +2385,23 @@ function hbCard(it) {
     h('div', { class: 'hb-card' }, ...body));
 }
 // Risposta di homebase_admin in chat: un pannello con le righe (utenti, richieste, strumenti, accessi…)
+// Consuntivo di un giorno: voci con i tempi a mezz'ore, barra verso le 8 ore, testo da copiare nel gestionale
+function consView(v) {
+  const hm = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
+  const day = `${v.day.slice(8)}/${v.day.slice(5, 7)}/${v.day.slice(0, 4)}`;
+  const text = (v.rows || []).map((r) => `${r.what}\t${r.client}\t${hm(r.min)}`).join('\n') + `\nTotale\t\t${hm(v.total)}`;
+  const pct = Math.min(100, Math.round((v.total / (v.target || 480)) * 100));
+  return h('div', { class: 'cs-card' },
+    h('div', { class: 'cs-head' }, h('b', { text: `Consuntivo del ${day}` }),
+      (v.rows || []).length ? h('button', { class: 'cs-copy', 'data-label': '1', title: 'Copia per il gestionale', html: icon('copy', 'sm') + 'Copia', onclick: (e) => copyText(text, e.currentTarget) }) : null),
+    (v.rows || []).length ? h('div', { class: 'cs-rows' }, ...v.rows.map((r) => h('div', { class: 'cs-row' },
+      h('div', { class: 'tx' }, h('span', { text: r.what }), h('small', { text: r.client })), h('span', { class: 'cs-time', text: hm(r.min) })))) : null,
+    h('div', { class: 'cs-total' }, h('span', { text: 'Totale' }), h('b', { text: `${hm(v.total)} su ${hm(v.target || 480)}` })),
+    h('div', { class: 'cs-bar' + (v.total > (v.target || 480) ? ' over' : v.total === (v.target || 480) ? ' full' : '') }, h('i', { style: `width:${pct}%` })),
+    v.note ? h('div', { class: 'cs-note', text: v.note }) : null,
+    (v.excluded || []).length ? h('details', { class: 'cs-ex' }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): non sono lavoro` }),
+      h('ul', {}, ...v.excluded.map((x) => h('li', { text: x })))) : null);
+}
 function hbView(v) {
   return h('div', { class: 'hb-card hb-view' }, hbHead(v.title || 'Amministrazione'),
     v.note ? h('div', { class: 'hb-note', text: v.note }) : null,
