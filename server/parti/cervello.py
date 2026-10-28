@@ -713,10 +713,42 @@ def _day_add(body: str, title: str, lines: list[str]) -> str:
     return body[:m.start()] + sec + body[m.start():] if m else body.rstrip("\n") + "\n\n" + sec
 
 
+def _todo_core(line: str) -> str:
+    """Il testo di una cosa da fare, senza casella, progetto (« · Nome») e «↻ dal …»."""
+    t = re.sub(r"^\s*- \[[ xX]\]\s*", "", str(line or ""))
+    return re.sub(r"\s+↻ dal .*$|\s+·\s+[^·]+$", "", t).strip()
+
+
+def _todo_known(user: dict, day: str, body: str) -> list[str]:
+    """Le cose da fare che ci sono gia': quelle del giorno (anche spuntate) e quelle ancora aperte dei 7 giorni prima."""
+    from datetime import date, timedelta
+    have = [_todo_core(l) for l in re.findall(r"^\s*- \[[ xX]\] .+$", day_section_from(body, "Da fare"), re.M)]
+    try:
+        start = (date.fromisoformat(day) - timedelta(days=7)).isoformat()
+        have += [_todo_core(t) for e in diary_entries(user, start, day) for t in e["todo"] if e["day"] != day]
+    except ValueError:
+        pass
+    return [h for h in have if h]
+
+
+def day_section_from(body: str, title: str) -> str:
+    m = re.search(rf"^## {re.escape(title)}[ \t]*\n(.*?)(?=^## |\Z)", body, re.M | re.S | re.I)
+    return m.group(1) if m else ""
+
+
 async def day_write(user: dict, day: str, parts: list[tuple[str, list[str]]], msg: str) -> str:
     brain_ensure(user)
     meta, body = fm_split(_day_text(user, day))
     for title, lines in parts:
+        if title == "Da fare" and lines:
+            known = _todo_known(user, day, body)
+            keep = []
+            for l in lines:
+                core = _todo_core(l)
+                if core and not any(_same_thing(core, k) for k in known):
+                    keep.append(l)
+                    known.append(core)
+            lines = keep
         body = _day_add(body, title, lines)
     return await brain_write(user, day_path(day), fm_join(meta, body), msg, reindex=False)
 
@@ -887,6 +919,11 @@ async def _episode_later(user: dict, chat_id: str, messages: list[dict]):
         print(f"Diario dalla chat {chat_id}: {e}", flush=True)
 
 
+TODO_SAID_RE = re.compile(r"\b(devo|dovrei|dobbiamo|dovremmo|bisogna|da fare|manca|mancano|ricordami|ricordarmi|segna(mi|ti)?|"
+                          r"domani|dopo|più tardi|stasera|lunedì|martedì|mercoledì|giovedì|venerdì|sabato|domenica|settimana|"
+                          r"farò|faccio|faremo|ho da|tocca|aspetto|aspettiamo|in attesa)\b", re.I)
+
+
 def _episode_project(user: dict, chat_id: str, new: list[dict], ap: dict | None, chosen: str, before: list[dict] | None = None) -> dict | None:
     """Il progetto di QUESTO pezzo di conversazione, non di tutta la chat: una chat che ha parlato una volta di un progetto
     non deve infilarci tutto quello che viene dopo.
@@ -936,6 +973,7 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
             return f"[Esito strumento {m.get('tool_name') or ''}: {(st or str(m.get('content') or '')[:300])}]"
         return f"{'Utente' if m['role'] == 'user' else 'Aura'}: {str(m['content'])[:1200]}"
     text = "\n".join(line(m) for m in new)[-9000:]
+    known = _todo_known(user, local_now().strftime("%Y-%m-%d"), fm_split(_day_text(user, local_now().strftime("%Y-%m-%d")))[1])
     prompt = ("Scrivi la voce di diario di questa conversazione tra l'utente e il suo assistente Aura. Il diario serve a sapere, un domani, "
               f"cosa è successo quel giorno. Scrivi in italiano, in terza persona sull'utente (per nome: '{_user_display(user).split()[0]} ha…'), concreto: cosa voleva, cosa è "
               "stato fatto o deciso, con i dettagli che contano (nomi, numeri, file). Se è chiacchiera senza sostanza, utile=false. "
@@ -949,8 +987,9 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
               "\"progetto\": \"id di un progetto esistente SOLO se questa conversazione parla proprio del suo lavoro, altrimenti vuoto (nel dubbio vuoto)\", \"progetto_nuovo\": \"nome di un progetto nuovo, o vuoto\", "
               "\"descrizione_progetto\": \"se è nuovo: cos'è, 1 frase\", "
               "\"da_fare\": [{\"cosa\": \"…\", \"quando\": \"AAAA-MM-GG o vuoto\"}]}\n"
-              "In da_fare metti OGNI cosa che l'utente ha detto di dover ancora fare (non quelle già fatte, non i promemoria già messi in "
-              "agenda). «quando»: la data in cui va fatta, calcolata da oggi («domani», «lunedì», «la settimana prossima» = il lunedì "
+              "In da_fare metti SOLO le cose che l'UTENTE ha detto di dover ancora fare lui («devo…», «domani faccio…», «ricordami…»): "
+              "non quelle già fatte, non i promemoria già in agenda, non i consigli o i passi suggeriti da Aura, e NON quelle già in "
+              "questo elenco (nemmeno scritte con altre parole): " + ("; ".join(known[:30]) or "nessuna") + ". Nel dubbio lascia vuoto. «quando»: la data in cui va fatta, calcolata da oggi («domani», «lunedì», «la settimana prossima» = il lunedì "
               "dopo, «fra un mese»); vuoto se non l'ha detto. progetto_nuovo solo se la conversazione è chiaramente un lavoro che dura "
               "nel tempo e nessun progetto esistente va bene (es. un cliente, un posto dove va a lavorare, «Trasloco»).\n\n" + text)
     try:
@@ -970,6 +1009,9 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
         chat_project_set(user["id"], chat_id, pr["id"])
     project = pr["id"] if pr else ""
     today = local_now().strftime("%Y-%m-%d")
+    said = "\n".join(str(m.get("content") or "") for m in new if m["role"] == "user")
+    if not TODO_SAID_RE.search(said):   # l'utente non ha parlato di cose da fare: niente «da fare» inventati dal riassunto
+        d["da_fare"] = []
     todo_now = [str(t.get("cosa")).strip() for t in d.get("da_fare") or [] if isinstance(t, dict) and t.get("cosa") and not t.get("quando")]
     later = [t for t in d.get("da_fare") or [] if isinstance(t, dict) and t.get("cosa") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(t.get("quando") or ""))]
     summary = str(d.get("riassunto") or "").strip()
@@ -1041,8 +1083,13 @@ async def brain_prompt(user: dict, messages: list[dict], ap: dict | None = None)
     # il diario: cose aperte fino a oggi (le piu' vicine)
     today = local_now().strftime("%Y-%m-%d")
     open_items = [(e["day"], t, e["path"]) for e in diary_entries(user, end=today) for t in e["todo"] if not e["dropped"]][-12:]
+    todays = [t for d, t, _ in open_items if d == today]
+    older = [(d, t) for d, t, _ in open_items if d != today]
     if open_items:
-        parts.append("DIARIO, cose ancora aperte (da ricordargli quando c'entra):\n" + "\n".join(f"- {d[8:]}/{d[5:7]}: {t}" for d, t, _ in open_items))
+        parts.append("DIARIO, cose da fare ancora aperte. Se chiede cosa deve fare OGGI rispondi con quelle di oggi; quelle dei giorni prima "
+                     "nominale a parte, come arretrate, con la loro data:\n"
+                     + f"Oggi ({today[8:]}/{today[5:7]}): " + ("; ".join(todays) if todays else "niente") + "\n"
+                     + ("Arretrate:\n" + "\n".join(f"- {d[8:]}/{d[5:7]}: {t}" for d, t in older) if older else ""))
     # skill richiamate dalle parole del messaggio
     for sk in brain_skills(user):
         if any(re.search(rf"\b{re.escape(w.lower())}", low) for w in sk["trigger"] if len(w) > 2):
@@ -1817,15 +1864,22 @@ async def _tool_diary_note(user: dict, args: dict, request: Request) -> dict:
 async def _tool_diary_done(user: dict, args: dict, request: Request) -> dict:
     q = str(args.get("cosa") or "").strip().lower()
     best = None
-    for e in diary_entries(user):
-        for t in e["todo"]:
-            s = sum(w in t.lower() for w in re.findall(r"\w{3,}", q))
-            if s and (not best or s > best[0]):
-                best = (s, e["path"], t)
+    open_items = [(e["day"], e["path"], t) for e in diary_entries(user) for t in e["todo"]]
+    for day, path, t in open_items:
+        s = sum(w in t.lower() for w in re.findall(r"\w{3,}", q))
+        if s and (not best or (s, day) > (best[0], best[3])):   # a parità, la più recente
+            best = (s, path, t, day)
     if not best:
         return {"content": "Nel diario non c'è una cosa da fare così ancora aperta.", "display": "Niente da spuntare nel diario"}
     await diary_check(user, best[1], best[2], True)
-    return {"content": f"Segnato come fatto: «{best[2]}».", "display": f"Fatto: «{best[2]}»"}
+    twins = [(path, t) for day, path, t in open_items if (path, t) != (best[1], best[2]) and _same_thing(_todo_core(t), _todo_core(best[2]))]
+    for path, t in twins:   # la stessa cosa scritta con altre parole: fatta anche quella
+        try:
+            await diary_check(user, path, t, True)
+        except HTTPException:
+            pass
+    more = f" (e {len(twins)} {'doppione' if len(twins) == 1 else 'doppioni'} della stessa cosa)" if twins else ""
+    return {"content": f"Segnato come fatto: «{best[2]}»{more}.", "display": f"Fatto: «{best[2]}»{more}"}
 
 
 async def brain_rename(user: dict, e: dict, new_name: str) -> dict:
