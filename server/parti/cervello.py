@@ -1140,7 +1140,7 @@ BUILTIN_SKILLS = {
     "consuntivo": ("Consuntivo", "Il lavoro di un giorno con i tempi a mezz'ore, da copiare nel gestionale.", "consuntivo, ore lavorate",
                    "consuntivo,lavoro_fatto,diario_giorno", False,
                    "1. Call consuntivo with the day (empty = today; «ieri», «lunedì» → the date). It reads the diary and the chats of that day.\n"
-                   "2. Show the table it returns; do not repeat it line by line. Say clearly how much is missing to 8 hours, never pad times.\n"
+                   "2. The user already sees the table: answer in one or two sentences, NO table and NO list. Say how much is missing to 8 hours, never pad times.\n"
                    "3. Only work for the user's company and its clients goes in: personal projects, the assistant itself and friends' sites never.\n"
                    "4. Times are multiples of 30 minutes, at least 30 per item. If the user adds work, log it with lavoro_fatto and redo the table."),
     "web": ("Web", "Cercare su internet e leggere le pagine.", "cerca su internet, cerca online, notizie, meteo",
@@ -1549,10 +1549,12 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
     lines = [f"- [{r['project'] or 'fascicolo da scegliere'}] {r['what']} ({r['client']}): {_hm(r['min'])}" + (" (da controllare)" if r["doubt"] else "")
              for r in rows]
     view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"]}
-    return {"content": f"Consuntivo del {day[8:]}/{day[5:7]}, mostrato all'utente in una tabella (non ripeterla voce per voce):\n" + "\n".join(lines)
-                       + f"\nTotale {_hm(tot)} su 8h. {note}" + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else "")
-                       + "\nSe l'utente aggiunge lavori o cambia un tempo, rifai la tabella a mano con le stesse regole (mezz'ore, minimo 30 minuti, "
-                         "fascicolo esatto del gestionale, descrizione di una frase).",
+    return {"content": "L'UTENTE VEDE GIÀ IL CONSUNTIVO in una tabella sopra la tua risposta (fascicoli, descrizioni, ore, totale). "
+                       "Rispondi con UNA o DUE frasi al massimo, senza tabelle né elenchi e senza ripetere le voci: solo quanto manca alle 8 ore "
+                       f"e cosa gli chiedi, oppure le voci «da controllare». Stato: {note}\n\n"
+                       "Dati, solo per quando l'utente aggiunge lavori o cambia un tempo (allora rifai il consuntivo con le stesse regole: "
+                       "mezz'ore, minimo 30 minuti, fascicolo esatto, descrizione di una frase):\n" + "\n".join(lines)
+                       + f"\nTotale {_hm(tot)} su 8h." + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else ""),
             "display": f"Consuntivo del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
 
 
