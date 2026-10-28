@@ -1416,6 +1416,8 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "- «attivita» = descrizione breve e professionale, come in un consuntivo (es. «Reset password VPN utente», «Analisi mail di "
                "phishing segnalata e blocco mittente su antispam»); «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
                "Giorno: {giorno}.\n\nDIARIO DEL GIORNO:\n{diario}\n\nMESSAGGI SCRITTI DALL'UTENTE QUEL GIORNO:\n{chat}\n\n"
+               "Prima di rispondere ricontrolla: se due voci parlano dello stesso ticket, della stessa mail o dello stesso utente, "
+               "uniscile in una (sommando i tempi, senza superare il realistico).\n"
                "Rispondi SOLO JSON: {{\"voci\": [{{\"attivita\": \"…\", \"cliente\": \"…\", \"minuti\": 30}}], "
                "\"esclusi\": [\"cose del giorno lasciate fuori perché non sono lavoro, brevi\"]}}")
 
