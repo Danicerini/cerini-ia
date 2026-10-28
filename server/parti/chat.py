@@ -749,7 +749,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     retried = True   # niente testo e niente strumenti: capita, si rifa' il giro una volta
                     continue
                 if (not calls and not composed and MAIL_CLAIM_RE.search(said_all + content) and not any(k[0] in ("mail_prepara", "mail_invia", "mail_bozza") for k in done_calls)
-                        and user["role"] == "admin" and _gmail_row(user["id"])):
+                        and not wa_turn(body.messages, done_calls) and user["role"] == "admin" and _gmail_row(user["id"])):
                     composed = True
                     if not any(t["function"]["name"] == "mail_prepara" for t in tools):
                         tools = tools + [TOOLS["mail_prepara"]["spec"]]
@@ -761,7 +761,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     yield json.dumps({"message": {"role": "assistant", "content": "\n\n"}, "done": False}) + "\n"
                     continue
                 if (not calls and not answered and not composed and len(content) < 2000 and COMPOSE_RE.search(_last_user_text(body.messages))
-                        and any(t["function"]["name"] == "mail_prepara" for t in tools)):
+                        and not wa_turn(body.messages, done_calls) and any(t["function"]["name"] == "mail_prepara" for t in tools)):
                     # ha chiesto una mail e Gemma ha risposto solo «posso scriverla»: le si fa preparare la scheda adesso
                     composed = answered = True
                     msgs.append({"role": "assistant", "content": content})
@@ -835,7 +835,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args = {**args, "_uid": user["id"]}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
                         args = {**args, "_chat": body.chat_id or ""}   # la ricerca del ricordo (o delle mail) e' per questo utente
-                    if name.startswith(("mail_", "web_", "homebase_scratchpad")) or name == "homebase_procedura":
+                    if name.startswith(("mail_", "web_", "homebase_scratchpad", "whatsapp_")) or name == "homebase_procedura":
                         # si puo' solo se lo chiede l'utente: il controllo guarda il suo ultimo messaggio, non il modello
                         args["_last_user"] = next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "")
                     if name in ("mail_prepara", "whatsapp_invia"):
@@ -857,6 +857,11 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args = {**args, "_images": last_images, "_files": last_files, "_web": web_done}
                     tool = TOOLS.get(name)
                     key = (name, json.dumps({k: v for k, v in args.items() if not str(k).startswith("_")}, sort_keys=True, default=str))
+                    if name == "mail_prepara" and wa_turn(body.messages, done_calls, [c.get("function", {}).get("name") for c in calls]) \
+                            and not re.search(r"\b(e-?mail|mail|posta)\b", _last_user_text(body.messages), re.I):
+                        msgs.append({"role": "tool", "tool_name": name, "content": "Non serve una mail: l'utente vuole il messaggio su WhatsApp "
+                                     "(whatsapp_invia). Non preparare mail."})
+                        continue
                     if name == "mail_prepara" and any(k[0] == "mail_prepara" for k in done_calls):
                         msgs.append({"role": "tool", "tool_name": name, "content": "La scheda della mail è GIÀ sotto la tua risposta: non "
                                      "chiamare altri strumenti. Rispondi solo «Ecco la mail: controllala e premi Invia o Salva in bozze». "

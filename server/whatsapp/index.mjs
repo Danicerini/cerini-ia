@@ -1,6 +1,7 @@
 // Aura e WhatsApp: collega il WhatsApp dell'utente come «dispositivo collegato» (con il QR, come WhatsApp Web),
 // tiene la rubrica (solo nomi e numeri) e invia messaggi e file quando Aura glielo chiede.
-// Non legge e non salva i messaggi. Ascolta solo su 127.0.0.1 e risponde solo a chi ha il token di Aura (WA_TOKEN).
+// Dei messaggi tiene solo gli ultimi 30 di ogni chat personale (niente gruppi), in data/whatsapp: Aura li legge solo
+// quando l'utente glielo chiede. Ascolta solo su 127.0.0.1 e risponde solo a chi ha il token di Aura (WA_TOKEN).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -13,6 +14,8 @@ const TOKEN = process.env.WA_TOKEN || '';
 const DIR = process.env.WA_DIR || './wa-data';
 const AUTH = path.join(DIR, 'auth');
 const CONTACTS = path.join(DIR, 'contacts.json');
+const MESSAGES = path.join(DIR, 'messages.json');
+const KEEP_PER_CHAT = 30, KEEP_CHATS = 300;
 const MAX_FILE = 60 * 1024 * 1024;
 
 let sock = null;
@@ -20,6 +23,8 @@ let qrTries = 0;
 let state = { status: 'unlinked', qr: null, me: null, error: null };
 let contacts = {};
 try { contacts = JSON.parse(fs.readFileSync(CONTACTS, 'utf8')); } catch {}
+let chats = {};   // chiave: il jid col numero di telefono, o il lid -> [{id, me, ts, text}]
+try { chats = JSON.parse(fs.readFileSync(MESSAGES, 'utf8')); } catch {}
 
 // ---- rubrica: per ogni contatto il numero (jid), l'eventuale lid e il nome salvato sul telefono
 let saveTimer = null;
@@ -42,7 +47,53 @@ function addContacts(list) {
 function wipe() {
   try { fs.rmSync(AUTH, { recursive: true, force: true }); } catch {}
   try { fs.rmSync(CONTACTS, { force: true }); } catch {}
-  contacts = {};
+  try { fs.rmSync(MESSAGES, { force: true }); } catch {}
+  contacts = {}; chats = {};
+}
+
+// ---- gli ultimi messaggi (solo chat con una persona)
+let msgTimer = null;
+function saveMessages() {
+  clearTimeout(msgTimer);
+  msgTimer = setTimeout(() => {
+    const keys = Object.keys(chats).sort((a, b) => (chats[b].at(-1)?.ts || 0) - (chats[a].at(-1)?.ts || 0));
+    for (const k of keys.slice(KEEP_CHATS)) delete chats[k];
+    try { fs.writeFileSync(MESSAGES, JSON.stringify(chats)); } catch {}
+  }, 2000);
+}
+function textOf(m) {
+  const x = m.message || {};
+  const inner = x.ephemeralMessage?.message || x.viewOnceMessage?.message || x.viewOnceMessageV2?.message || x;
+  if (inner.conversation) return inner.conversation;
+  if (inner.extendedTextMessage?.text) return inner.extendedTextMessage.text;
+  if (inner.imageMessage) return '[foto]' + (inner.imageMessage.caption ? ' ' + inner.imageMessage.caption : '');
+  if (inner.videoMessage) return '[video]' + (inner.videoMessage.caption ? ' ' + inner.videoMessage.caption : '');
+  if (inner.documentMessage) return `[documento: ${inner.documentMessage.fileName || 'file'}]` + (inner.documentMessage.caption ? ' ' + inner.documentMessage.caption : '');
+  if (inner.documentWithCaptionMessage) return '[documento]';
+  if (inner.audioMessage) return inner.audioMessage.ptt ? '[messaggio vocale]' : '[audio]';
+  if (inner.stickerMessage) return '[sticker]';
+  if (inner.locationMessage || inner.liveLocationMessage) return '[posizione]';
+  if (inner.contactMessage) return `[contatto: ${inner.contactMessage.displayName || ''}]`;
+  if (inner.pollCreationMessage || inner.pollCreationMessageV3) return '[sondaggio]';
+  return null;   // reazioni, messaggi di servizio, ecc.
+}
+function addMessages(list) {
+  let changed = false;
+  for (const m of list || []) {
+    const k = m.key || {};
+    const jid = k.remoteJidAlt?.endsWith('@s.whatsapp.net') ? k.remoteJidAlt : k.remoteJid;
+    if (!jid || !/@(s\.whatsapp\.net|lid)$/.test(jid)) continue;   // niente gruppi, stati, canali
+    const text = textOf(m);
+    if (!text) continue;
+    const ts = Number(m.messageTimestamp?.low ?? m.messageTimestamp ?? 0) * 1000 || Date.now();
+    const arr = chats[jid] || (chats[jid] = []);
+    if (arr.some((x) => x.id === k.id)) continue;
+    arr.push({ id: k.id, me: !!k.fromMe, ts, text: text.slice(0, 2000) });
+    arr.sort((a, b) => a.ts - b.ts);
+    if (arr.length > KEEP_PER_CHAT) arr.splice(0, arr.length - KEEP_PER_CHAT);
+    changed = true;
+  }
+  if (changed) saveMessages();
 }
 const linkedBefore = () => { try { return JSON.parse(fs.readFileSync(path.join(AUTH, 'creds.json'), 'utf8')).registered === true; } catch { return false; } };
 
@@ -79,7 +130,8 @@ async function start() {
       setTimeout(() => start().catch((e) => { state = { ...state, error: String(e) }; }), code === DisconnectReason.restartRequired ? 200 : 4000);
     }
   });
-  sock.ev.on('messaging-history.set', ({ contacts: cs }) => addContacts(cs));   // dalla cronologia si prende solo la rubrica
+  sock.ev.on('messaging-history.set', ({ contacts: cs, messages: ms }) => { addContacts(cs); addMessages(ms); });
+  sock.ev.on('messages.upsert', ({ messages: ms }) => addMessages(ms));
   sock.ev.on('contacts.upsert', addContacts);
   sock.ev.on('contacts.update', addContacts);
 }
@@ -137,7 +189,11 @@ async function send({ to, text, files }) {
     if (!msg.audio) caption = '';   // il testo va una volta sola, come didascalia del primo file
     ids.push((await sock.sendMessage(jid, msg))?.key?.id);
   }
-  if (caption) ids.push((await sock.sendMessage(jid, { text: caption }))?.key?.id);
+  if (caption) {
+    const sent = await sock.sendMessage(jid, { text: caption });
+    ids.push(sent?.key?.id);
+    if (sent) addMessages([sent]);
+  }
   return { ok: ids.length > 0 && ids.every(Boolean), ids, to: jid };
 }
 
@@ -157,6 +213,14 @@ http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/contacts') return json(res, 200, { contacts: searchContacts(url.searchParams.get('q')) });
     if (req.method === 'POST' && url.pathname === '/send') return json(res, 200, await send(await body(req)));
+    if (req.method === 'GET' && url.pathname === '/messages') {
+      const jid = url.searchParams.get('jid') || '';
+      const c = Object.values(contacts).find((x) => x.jid === jid || x.lid === jid) || {};
+      const n = Math.max(1, Math.min(Number(url.searchParams.get('n') || 10), KEEP_PER_CHAT));
+      const all = [...(chats[c.jid] || []), ...(chats[c.lid] || []), ...((!c.jid && !c.lid && chats[jid]) || [])]
+        .sort((a, b) => a.ts - b.ts).filter((x, i, a) => a.findIndex((y) => y.id === x.id) === i);
+      return json(res, 200, { messages: all.slice(-n) });
+    }
     return json(res, 404, { error: 'non trovato' });
   } catch (e) { return json(res, 400, { error: String(e?.message || e) }); }
 }).listen(PORT, '127.0.0.1', () => {

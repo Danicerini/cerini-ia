@@ -18,7 +18,7 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 - `server/static/index.html`: HTML + tutto il CSS. Colori solo con i token (`--bg`, `--text`, `--text-2`, `--text-3`, `--border`, `--accent`, `--accent-soft`, …), tema chiaro e scuro.
 - `server/brain/brain.md`: la specifica Brain Protocol v6 copiata nel cervello di ogni utente.
 - `server/install-ct.sh`, `server/.env.example`: installazione sul container.
-- `server/whatsapp/`: piccolo servizio Node (Baileys) che collega il WhatsApp dell'utente come dispositivo (QR in Impostazioni → Collegamenti), tiene la rubrica e invia messaggi e file; gira come `aura-whatsapp` (systemd), ascolta su 127.0.0.1:8091 con il token `WA_TOKEN` del `.env`. Non legge le chat. Il deploy installa le dipendenze e il servizio.
+- `server/whatsapp/`: piccolo servizio Node (Baileys) che collega il WhatsApp dell'utente come dispositivo (QR in Impostazioni → Collegamenti), tiene la rubrica e gli ultimi 30 messaggi di ogni chat personale (letti solo su richiesta, `whatsapp_leggi`) e invia messaggi e file; gira come `aura-whatsapp` (systemd), ascolta su 127.0.0.1:8091 con il token `WA_TOKEN` del `.env`. Il deploy installa le dipendenze e il servizio.
 - `pc/`: script per il PC con Ollama. `homebase/`: integrazione con la Homebase (`api/aura.php`, la porta con l'elenco chiuso di azioni: va copiata a mano nel container della Homebase, vedi `install-aura-homebase.sh`). `tools/`: deploy e controllo privacy.
 
 ## Concetti chiave

@@ -609,7 +609,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -699,7 +699,8 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       : null;
     const tIcon = isMem ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
     return h('div', { class: 'msg step' }, h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo),
-      m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view) : null);
+      m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
+        : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view)) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -3276,7 +3277,34 @@ function renderVoice() {
 $('#voiceBtn').onclick = () => voiceStart();
 
 // ================================================================ conferme
+// WhatsApp: l'anteprima del messaggio (e la chat letta) con la grafica di WhatsApp
+const waTime = (ts) => new Date(ts || Date.now()).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+function waView(v, status) {
+  const ticks = (st) => h('span', { class: 'wa-ticks ' + (st || ''), 'aria-label': st === 'sent' ? 'Inviato' : 'Da inviare',
+    html: st === 'sent' ? '<svg viewBox="0 0 18 11" width="16" height="11"><path d="M1 6l3 3 6-7M7 9l1 1 8-9" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '<svg viewBox="0 0 12 12" width="12" height="12"><circle cx="6" cy="6" r="4.6" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 3.4V6l1.8 1.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>' });
+  const bubble = (me, text, ts, st, extra) => h('div', { class: 'wa-b ' + (me ? 'out' : 'in') }, extra || null,
+    text ? h('div', { class: 'wa-t', text }) : null,
+    h('span', { class: 'wa-meta' }, h('span', { text: waTime(ts) }), me ? ticks(st) : null));
+  const fileEl = (f) => (f.mime || '').startsWith('image/')
+    ? h('img', { class: 'wa-img', src: `/api/files/${f.id}`, alt: f.name, loading: 'lazy' })
+    : h('div', { class: 'wa-doc' }, h('span', { class: 'wa-doc-ic', text: (f.name.split('.').pop() || 'file').slice(0, 4).toUpperCase() }),
+        h('div', {}, h('b', { text: f.name }), h('small', { text: f.mime || 'documento' })));
+  let rows;
+  if (v.mode === 'chat') rows = (v.messages || []).map((x) => bubble(x.me, x.text, x.ts, 'sent'));
+  else {
+    const st = status === 'done' ? 'sent' : '';
+    const files = v.files || [];
+    rows = files.length ? files.map((f, i) => bubble(true, i === 0 ? v.text : '', null, st, fileEl(f))) : [bubble(true, v.text, null, st)];
+  }
+  return h('div', { class: 'wa-box-chat' },
+    h('div', { class: 'wa-head' }, h('span', { class: 'wa-av', text: initials(v.name || v.number) }),
+      h('div', { class: 'wa-who' }, h('b', { text: v.name || v.number }), h('small', { text: v.name ? v.number : 'WhatsApp' })),
+      h('span', { class: 'wa-logo', html: icon('phone', 'sm') })),
+    h('div', { class: 'wa-body' }, ...rows));
+}
 function confirmEl(chat, m) {
+  if (m.view?.kind === 'wa') return waConfirmEl(chat, m);
   const card = h('div', { class: 'confirm-card' },
     h('div', { class: 'ct', html: icon('shield', 'sm') + 'Serve la tua conferma' }),
     h('div', { class: 'md', html: renderMarkdown(m.summary || m.name) }),
@@ -3292,6 +3320,21 @@ function confirmEl(chat, m) {
     const ok = m.status === 'done';
     card.append(h('div', { class: 'st ' + (ok ? 'ok' : 'no') }, h('span', { html: icon(ok ? 'check' : 'x', 'sm') }),
       h('span', { text: m.result || (ok ? 'Fatto' : m.status === 'failed' ? 'Non riuscito' : 'Annullato') })));
+  }
+  return h('div', { class: 'msg' }, card);
+}
+function waConfirmEl(chat, m) {
+  const card = h('div', { class: 'wa-card' }, waView(m.view, m.status));
+  if (m.status === 'pending') {
+    card.append(h('div', { class: 'wa-actions' }, h('span', { class: 'wa-hint', text: 'Parte dal tuo numero quando premi Invia' }),
+      h('button', { class: 'btn sm', text: 'Annulla', disabled: !!S.stream, onclick: () => decide(chat, m, false) }),
+      h('button', { class: 'btn sm wa-send', html: icon('up', 'sm') + 'Invia', disabled: !!S.stream, onclick: () => decide(chat, m, true) })));
+  } else if (m.status === 'working') {
+    card.append(h('div', { class: 'wa-actions' }, h('span', { class: 'spinner' }), h('span', { class: 'wa-hint', text: 'Invio…' })));
+  } else {
+    const ok = m.status === 'done';
+    card.append(h('div', { class: 'wa-actions st ' + (ok ? 'ok' : 'no') }, h('span', { html: icon(ok ? 'check' : 'x', 'sm') }),
+      h('span', { text: m.result || (ok ? 'Inviato' : m.status === 'failed' ? 'Non inviato' : 'Annullato') })));
   }
   return h('div', { class: 'msg' }, card);
 }
