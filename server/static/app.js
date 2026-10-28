@@ -3678,7 +3678,7 @@ const modelLabel = (n) => isCloudM(n) ? '☁ ' + n.slice(6) : n;
 async function loadUsage() { try { S.usage = await (await api('/api/usage')).json(); } catch { S.usage = null; } return S.usage; }
 
 function usageCards() {
-  const wrap = h('div', { class: 'stack usage' }, h('section', { class: 'card' }, h('div', { class: 'list-empty', text: 'Carico i consumi…' })));
+  const wrap = h('div', { class: 'usage' }, h('section', { class: 'card' }, h('div', { class: 'list-empty', text: 'Carico i consumi…' })));
   (async () => {
     const u = await loadUsage();
     if (!u) { wrap.replaceChildren(h('section', { class: 'card' }, h('div', { class: 'list-empty', text: 'Non riesco a leggere i consumi.' }))); return; }
