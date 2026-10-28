@@ -595,7 +595,9 @@ function stepsEl(steps) {
 // Strumenti della memoria: i loro esiti non compaiono uno per uno nella chat, ma raccolti sotto la risposta del turno
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
-const isMemoryTool = (m) => m.role === 'tool' && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
+// le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa'];
+const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)' };
 const READING_LABEL = { cerca_memoria: 'Sto leggendo la memoria…', mail_cerca: 'Sto leggendo la posta…', mail_leggi: 'Sto leggendo la mail…', calendario_vedi: 'Sto guardando il calendario…', web_cerca: 'Sto cercando sul web…', web_leggi: 'Sto leggendo una pagina…', homebase_note: 'Sto guardando le note…', homebase_nota: 'Sto leggendo la nota…', homebase_cerca: 'Sto cercando nella Homebase…', homebase_servizi: 'Sto guardando i servizi…', homebase_rete: 'Sto guardando la rete…', homebase_scratchpad: 'Sto leggendo lo scratchpad…', homebase_scratchpad_archivio: 'Cerco negli scratchpad archiviati…', file_leggi: 'Sto leggendo il file…' };
@@ -604,13 +606,13 @@ function groupMemoryNotes(msgs) {
   const flush = (end) => {
     const turn = msgs.slice(start, end);
     const notes = turn.filter((m) => isMemoryTool(m) && m.undo);
-    const reads = turn.filter((m) => m.role === 'tool' && READ_TOOLS[m.tool_name]);
+    const reads = turn.filter((m) => m.role === 'tool' && READ_TOOLS[m.tool_name] && !SHOWN_VIEWS.includes(m.view?.kind));
     // la risposta del turno: l'ultimo messaggio dell'assistente con del testo (o quello che sta scrivendo)
     const anchor = [...turn].reverse().find((m) => m.role === 'assistant' && (m.content || m._streaming));
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -705,7 +707,8 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       : h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo);
     return h('div', { class: 'msg step' }, card,
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
-        : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view)) : null);
+        : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
+        : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat)) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -2384,11 +2387,72 @@ function hbCard(it) {
 function hbView(v) {
   return h('div', { class: 'hb-card hb-view' }, hbHead(v.title || 'Amministrazione'),
     v.note ? h('div', { class: 'hb-note', text: v.note }) : null,
-    (v.rows || []).length ? h('div', { class: 'hb-rows' }, ...v.rows.map((r) => h('div', { class: 'hb-row' },
+    (v.rows || []).length ? h('div', { class: 'hb-rows' }, ...v.rows.map((r) => h('div', { class: 'hb-row' + (r.open ? ' can-open' : ''),
+      onclick: r.open ? () => openHbDoc(r.open) : null },
       h('i', { class: 'hb-dot t-' + (r.tone || 'gray') }),
       h('div', { class: 'tx' }, h('b', { text: r.title || '' }), r.sub ? h('small', { text: r.sub }) : null),
-      r.badge ? h('span', { class: 'hb-tag t-' + (r.tone || 'gray'), text: r.badge }) : null))) : null,
+      r.badge ? h('span', { class: 'hb-tag t-' + (r.tone || 'gray'), text: r.badge }) : null,
+      r.open ? h('button', { class: 'hb-btn hb-btn--sm', text: 'Apri', onclick: (e) => { e.stopPropagation(); openHbDoc(r.open); } })
+        : r.url ? h('a', { class: 'hb-btn hb-btn--sm', href: r.url, target: '_blank', rel: 'noopener', text: 'Homebase', onclick: (e) => e.stopPropagation() }) : null))) : null,
     v.url ? h('a', { class: 'hb-open', href: v.url, target: '_blank', rel: 'noopener', html: 'Apri nella Homebase ' + icon('chevron', 'sm') }) : null);
+}
+// Procedura o nota della Homebase, dentro Aura: passaggi da spuntare, comandi da copiare, avvisi colorati
+const HB_BLOCK = { note: ['Nota', 'blue'], warning: ['Attenzione', 'amber'], important: ['Importante', 'violet'], prerequisite: ['Prima di iniziare', 'violet'],
+  expected: ['Risultato atteso', 'green'], verify: ['Verifica', 'blue'], error: ['Errore comune', 'red'], fix: ['Soluzione', 'green'] };
+function hbBlock(b) {
+  const copyBtn = (txt) => h('button', { class: 'hb-btn hb-btn--sm hb-copy', html: icon('copy', 'sm') + 'Copia', onclick: (e) => copyText(txt, e.currentTarget) });
+  if (b.t === 'title' || b.t === 'section') return h('h4', { class: 'hb-h', text: b.c });
+  if (b.t === 'subsection') return h('h5', { class: 'hb-h sub', text: b.c });
+  if (b.t === 'separator') return h('hr', { class: 'hb-hr' });
+  if (b.t === 'space' || b.t === 'group' || b.t === 'group_end') return null;
+  if (b.t === 'command' || b.t === 'code' || b.t === 'registry') return h('div', { class: 'hb-code' },
+    h('div', { class: 'hb-code-h' }, h('span', { text: b.lang || (b.t === 'registry' ? 'registro' : b.t === 'command' ? 'comando' : 'codice') }), copyBtn(b.c)),
+    h('pre', { class: 'mono', text: b.c }), b.desc ? h('small', { class: 'hb-desc', text: b.desc }) : null);
+  if (b.t === 'path' || b.t === 'parameter') return h('div', { class: 'hb-path' }, h('code', { class: 'mono', text: b.c }), copyBtn(b.c));
+  if (b.t === 'output') return h('div', { class: 'hb-output' }, h('div', { class: 'hb-code-h' }, h('span', { text: 'Testo' }), copyBtn(b.c)), h('div', { text: b.c }));
+  if (b.t === 'link') return h('a', { class: 'hb-link', href: b.c, target: '_blank', rel: 'noopener', text: b.c });
+  if (b.t === 'list') return h('ul', { class: 'hb-list' }, ...(b.items || []).map((x) => h('li', { text: x })));
+  if ((b.t === 'table' || b.t === 'keyvalue') && b.rows?.length) {
+    const rows = b.rows.map((r) => (Array.isArray(r) ? r : Object.values(r || {})));
+    return h('div', { class: 'hb-table-w' }, h('table', { class: 'hb-table' }, ...rows.map((r, i) => h('tr', {}, ...r.map((c) => h(b.header && i === 0 ? 'th' : 'td', { text: String(c ?? '') }))))));
+  }
+  if (b.t === 'screenshot') return h('div', { class: 'hb-note-s', text: '📷 Immagine: la trovi nella procedura sulla Homebase' });
+  const box = HB_BLOCK[b.t];
+  if (box) return h('div', { class: 'hb-callout t-' + box[1] }, h('b', { text: box[0] }), h('div', { text: b.c }));
+  return b.c.trim() ? h('div', { class: 'hb-text', text: b.c }) : null;
+}
+function hbDocView(v, onChange) {
+  const done = (v._done ||= []);
+  const steps = (v.steps || []).map((s, i) => {
+    const chk = h('input', { type: 'checkbox', checked: done.includes(i) || null, 'aria-label': 'Passo fatto', onchange: (e) => {
+      if (e.target.checked) { if (!done.includes(i)) done.push(i); } else done.splice(done.indexOf(i), 1);
+      el.classList.toggle('done', e.target.checked); bar.firstChild.style.width = `${Math.round((100 * done.length) / (v.steps.length || 1))}%`;
+      prog.textContent = `${done.length} di ${v.steps.length} passaggi`; onChange?.(); } });
+    const el = h('div', { class: 'hb-step' + (done.includes(i) ? ' done' : '') },
+      h('label', { class: 'hb-step-h' }, chk, h('span', { class: 'hb-step-n', text: String(s.n ?? i + 1) }), h('b', { text: s.title })),
+      h('div', { class: 'hb-step-b' }, ...s.blocks.map(hbBlock).filter(Boolean)));
+    return el;
+  });
+  const bar = h('div', { class: 'hb-prog' }, h('i', { style: `width:${Math.round((100 * done.length) / ((v.steps || []).length || 1))}%` }));
+  const prog = h('small', { text: `${done.length} di ${(v.steps || []).length} passaggi` });
+  return h('div', { class: 'hb-card hb-view hb-doc' }, hbHead(v.doc === 'nota' ? 'Nota' : v.doc === 'runbook' ? 'Runbook' : 'Procedura', ''),
+    h('div', { class: 'hb-doc-h' }, h('h3', { text: v.title }),
+      h('div', { class: 'hb-tags' }, v.category ? h('span', { class: 'hb-tag t-blue', text: v.category }) : null, v.updated ? h('span', { class: 'hb-tag', text: 'agg. ' + v.updated }) : null)),
+    v.description ? h('div', { class: 'hb-msg', text: v.description }) : null,
+    v.doc === 'nota' ? h('div', { class: 'hb-text md', html: renderMarkdown(v.text || '') }) : null,
+    steps.length ? h('div', { class: 'hb-doc-prog' }, bar, prog) : null,
+    ...steps,
+    v.url ? h('a', { class: 'hb-open', href: v.url, target: '_blank', rel: 'noopener', html: 'Apri nella Homebase ' + icon('chevron', 'sm') }) : null);
+}
+async function openHbDoc(o) {
+  const close = () => modal.remove();
+  const body = h('div', { class: 'list-empty', text: 'Apro…' });
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet hb-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Homebase' },
+      h('div', { class: 'ag-sheet-h' }, h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })), body));
+  document.body.append(modal);
+  try { body.replaceWith(hbDocView(await (await api(`/api/homebase/doc?tipo=${o.tipo}&id=${o.id}`)).json())); }
+  catch (e) { body.textContent = e.message; }
 }
 function feedCard(it) {
   if (it.kind === 'homebase') return hbCard(it);

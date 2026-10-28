@@ -864,7 +864,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args = {**args, "_uid": user["id"]}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
                         args = {**args, "_chat": body.chat_id or ""}   # la ricerca del ricordo (o delle mail) e' per questo utente
-                    if name.startswith(("mail_", "web_", "homebase_scratchpad", "whatsapp_")) or name == "homebase_procedura":
+                    if name.startswith(("mail_", "web_", "homebase_", "whatsapp_")):
                         # si puo' solo se lo chiede l'utente: il controllo guarda il suo ultimo messaggio, non il modello
                         args["_last_user"] = next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "")
                     if name in ("mail_prepara", "whatsapp_invia"):
