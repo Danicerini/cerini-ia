@@ -458,8 +458,10 @@ def tools_for(user: dict) -> list:
     gmail = user["role"] == "admin" and bool(_gmail_row(user["id"]))
     cal = gmail and has_calendar(user["id"])
     hbase = user["role"] == "admin" and homebase_on()
+    wapp = user["role"] == "admin" and wa_linked()
     return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin")
-            and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))]
+            and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))
+            and (wapp or not t.get("whatsapp"))]
 
 
 
@@ -829,14 +831,14 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         close = difflib.get_close_matches(name, list(TOOLS), n=1, cutoff=0.8)
                         if close:
                             name = close[0]
-                    if name in ("dimentica", "aggiorna_ricordo", "ricorda", "promemoria") or name.startswith(("mail_", "calendario_")):
+                    if name in ("dimentica", "aggiorna_ricordo", "ricorda", "promemoria", "whatsapp_invia") or name.startswith(("mail_", "calendario_")):
                         args = {**args, "_uid": user["id"]}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
                         args = {**args, "_chat": body.chat_id or ""}   # la ricerca del ricordo (o delle mail) e' per questo utente
                     if name.startswith(("mail_", "web_", "homebase_scratchpad")) or name == "homebase_procedura":
                         # si puo' solo se lo chiede l'utente: il controllo guarda il suo ultimo messaggio, non il modello
                         args["_last_user"] = next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "")
-                    if name == "mail_prepara":
+                    if name in ("mail_prepara", "whatsapp_invia"):
                         args["_files"] = next((m.get("files") or [] for m in reversed(body.messages) if m.get("role") == "user"), [])
                         args["_chat_files"] = [f for m in body.messages if m.get("role") == "user" for f in (m.get("files") or [])]
                     # Foto dell'evento: la prende il server dall'ultimo messaggio dell'utente (il modello non la ricopia)

@@ -1,23 +1,24 @@
-# configurazione vera e dati: restano sul server, mai qui
-.env
+
 !.env.example
-data/
-*.db
-*.sqlite*
-*.pem
-*.key
-token.txt
-cloud.json
-vapid_private.pem
+# configurazione vera e dati: restano sul server, mai qui
+# note private per Claude Code
 # roba di Python / editor
-__pycache__/
+*.db
+*.key
+*.pem
 *.pyc
-venv/
+*.sqlite*
+.DS_Store
+.env
+.idea/
 .venv/
 .vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# note private per Claude Code
 CLAUDE.local.md
+Thumbs.db
+__pycache__/
+cloud.json
+data/
+node_modules/
+token.txt
+vapid_private.pem
+venv/

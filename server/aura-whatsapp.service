@@ -1,0 +1,16 @@
+[Unit]
+Description=Aura WhatsApp (collegamento al WhatsApp dell'utente)
+After=network-online.target ollama-web.service
+
+[Service]
+User=ollamaweb
+WorkingDirectory=/opt/ollama-web/whatsapp
+EnvironmentFile=/opt/ollama-web/.env
+Environment=WA_DIR=/opt/ollama-web/data/whatsapp
+ExecStart=/usr/bin/node index.mjs
+Restart=always
+RestartSec=5
+MemoryMax=300M
+
+[Install]
+WantedBy=multi-user.target

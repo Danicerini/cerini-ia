@@ -1,0 +1,13 @@
+{
+  "name": "aura-whatsapp",
+  "private": true,
+  "description": "Aura e WhatsApp: collega il WhatsApp dell'utente come dispositivo, tiene la rubrica e invia messaggi e file",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": { "start": "node index.mjs" },
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "pino": "9.7.0",
+    "qrcode": "1.5.4"
+  }
+}

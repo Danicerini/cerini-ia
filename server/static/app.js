@@ -2819,6 +2819,49 @@ function brainNew(kind) {
 }
 setInterval(() => { if (S.me && bpOpen() && !document.hidden) renderBrainPanel(); }, 60000);
 
+// WhatsApp: Aura scrive dal tuo numero. Si collega col QR (come WhatsApp Web) e si scollega con «Dissocia».
+function whatsappCard() {
+  const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('phone', 'sm') + 'WhatsApp' }),
+    h('p', { text: 'Aura può mandare messaggi e file dal tuo numero alle persone della tua rubrica. Prima di ogni invio ti mostra il messaggio e aspetta il tuo «Conferma». Non legge le tue chat.' })),
+    h('div', { class: 'wa-box' }, h('div', { class: 'list-empty', text: 'Controllo…' })));
+  const box = card.lastChild;
+  let timer = null;
+  const paint = async () => {
+    clearTimeout(timer);
+    if (!document.body.contains(card) && box.dataset.ready) return;   // impostazioni chiuse: si smette di controllare
+    box.dataset.ready = '1';
+    let s;
+    try { s = await (await api('/api/whatsapp')).json(); } catch (e) { box.replaceChildren(h('div', { class: 'form-msg err', text: e.message })); return; }
+    const act = (label, cls, url, confirmTxt) => h('button', { class: 'btn ' + cls, text: label, onclick: async (e) => {
+      if (confirmTxt && !confirm(confirmTxt)) return;
+      e.currentTarget.disabled = true;
+      try { await api(url, {}); } catch (ex) { toast(ex.message); }
+      paint(); } });
+    if (!s.installed) { box.replaceChildren(h('p', { class: 'wa-note', text: 'Il servizio WhatsApp non è installato sul server.' })); return; }
+    if (s.status === 'connected') {
+      box.replaceChildren(h('div', { class: 'wa-on' }, h('span', { class: 'wa-dot' }),
+        h('div', { class: 'tx' }, h('b', { text: 'Collegato' + (s.me?.name ? ` · ${s.me.name}` : '') }),
+          h('small', { text: `+${s.me?.id || ''} · ${s.contacts || 0} contatti in rubrica` })),
+        act('Dissocia', 'danger', '/api/whatsapp/logout', 'Scollego Aura dal tuo WhatsApp? Per ricollegarla dovrai scansionare di nuovo il QR.')));
+    } else if (s.status === 'qr' && s.qr) {
+      box.replaceChildren(h('div', { class: 'wa-qr' }, h('img', { src: s.qr, alt: 'QR da scansionare con WhatsApp', width: 240, height: 240 }),
+        h('ol', {}, h('li', { text: 'Apri WhatsApp sul telefono' }), h('li', { text: 'Impostazioni (o ⋮) → Dispositivi collegati' }),
+          h('li', { text: 'Collega un dispositivo e inquadra questo codice' })),
+        h('small', { class: 'wa-note', text: 'Il codice cambia ogni 20 secondi: si aggiorna da solo.' })));
+      timer = setTimeout(paint, 3000);
+    } else if (['starting', 'connecting'].includes(s.status)) {
+      box.replaceChildren(h('div', { class: 'list-empty', text: s.status === 'connecting' ? 'Mi sto collegando…' : 'Preparo il codice…' }));
+      timer = setTimeout(paint, 2000);
+    } else {
+      box.replaceChildren(h('div', { class: 'wa-off' }, h('div', { class: 'tx' }, h('b', { text: s.status === 'down' ? 'Il servizio non risponde' : 'Non collegato' }),
+        h('small', { text: s.error || 'Premi «Collega» e inquadra il QR con WhatsApp.' })),
+        act('Collega', 'primary', '/api/whatsapp/link')));
+    }
+  };
+  paint();
+  return card;
+}
+
 // Modello nel cloud (facoltativo): fornitore, chiave, modello. La chiave resta sul server: qui si vede solo se c'e'.
 function cloudCard() {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('globe', 'sm') + 'Modello nel cloud' }),
@@ -3461,7 +3504,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), whatsappCard(), cloudCard()] : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
