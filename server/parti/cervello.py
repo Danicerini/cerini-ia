@@ -1448,7 +1448,10 @@ CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESA
              "parte); CONS = consulenza; DC = data center e macchine virtuali. Se il cliente ha un solo fascicolo, quello. Il lavoro interno "
              "per {azienda} va nel fascicolo di assistenza interna di {azienda}. Nel dubbio tra NOC ed EXTRA scegli NOC e metti dubbio=true. "
              "Se il cliente non è nell'elenco, fascicolo vuoto. Un fascicolo tra parentesi ha la ragione sociale: i nomi brevi che usa "
-             "l'utente possono essere diversi (sigle, gruppo).\n")
+             "l'utente possono essere diversi (sigle, gruppo).\n"
+             "IL CLIENTE è l'azienda di cui parla il lavoro (il servizio, il dominio, la mail o gli utenti coinvolti: es. una mail che si "
+             "spaccia per un servizio di un cliente va su quel cliente), NON chi apre o segnala il ticket. Il fascicolo interno di {azienda} "
+             "solo per lavoro che riguarda {azienda} stessa.\n")
 
 
 def _fasc_file() -> dict:
@@ -1478,7 +1481,8 @@ def _fasc_fix(row: dict, f: dict | None, fl: list[dict], alias: dict) -> tuple[d
     if not code or (f and _fasc_code(f) == code):
         return f, False
     mine = [x for x in fl if _fasc_code(x) == code]
-    want = "EXTRA" if f and " EXTRA" in f["progetto"].split(" - ")[0].upper() else "NOC"
+    pref = str((_fasc_file().get("predefinito") or {}).get(code) or "").upper()
+    want = "EXTRA" if f and " EXTRA" in f["progetto"].split(" - ")[0].upper() else ("EXTRA" if "EXTRA" in pref else "NOC")
     return next((x for x in mine if want in x["progetto"].split(" - ")[0].upper()), mine[0] if mine else None), True
 
 
@@ -1514,7 +1518,11 @@ async def consuntivo(user: dict, day: str) -> dict:
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
     fl = fascicoli()
     alias = {k: v for k, v in (_fasc_file().get("alias") or {}).items()}
-    fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" for f in fl), azienda=main["name"])
+    pref = _fasc_file().get("predefinito") or {}
+    fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" + (f"  [descrizione nel formato: {f['descrizione']}]" if f.get("descrizione") else "")
+                                              for f in fl), azienda=main["name"])
+            + ("FASCICOLO DI SOLITO USATO per questi clienti (usalo salvo motivi chiari): "
+               + "; ".join(f"{k} → {v}" for k, v in pref.items()) + "\n" if pref else "")
             + ("SIGLE DEI CLIENTI (nome usato dall'utente = sigla del fascicolo): " + ", ".join(f"{k} = {v}" for k, v in alias.items()) + "\n"
                if alias else "")) if fl else ""
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
@@ -1525,7 +1533,8 @@ async def consuntivo(user: dict, day: str) -> dict:
     rows, amap = [], fasc_alias()
     for v in d.get("voci") or []:
         what = str(v.get("descrizione") or v.get("attivita") or "").strip() if isinstance(v, dict) else ""
-        what = re.sub(r"^TK\s*(?:#|<[^>]*>|n\.?\s*d\.?|non \w+)?\s*[-–:]\s*", "", what, flags=re.I) if not re.match(r"TK\s*#?\d", what, re.I) else what
+        # numero del ticket sconosciuto: resta «TK#» da completare (come nel gestionale), mai «TK<non specificato>»
+        what = re.sub(r"\bTK\s*(?:#\s*)?(?:<[^>]*>|\[[^\]]*\]|n\.?\s*d\.?|non \w+|\?+|x+)", "TK#", what, flags=re.I)
         if not what:
             continue
         f, fixed = _fasc_fix(v, _fasc_match(v.get("fascicolo"), fl), fl, amap)
