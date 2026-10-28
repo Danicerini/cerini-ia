@@ -552,6 +552,10 @@ EXTRA_TOOLS_SPEC = _fn("strumenti_extra", "Se per la richiesta ti serve uno stru
                        {"argomento": {"type": "string", "enum": list(EXTRA_GROUPS)}}, ["argomento"])
 
 
+SMALLTALK_RE = re.compile(r"(ciao|ehi|hey|buon(giorno|asera|anotte|a giornata)|salve|grazie( mille)?|ok(ay)?|va bene|perfetto|top|"
+                          r"come (va|stai)|tutto bene)[\s,!.?]*(aura|dani|ceri)?[\s!.?]*", re.I)
+
+
 def _topic_tools(tools: list, messages: list[dict]) -> list:
     t = _topics(messages)
     sel = [x for x in tools if _tool_group(x["function"]["name"]) in t | {""}]
@@ -709,6 +713,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             ctx = FREE_CTX if free else (CLOUD_CTX if is_cloud(body.model) else NUM_CTX)
             tools = tools_for(user) if not free and "tools" in await model_caps(body.model) else []
             tools = _topic_tools(tools, body.messages)
+            if SMALLTALK_RE.fullmatch(next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "").strip()):
+                tools = []   # un saluto non ha bisogno di strumenti (e delle loro istruzioni): ~1/3 dei token
             skill = slash_skill(user, body.messages) if tools else None
             if skill and skill["tools"]:   # /homebase: gli strumenti di quella skill (piu' quelli per ricordare)
                 keep = tuple(skill["tools"]) + ("ricorda", "cervello_cerca")
