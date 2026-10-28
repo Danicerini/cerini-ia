@@ -1385,7 +1385,15 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .cs-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); }
 .cs-row .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .cs-row small { color: var(--text-3); font-size: 12px; }
-.cs-time { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.cs-time { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; font-size: 16px; }
+.cs-time small { font-weight: 400; }
+.cs-row { align-items: flex-start; }
+.cs-f, .cs-d { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cs-f b { font-size: 13px; } .cs-f.none b { color: var(--text-3); font-style: italic; }
+.cs-d span { color: var(--text-2); }
+.cs-mini { display: inline-grid; place-items: center; width: 24px; height: 22px; border: 1px solid var(--border); border-radius: 6px; background: transparent;
+  color: var(--text-3); cursor: pointer; flex: none; } .cs-mini:hover { color: var(--text); border-color: var(--accent); }
+.cs-doubt { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: rgba(245, 158, 11, .15); color: #d97706; }
 .cs-total { display: flex; justify-content: space-between; padding: 9px 0 6px; border-top: 1px solid var(--border); }
 .cs-bar { height: 6px; border-radius: 4px; background: var(--border); overflow: hidden; }
 .cs-bar i { display: block; height: 100%; background: var(--accent); border-radius: 4px; }

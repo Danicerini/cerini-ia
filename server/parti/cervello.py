@@ -1431,13 +1431,47 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "- entra tutto il lavoro FATTO quel giorno, anche le cose da fare spuntate come fatte ([x]); restano fuori solo le cose "
                "ancora da fare ([ ]) e quelle che non sono lavoro;\n"
                "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
-               "- «attivita» = descrizione breve e professionale, come in un consuntivo (es. «Reset password VPN utente», «Analisi mail di "
-               "phishing segnalata e blocco mittente su antispam»); «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
+               "- «descrizione» = la Descrizione attività da scrivere nel gestionale: UNA frase professionale e concreta (max 120 caratteri) "
+               "che dice cosa è stato fatto e per quale utente o reparto, niente di inventato (es. «Reset password VPN utente amministrazione», "
+               "«Analisi mail di phishing segnalata, blocco mittente su antispam e risposta al ticket»); se nel testo c'è il numero del ticket "
+               "inizia con «TK<numero> - »;\n- «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
+               "{fascicoli}"
                "Giorno: {giorno}.\n\nDIARIO DEL GIORNO:\n{diario}\n\nMESSAGGI SCRITTI DALL'UTENTE QUEL GIORNO:\n{chat}\n\n"
                "Prima di rispondere ricontrolla: se due voci parlano dello stesso ticket, della stessa mail o dello stesso utente, "
                "uniscile in una (sommando i tempi, senza superare il realistico).\n"
-               "Rispondi SOLO JSON: {{\"voci\": [{{\"attivita\": \"…\", \"cliente\": \"…\", \"minuti\": 30}}], "
-               "\"esclusi\": [\"cose del giorno lasciate fuori perché non sono lavoro, brevi\"]}}")
+               "Rispondi SOLO JSON: {{\"voci\": [{{\"fascicolo\": \"Titolo progetto esatto o vuoto\", \"descrizione\": \"…\", \"cliente\": \"…\", "
+               "\"minuti\": 30, \"dubbio\": false}}], \"esclusi\": [\"cose del giorno lasciate fuori perché non sono lavoro, brevi\"]}}")
+
+CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESATTO il suo Titolo progetto.\n{elenco}\n"
+             "Come scegliere: NOC = assistenza inclusa nel contratto (ticket ordinari, problemi degli utenti, reset, posta, account, VPN che "
+             "non va); EXTRA = lavori fuori contratto a consuntivo (installazioni nuove, progetti, configurazioni nuove, interventi chiesti a "
+             "parte); CONS = consulenza; DC = data center e macchine virtuali. Se il cliente ha un solo fascicolo, quello. Il lavoro interno "
+             "per {azienda} va nel fascicolo di assistenza interna di {azienda}. Nel dubbio tra NOC ed EXTRA scegli NOC e metti dubbio=true. "
+             "Se il cliente non è nell'elenco, fascicolo vuoto. Un fascicolo tra parentesi ha la ragione sociale: i nomi brevi che usa "
+             "l'utente possono essere diversi (sigle, gruppo).\n")
+
+
+def fascicoli() -> list[dict]:
+    """I fascicoli del gestionale (Titolo contratto / Titolo progetto), in data/fascicoli.json sul server: non stanno nel codice."""
+    try:
+        return [f for f in json.loads((DATA_DIR / "fascicoli.json").read_text(encoding="utf-8")).get("fascicoli") or [] if f.get("progetto")]
+    except (OSError, ValueError):
+        return []
+
+
+def _fasc_match(title: str, fl: list[dict]) -> dict | None:
+    t = str(title or "").strip()
+    if not t:
+        return None
+    hit = next((f for f in fl if f["progetto"].lower() == t.lower()), None)
+    if hit:
+        return hit
+    code = t.split(" - ")[0].strip().lower()   # «WK NOC - …» scritto un po' diverso: vale la sigla, se e' una sola
+    same = [f for f in fl if f["progetto"].split(" - ")[0].strip().lower() == code]
+    if len(same) == 1:
+        return same[0]
+    near = [f for f in (same or fl) if _flat(t)[:40] and _flat(f["progetto"]).startswith(_flat(t)[:40])]
+    return near[0] if len(near) == 1 else None
 
 
 async def consuntivo(user: dict, day: str) -> dict:
@@ -1455,12 +1489,22 @@ async def consuntivo(user: dict, day: str) -> dict:
         return {"day": day, "rows": [], "total": 0, "excluded": []}
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
+    fl = fascicoli()
+    fasc = CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" for f in fl), azienda=main["name"]) if fl else ""
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
-                                clienti=", ".join(e["name"] for e in comp) or "quelli nominati", giorno=day, diario=diary, chat=chats)
+                                clienti="; ".join(f"{e['name']} ({_clip(e.get('summary') or '', 90)})" for e in comp) or "quelli nominati",
+                                fascicoli=fasc, giorno=day, diario=diary, chat=chats)
     raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
     d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
-    rows = [{"what": str(v.get("attivita") or "").strip()[:160], "client": str(v.get("cliente") or main["name"]).strip()[:60],
-             "min": _half_hours(v.get("minuti"))} for v in d.get("voci") or [] if isinstance(v, dict) and str(v.get("attivita") or "").strip()]
+    rows = []
+    for v in d.get("voci") or []:
+        what = str(v.get("descrizione") or v.get("attivita") or "").strip() if isinstance(v, dict) else ""
+        if not what:
+            continue
+        f = _fasc_match(v.get("fascicolo"), fl)
+        rows.append({"what": what[:160], "client": str(v.get("cliente") or main["name"]).strip()[:60], "min": _half_hours(v.get("minuti")),
+                     "project": f["progetto"] if f else "", "contract": f["contratto"] if f else "",
+                     "doubt": bool(v.get("dubbio")) or (bool(fl) and not f)})
     return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows),
             "excluded": [str(x)[:120] for x in d.get("esclusi") or [] if str(x).strip()][:8]}
 
@@ -1475,11 +1519,13 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
     note = ("Nel diario di quel giorno non c'è lavoro da mettere a consuntivo." if not rows else
             f"Mancano {_hm(gap)} alle 8 ore: nel diario non c'è altro lavoro, dimmi cos'altro hai fatto." if gap > 0 else
             f"Superi le 8 ore di {_hm(-gap)}: dimmi cosa accorciare." if gap < 0 else "Fanno 8 ore giuste.")
-    lines = [f"- {r['what']} ({r['client']}): {_hm(r['min'])}" for r in rows]
+    lines = [f"- [{r['project'] or 'fascicolo da scegliere'}] {r['what']} ({r['client']}): {_hm(r['min'])}" + (" (da controllare)" if r["doubt"] else "")
+             for r in rows]
     view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"]}
     return {"content": f"Consuntivo del {day[8:]}/{day[5:7]}, mostrato all'utente in una tabella (non ripeterla voce per voce):\n" + "\n".join(lines)
                        + f"\nTotale {_hm(tot)} su 8h. {note}" + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else "")
-                       + "\nSe l'utente aggiunge lavori o cambia un tempo, rifai la tabella a mano con le stesse regole (mezz'ore, minimo 30 minuti).",
+                       + "\nSe l'utente aggiunge lavori o cambia un tempo, rifai la tabella a mano con le stesse regole (mezz'ore, minimo 30 minuti, "
+                         "fascicolo esatto del gestionale, descrizione di una frase).",
             "display": f"Consuntivo del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
 
 

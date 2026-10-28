@@ -2389,13 +2389,20 @@ function hbCard(it) {
 function consView(v) {
   const hm = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
   const day = `${v.day.slice(8)}/${v.day.slice(5, 7)}/${v.day.slice(0, 4)}`;
-  const text = (v.rows || []).map((r) => `${r.what}\t${r.client}\t${hm(r.min)}`).join('\n') + `\nTotale\t\t${hm(v.total)}`;
+  const ore = (m) => String(m / 60).replace('.', ',');   // come vuole il gestionale: 0,5 / 1 / 1,5
+  const text = (v.rows || []).map((r) => `${r.project || r.client}\t${r.what}\t${ore(r.min)}`).join('\n') + `\nTotale\t\t${ore(v.total)}`;
+  const cp = (txt, label) => h('button', { class: 'cs-mini', title: `Copia ${label}`, html: icon('copy', 'sm'), onclick: (e) => copyText(txt, e.currentTarget) });
   const pct = Math.min(100, Math.round((v.total / (v.target || 480)) * 100));
   return h('div', { class: 'cs-card' },
     h('div', { class: 'cs-head' }, h('b', { text: `Consuntivo del ${day}` }),
       (v.rows || []).length ? h('button', { class: 'cs-copy', 'data-label': '1', title: 'Copia per il gestionale', html: icon('copy', 'sm') + 'Copia', onclick: (e) => copyText(text, e.currentTarget) }) : null),
     (v.rows || []).length ? h('div', { class: 'cs-rows' }, ...v.rows.map((r) => h('div', { class: 'cs-row' },
-      h('div', { class: 'tx' }, h('span', { text: r.what }), h('small', { text: r.client })), h('span', { class: 'cs-time', text: hm(r.min) })))) : null,
+      h('div', { class: 'tx' },
+        h('div', { class: 'cs-f' + (r.project ? '' : ' none') }, h('b', { text: r.project || `Fascicolo da scegliere (${r.client})` }),
+          r.project ? cp(r.project, 'titolo progetto') : null, r.doubt ? h('span', { class: 'cs-doubt', text: 'da controllare' }) : null),
+        h('div', { class: 'cs-d' }, h('span', { text: r.what }), cp(r.what, 'descrizione')),
+        r.contract ? h('small', { text: r.contract }) : null),
+      h('div', { class: 'cs-time' }, h('span', { text: ore(r.min) }), h('small', { text: hm(r.min) }))))) : null,
     h('div', { class: 'cs-total' }, h('span', { text: 'Totale' }), h('b', { text: `${hm(v.total)} su ${hm(v.target || 480)}` })),
     h('div', { class: 'cs-bar' + (v.total > (v.target || 480) ? ' over' : v.total === (v.target || 480) ? ' full' : '') }, h('i', { style: `width:${pct}%` })),
     v.note ? h('div', { class: 'cs-note', text: v.note }) : null,
