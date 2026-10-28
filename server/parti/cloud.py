@@ -170,7 +170,8 @@ async def cloud_stream(payload: dict):
         yield {"message": {"role": "assistant", "content": "", "tool_calls": out}, "done": False}
     secs = max(0.001, time.monotonic() - t0)
     # se il fornitore non manda il conto, si stima: ~4 caratteri per token
-    tin = usage.get("prompt_tokens") or len(json.dumps(payload.get("messages") or [], ensure_ascii=False)) // 4
+    tin = usage.get("prompt_tokens") or (len(json.dumps(payload.get("messages") or [], ensure_ascii=False))
+                                         + len(json.dumps(payload.get("tools") or [], ensure_ascii=False))) // 3
     usage_add("cloud:" + c.get("model", ""), "chat",   # il modello chiamato davvero, non il nome rimasto nella chat
               tin, usage.get("completion_tokens") or tokens)
     yield {"message": {"role": "assistant", "content": ""}, "done": True, "eval_count": tokens, "eval_duration": int(secs * 1e9)}
@@ -182,7 +183,19 @@ async def llm_stream(payload: dict):
         if not cloud_ready():
             yield {"error": "Il modello nel cloud non è configurato: inserisci la chiave in Impostazioni → Collegamenti"}
             return
+        first = True
         async for d in cloud_stream(payload):
+            if first and d.get("error") and await _pc_on():
+                why = cloud_error_text(d["error"])
+                local = {**payload, "model": await _chat_model(), "options": {**(payload.get("options") or {}), "num_ctx": NUM_CTX or 8192}}
+                local["messages"] = list(payload.get("messages") or []) + [{"role": "system", "content":
+                    f"Il modello nel cloud adesso non risponde ({why}): stai rispondendo tu, {local['model']} sul PC di casa. "
+                    "Se l'utente chiede che modello sei, di' questo."}]
+                yield {"message": {"role": "assistant", "content": f"⚠️ {why}: per ora rispondo io con {local['model']} sul PC.\n\n"}, "done": False}
+                async for x in llm_stream(local):
+                    yield x
+                return
+            first = False
             yield d
         return
     async with client.stream("POST", ollama_base + "/api/chat", json=payload) as r:
@@ -195,6 +208,20 @@ async def llm_stream(payload: dict):
                 if d.get("done"):
                     usage_add(payload.get("model"), "chat", d.get("prompt_eval_count") or 0, d.get("eval_count") or 0)
                 yield d
+
+
+def cloud_error_text(err: str) -> str:
+    """L'errore del fornitore detto in parole semplici."""
+    e = str(err or "")
+    if "daily_limit" in e or "Daily token limit" in e:
+        return "Il cloud ha finito i token di oggi (si sblocca a mezzanotte)"
+    if "key_model_access_denied" in e or "not allowed to access model" in e:
+        return f"La chiave del cloud non è abilitata al modello «{cloud_cfg().get('model', '')}»"
+    if "401" in e or "403" in e:
+        return "Il cloud ha rifiutato la chiave"
+    if "429" in e:
+        return "Il cloud è sovraccarico in questo momento"
+    return "Il modello nel cloud non risponde"
 
 
 async def llm_once(messages: list[dict], json_mode: bool = False, temperature: float = 0.2, model: str | None = None,
