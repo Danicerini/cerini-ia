@@ -1380,7 +1380,7 @@ def work_projects(user: dict) -> list[dict]:
     main = next((p for p in flagged if p["main"]), None)
     if not main:
         return flagged
-    names = [main["name"]] + [c["name"] for c in work_clients(user, main)]
+    names = [c["name"] for c in work_clients(user, main)]   # non il nome dell'azienda: una scheda personale può nominarla di passaggio
     for p, body in rest:
         if any(len(n) > 2 and (re.search(rf"\b{re.escape(n.lower())}\b", body) or _flat(n) == _flat(p["name"])) for n in names):
             flagged.append({**p, "main": False})
