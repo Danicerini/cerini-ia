@@ -808,7 +808,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                             except (ValueError, HTTPException) as e:
                                 result = {"content": f"Non eseguito: {e}", "display": "Non sono riuscito a salvarlo"}
                             yield ev(event="tool_result", message={"role": "tool", "tool_name": name, "content": result["content"]},
-                                     display=result["display"], undo=result.get("undo"), auto=True)
+                                     display=result["display"], undo=result.get("undo"), auto=True, open=result.get("open"))
                     return
                 calls = [{"function": {"name": c["function"]["name"], "arguments": _parse_args(c["function"].get("arguments"))}}
                          for c in calls if c.get("function", {}).get("name")]
@@ -925,7 +925,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     tool_msg = {"role": "tool", "tool_name": name, "content": result["content"]}
                     msgs.append(tool_msg)
                     yield ev(event="tool_result", message=tool_msg, display=result["display"], view=result.get("view"),
-                             undo=result.get("undo"), auto=result.get("auto"), sources=result.get("sources"), files=result.get("files"))
+                             undo=result.get("undo"), auto=result.get("auto"), sources=result.get("sources"), files=result.get("files"),
+                             open=result.get("open"))
                 if to_confirm:
                     pid = secrets.token_urlsafe(12)
                     PENDING[pid] = {"user_id": user["id"], "calls": [{"name": n, "args": a} for n, a, _, _ in to_confirm],

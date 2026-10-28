@@ -1271,7 +1271,7 @@ async def _tool_work_done(user: dict, args: dict, request: Request) -> dict:
     if args.get("stato"):
         await project_status(user, p, str(args["stato"]))
     return {"content": f"Scritto nel registro di oggi di «{p['name']}» ({rel})" + (" e aggiornato lo stato attuale" if args.get("stato") else "") + ".",
-            "display": f"«{p['name']}», oggi: " + "; ".join(done + [f"da fare: {t}" for t in todo])[:160]}
+            "display": f"«{p['name']}», oggi: " + "; ".join(done + [f"da fare: {t}" for t in todo])[:160], "open": rel}
 
 
 TOOLS.update({
@@ -1800,8 +1800,15 @@ async def _tool_diary_note(user: dict, args: dict, request: Request) -> dict:
     todo = args.get("da_fare") or []
     todo = [str(x) for x in todo] if isinstance(todo, list) else [x.strip() for x in str(todo).split("\n") if x.strip()]
     pr = _project_for(user, args)
-    rel = await diary_add(user, title, str(args.get("testo") or ""), day, todo, pr["id"] if pr else (_slug(args["progetto"]) if args.get("progetto") else ""), ["nota"])
-    return {"content": f"Scritto nel diario: {rel}.", "display": f"Nel diario: «{title}»" + (f" ({day[8:]}/{day[5:7]})" if day else "")}
+    asked = clean_name(str(args.get("progetto") or ""))[:60]
+    rel = await diary_add(user, title, str(args.get("testo") or ""), day, todo, pr["id"] if pr else asked, ["nota"])
+    sec = pr["name"] if pr else asked or title
+    d = day or local_now().strftime("%Y-%m-%d")
+    when = "di oggi" if d == local_now().strftime("%Y-%m-%d") else f"del {d[8:]}/{d[5:7]}"
+    note = (f" Non esiste un progetto «{asked}» nel cervello: è solo una sezione del diario, quindi non dire «progetto {asked}»."
+            if asked and not pr else "")
+    return {"content": f"Scritto nel diario {when} ({rel}), nella sezione «{sec}».{note}",
+            "display": f"Nel diario {when}" + (f" · {sec}" if sec.lower() != title.lower() else "") + f": «{title}»", "open": rel}
 
 
 async def _tool_diary_done(user: dict, args: dict, request: Request) -> dict:

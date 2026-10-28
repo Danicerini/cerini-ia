@@ -697,8 +697,12 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
           try { await api(`/api/calendar/event/${encodeURIComponent(m.undo.id)}`, undefined, { method: 'DELETE' }); m.undone = true; m.display = 'Tolto dal calendario'; saveChat(chat); renderThread(); loadToday(); }
           catch (e) { toast(e.message); } } })
       : null;
-    const tIcon = isMem ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
-    return h('div', { class: 'msg step' }, h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo),
+    const tIcon = isMem || m.open ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
+    const card = m.open && !m.undone
+      ? h('button', { class: 'tool-card link', title: 'Apri nel cervello', onclick: () => openBrainFile(m.open) }, h('span', { html: icon(tIcon, 'sm') }),
+          h('span', { text: m.display || `Ha usato ${m.tool_name}` }), h('span', { class: 'tc-open', html: icon('chevron', 'sm') }))
+      : h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo);
+    return h('div', { class: 'msg step' }, card,
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view)) : null);
   }
@@ -3422,7 +3426,7 @@ async function run(chat) {
         if (d.event === 'project') { chat.project = d.project || null; renderProjectChip(); continue; }
         if (d.event === 'tool_result') {
           if (reply && reply._streaming && !reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1);
-          chat.messages.push({ ...d.message, display: d.display, view: d.view || undefined, undo: d.undo || undefined, sources: d.sources || undefined, files: d.files || undefined });
+          chat.messages.push({ ...d.message, display: d.display, view: d.view || undefined, undo: d.undo || undefined, sources: d.sources || undefined, files: d.files || undefined, open: d.open || undefined });
           if (d.undo) refreshMemoryCount();
           reply = { role: 'assistant', content: '', thinking: '', _streaming: true, _reading: READ_TOOLS[d.message?.tool_name] ? d.message.tool_name : null };
           if (d.message?.tool_name?.startsWith('mail_')) refreshMailBadge();
