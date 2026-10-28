@@ -1359,14 +1359,32 @@ TOOLS.update({
 WORK_DAY_MIN = 480
 
 
+def work_clients(user: dict, main: dict) -> list[dict]:
+    """Le aziende clienti: le schede di azienda che nominano l'azienda di lavoro («X è cliente di …»)."""
+    rx = re.compile(rf"\b{re.escape(main['name'].lower())}\b")
+    return [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])
+            and rx.search(fm_split(brain_read(user, e["path"]))[1].lower())]
+
+
 def work_projects(user: dict) -> list[dict]:
-    """I progetti che vanno a consuntivo: quelli con «lavoro: true» nella scheda."""
-    out = []
+    """I progetti che vanno a consuntivo: quelli con «lavoro: true» (o «principale») nella scheda, e da soli quelli nuovi che
+    parlano dell'azienda di lavoro o di un suo cliente. «lavoro: false» li tiene fuori per sempre."""
+    flagged, rest = [], []
     for p in projects(user):
-        meta = fm_split(brain_read(user, p["path"]))[0]
-        if str(meta.get("lavoro") or "").lower() in ("true", "si", "sì", "yes", "1", "principale"):
-            out.append({**p, "main": str(meta.get("lavoro")).lower() == "principale"})
-    return out
+        meta, body = fm_split(brain_read(user, p["path"]))
+        v = str(meta.get("lavoro") or "").lower()
+        if v in ("true", "si", "sì", "yes", "1", "principale"):
+            flagged.append({**p, "main": v == "principale"})
+        elif v not in ("false", "no", "0"):
+            rest.append((p, body.lower()))
+    main = next((p for p in flagged if p["main"]), None)
+    if not main:
+        return flagged
+    names = [main["name"]] + [c["name"] for c in work_clients(user, main)]
+    for p, body in rest:
+        if any(len(n) > 2 and (re.search(rf"\b{re.escape(n.lower())}\b", body) or _flat(n) == _flat(p["name"])) for n in names):
+            flagged.append({**p, "main": False})
+    return flagged
 
 
 def _half_hours(m) -> int:
@@ -1435,7 +1453,8 @@ async def consuntivo(user: dict, day: str) -> dict:
     chats = _day_chats_text(user, day) or "(nessuna)"
     if diary == "(vuoto)" and chats == "(nessuna)":
         return {"day": day, "rows": [], "total": 0, "excluded": []}
-    comp = [e for e in brain_entities(user) if e["kind"] == "companies" and e["name"].lower() != main["name"].lower()]
+    comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
+    comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
                                 clienti=", ".join(e["name"] for e in comp) or "quelli nominati", giorno=day, diario=diary, chat=chats)
     raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
