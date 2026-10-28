@@ -1451,12 +1451,35 @@ CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESA
              "l'utente possono essere diversi (sigle, gruppo).\n")
 
 
+def _fasc_file() -> dict:
+    try:
+        return json.loads((DATA_DIR / "fascicoli.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def fascicoli() -> list[dict]:
     """I fascicoli del gestionale (Titolo contratto / Titolo progetto), in data/fascicoli.json sul server: non stanno nel codice."""
-    try:
-        return [f for f in json.loads((DATA_DIR / "fascicoli.json").read_text(encoding="utf-8")).get("fascicoli") or [] if f.get("progetto")]
-    except (OSError, ValueError):
-        return []
+    return [f for f in _fasc_file().get("fascicoli") or [] if f.get("progetto")]
+
+
+def fasc_alias() -> dict:
+    """Come l'utente chiama i clienti -> sigla del fascicolo («alias» in data/fascicoli.json)."""
+    return {_flat(k): str(v).upper() for k, v in (_fasc_file().get("alias") or {}).items()}
+
+
+def _fasc_code(f: dict) -> str:
+    return f["progetto"].split(" - ")[0].split()[0].upper()
+
+
+def _fasc_fix(row: dict, f: dict | None, fl: list[dict], alias: dict) -> tuple[dict | None, bool]:
+    """Se il cliente ha una sigla nota e il modello ha scelto il fascicolo di un altro cliente: quello giusto (NOC se c'e')."""
+    code = next((c for k, c in alias.items() if k and k in _flat(row.get("cliente"))), "")
+    if not code or (f and _fasc_code(f) == code):
+        return f, False
+    mine = [x for x in fl if _fasc_code(x) == code]
+    want = "EXTRA" if f and " EXTRA" in f["progetto"].split(" - ")[0].upper() else "NOC"
+    return next((x for x in mine if want in x["progetto"].split(" - ")[0].upper()), mine[0] if mine else None), True
 
 
 def _fasc_match(title: str, fl: list[dict]) -> dict | None:
@@ -1490,21 +1513,25 @@ async def consuntivo(user: dict, day: str) -> dict:
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
     fl = fascicoli()
-    fasc = CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" for f in fl), azienda=main["name"]) if fl else ""
+    alias = {k: v for k, v in (_fasc_file().get("alias") or {}).items()}
+    fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" for f in fl), azienda=main["name"])
+            + ("SIGLE DEI CLIENTI (nome usato dall'utente = sigla del fascicolo): " + ", ".join(f"{k} = {v}" for k, v in alias.items()) + "\n"
+               if alias else "")) if fl else ""
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
                                 clienti="; ".join(f"{e['name']} ({_clip(e.get('summary') or '', 90)})" for e in comp) or "quelli nominati",
                                 fascicoli=fasc, giorno=day, diario=diary, chat=chats)
     raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
     d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
-    rows = []
+    rows, amap = [], fasc_alias()
     for v in d.get("voci") or []:
         what = str(v.get("descrizione") or v.get("attivita") or "").strip() if isinstance(v, dict) else ""
+        what = re.sub(r"^TK\s*(?:#|<[^>]*>|n\.?\s*d\.?|non \w+)?\s*[-–:]\s*", "", what, flags=re.I) if not re.match(r"TK\s*#?\d", what, re.I) else what
         if not what:
             continue
-        f = _fasc_match(v.get("fascicolo"), fl)
+        f, fixed = _fasc_fix(v, _fasc_match(v.get("fascicolo"), fl), fl, amap)
         rows.append({"what": what[:160], "client": str(v.get("cliente") or main["name"]).strip()[:60], "min": _half_hours(v.get("minuti")),
                      "project": f["progetto"] if f else "", "contract": f["contratto"] if f else "",
-                     "doubt": bool(v.get("dubbio")) or (bool(fl) and not f)})
+                     "doubt": bool(v.get("dubbio")) or fixed or (bool(fl) and not f)})
     return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows),
             "excluded": [str(x)[:120] for x in d.get("esclusi") or [] if str(x).strip()][:8]}
 
