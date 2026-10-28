@@ -128,6 +128,23 @@ def core_memories_prompt(user: dict) -> str:
             "usale con naturalezza, senza elencarle):\n" + lines)
 
 
+async def chat_memories_prompt(user: dict, messages: list[dict]) -> str:
+    """In chat solo i ricordi che c'entrano con l'ultimo messaggio: tutti insieme costavano token a ogni «ciao»
+    e spingevano il modello a infilare nomi a caso (una mail «sistemata» che diventava per qualcuno dei ricordi)."""
+    last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
+    if len(last.strip()) < 6:
+        return ""
+    try:
+        hits = await memory_search(user["id"], last, k=5, kind="ricordo", min_score=0.45)
+    except HTTPException:
+        return ""
+    if not hits:
+        return ""
+    return ("\n\nRICORDI CHE POTREBBERO C'ENTRARE con quello che chiede (il numero serve solo per aggiorna_ricordo; usali solo se "
+            "servono davvero alla risposta, mai per indovinare a chi è rivolto qualcosa):\n"
+            + "\n".join(f"- [#{h['id']}] {h['text']}" for h in hits))
+
+
 async def recall_prompt(user: dict, messages: list[dict]) -> str:
     """Pezzi di documento pertinenti all'ultima domanda (solo se l'utente ha documenti)."""
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
@@ -483,7 +500,17 @@ FILE_TOPIC = re.compile(r"\b(file|allegat\w*|pdf|document\w*|immagin\w*|exif|fav
 SITE_TOOL = re.compile(r"^(sito_|prodott|categoria_|menu_giorno|event)")
 
 
+TECH_TOOLS = {"calcola_subnet", "genera_password", "confronta_testi", "apri_strumento"}
+ADMIN_TOOLS = {"elenco_utenti", "crea_invito"}
+TECH_TOPIC = re.compile(r"\b(subnet\w*|cidr|netmask|maschera|password|passphrase|confront\w*|differenz\w*|diff|strument\w*|tool)\b", re.I)
+ADMIN_TOPIC = re.compile(r"\b(utent[ei]|invit\w*|account)\b", re.I)
+
+
 def _tool_group(name: str) -> str:
+    if name in TECH_TOOLS:
+        return "tech"
+    if name in ADMIN_TOOLS:
+        return "admin"
     if name.startswith("homebase_"):
         return "hb"
     if name.startswith(("file_",)):
@@ -500,7 +527,8 @@ SEND_TO_RE = re.compile(r"\b(mand\w*|invi\w*|spedisc\w*|spedi\w*|inoltr\w*|scriv
 
 def _topics(messages: list[dict]) -> set:
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
-    found = {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC)) if rx.search(last)}
+    found = {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC),
+                                       ("tech", TECH_TOPIC), ("admin", ADMIN_TOPIC)) if rx.search(last)}
     last_msg = next((m for m in reversed(messages) if m.get("role") == "user"), {})
     files = [f for f in last_msg.get("files") or [] if isinstance(f, dict)]
     if any(not f.get("image") for f in files):   # le foto le guarda il modello: non sono «lavoro sui file»
@@ -517,9 +545,10 @@ def _topics(messages: list[dict]) -> set:
 
 # Ogni strumento mandato al modello costa token a ogni chiamata (tutti insieme ~15 mila). Se il messaggio non tocca un
 # argomento preciso partono solo quelli di base; gli altri il modello li chiede con strumenti_extra e li riceve al volo.
-EXTRA_GROUPS = {"posta": "mail", "agenda": "cal", "homebase": "hb", "sito": "site", "file": "file"}
+EXTRA_GROUPS = {"posta": "mail", "agenda": "cal", "homebase": "hb", "sito": "site", "file": "file", "tecnici": "tech", "utenti": "admin"}
 EXTRA_TOOLS_SPEC = _fn("strumenti_extra", "Se per la richiesta ti serve uno strumento che non vedi tra i tuoi (posta, agenda e promemoria, "
-                       "Homebase, sito del locale, file allegati), chiedilo qui: te lo do subito e poi lo usi.",
+                       "Homebase, sito del locale, file allegati, tecnici: subnet/password/confronto testi, utenti dell'app), chiedilo qui: "
+                       "te lo do subito e poi lo usi.",
                        {"argomento": {"type": "string", "enum": list(EXTRA_GROUPS)}}, ["argomento"])
 
 
@@ -685,7 +714,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 keep = tuple(skill["tools"]) + ("ricorda", "cervello_cerca")
                 tools = [t for t in tools_for(user) if t["function"]["name"].startswith(keep)] or tools
             sys_txt = (system_prompt(user, bool(tools), site=any(SITE_TOOL.match(t["function"]["name"]) for t in tools), model=body.model)
-                       + (MEMORY_PROMPT if tools else "") + core_memories_prompt(user))
+                       + (MEMORY_PROMPT if tools else "") + await chat_memories_prompt(user, body.messages))
             ap = active_project(user, body.chat_id or "", body.messages)
             yield ev(event="project", project={"id": ap["id"], "name": ap["name"], "path": ap["path"]} if ap else None)
             sys_txt += await brain_prompt(user, body.messages, ap) + (BRAIN_PROMPT if tools else "") + persona_prompt(user)

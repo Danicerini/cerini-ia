@@ -1049,8 +1049,8 @@ async def brain_prompt(user: dict, messages: list[dict], ap: dict | None = None)
         return ""
     last = _last_user_text(messages)
     parts = [f"\n\nIL TUO CERVELLO (file markdown, Brain Protocol: è la tua memoria vera, quello che non è scritto qui non lo sai).\n"
-             f"### boot/soul.md (chi sei)\n{_boot_text(user, 'soul.md', 1800)}\n### boot/user.md (chi è l'utente)\n{_boot_text(user, 'user.md', 2500)}\n"
-             f"### boot/domain.md (le regole)\n{_boot_text(user, 'domain.md', 1500)}"]
+             f"### boot/soul.md (chi sei)\n{_boot_text(user, 'soul.md', 1800)}\n### boot/user.md (chi è l'utente)\n{_boot_text(user, 'user.md', 2500)}"]
+    # boot/domain.md non va piu' nel prompt: le sue regole sono gia' nelle istruzioni fisse (era ~500 token a ogni messaggio)
     # il progetto di questa chat (Brain Protocol: project-first): scheda + registro di oggi
     if ap:
         log = day_section_text(user, local_now().strftime("%Y-%m-%d"), ap["name"])

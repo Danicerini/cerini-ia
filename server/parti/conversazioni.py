@@ -129,8 +129,16 @@ def _conv_line(r: dict) -> str:
     return f"[chat «{r['title'][:60]}» del {d}]\n{r['text']}"
 
 
+PAST_RE = re.compile(r"\b(ti ricordi|ricordi (che|quando|quella|quel|cosa)|l'altra volta|l'ultima volta|la volta scorsa|come (ti )?avevo|"
+                     r"(avevamo|abbiamo|ti avevo|mi avevi|hai) (detto|fatto|parlato|scritto|visto|deciso)|ne (avevamo|abbiamo) parlato|"
+                     r"(nell'|in un')altra chat|chat di (ieri|prima|stamattina)|come (ieri|l'altra volta|prima))\b", re.I)
+
+
 async def conv_recall_prompt(user: dict, messages: list[dict], chat_id: str | None) -> str:
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
+    # solo se l'utente richiama una chat di prima: messe sempre, il modello copiava da li' (destinatari, nomi) anche quando non c'entravano
+    if not PAST_RE.search(last):
+        return ""
     try:
         hits = await conv_search(user, last, CONV_TOP, chat_id)
     except Exception:
