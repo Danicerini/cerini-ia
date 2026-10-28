@@ -95,7 +95,8 @@ function addMessages(list) {
   }
   if (changed) saveMessages();
 }
-const linkedBefore = () => { try { return JSON.parse(fs.readFileSync(path.join(AUTH, 'creds.json'), 'utf8')).registered === true; } catch { return false; } };
+// gia' collegato: dopo la scansione del QR le credenziali hanno «me» (il proprio account)
+const linkedBefore = () => { try { return !!JSON.parse(fs.readFileSync(path.join(AUTH, 'creds.json'), 'utf8')).me?.id; } catch { return false; } };
 
 // ---- collegamento
 async function start() {
