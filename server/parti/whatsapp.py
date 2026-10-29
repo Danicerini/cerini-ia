@@ -138,7 +138,8 @@ def _hide_secrets(text: str) -> str:
         if "@" in w or "://" in w or w.startswith("www."):
             return w
         kinds = sum(bool(re.search(rx, w)) for rx in (r"[a-z]", r"[A-Z]", r"\d", r"[^\w]"))
-        return "[password nascosta]" if kinds >= 3 else w
+        odd = len(re.findall(r"[^\w\-'.,!?]", w))   # simboli strani; trattini e punteggiatura no («Fusilli-Broccoli»)
+        return "[password nascosta]" if kinds >= 3 and (re.search(r"\d", w) or odd >= 2) else w
     return re.sub(r"\S{8,}", mask, str(text or ""))
 
 
