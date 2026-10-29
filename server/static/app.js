@@ -3240,7 +3240,7 @@ const cleanHeard = (t) => String(t || '').replace(/\s*sottotitoli[^.]*(amara\.or
 function startLive(R, onText, ready) {
   let busy = false, sent = 0;
   return setInterval(async () => {
-    if (busy || !R.rec || !ready() || R.chunks.length - sent < 4) return;
+    if (busy || !R.rec || !ready() || R.chunks.length - sent < 4 || !S.status?.online) return;   // il testo provvisorio lo fa il PC
     busy = true; sent = R.chunks.length;
     const type = (R.rec.mimeType || 'audio/webm').split(';')[0];
     try {
@@ -3277,7 +3277,9 @@ function voiceLevel() {
 
 async function voiceStart() {
   if (Voice.on || Rec.rec) return;
-  if (!S.status?.online) { toast('Il PC è spento: la conversazione a voce usa Whisper e Gemma sul PC.'); return; }
+  // col modello cloud (e la dettatura di ElevenLabs o del cloud) la conversazione a voce va anche a PC spento
+  const cloudVoice = isCloudM(activeModel()) && canChat() && (S.me?.eleven || S.me?.voice_cloud);
+  if (!S.status?.online && !cloudVoice) { toast('Il PC è spento: scegli il modello cloud per parlare con Aura, oppure accendi il PC.'); return; }
   // Sbloccato dentro il tocco: su iPhone l'audio parte solo se avviato da un gesto dell'utente
   Voice.audio = new Audio(SILENT_WAV); Voice.audio.play().catch(() => {});
   try { Voice.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }); }
