@@ -227,7 +227,7 @@ def _prefs(user: dict) -> dict:
 AUTONOMY = {
     "memoria_salva": {"default": "auto", "admin": False, "tools": ["ricorda", "aggiorna_ricordo"]},
     "memoria_cancella": {"default": "ask", "admin": False, "tools": ["dimentica"]},
-    "sito_menu": {"default": "ask", "admin": True, "tools": ["prodotto_aggiungi", "prodotto_modifica", "categoria_aggiungi", "menu_giorno_imposta"]},
+    "sito_menu": {"default": "ask", "admin": True, "tools": ["prodotto_aggiungi", "prodotto_modifica", "categoria_aggiungi", "menu_giorno_imposta", "piatti_del_giorno"]},
     "sito_eventi": {"default": "ask", "admin": True, "tools": ["evento_aggiungi", "evento_modifica", "evento_duplica"]},
     "sito_elimina": {"default": "ask", "admin": True, "tools": ["prodotto_elimina", "evento_elimina", "menu_giorno_elimina"]},
     "utenti": {"default": "ask", "admin": True, "tools": ["crea_invito"]},

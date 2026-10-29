@@ -497,7 +497,9 @@ HB_TOPIC = re.compile(r"\b(note?|nota|appunt\w*|segnat\w*|scratchpad|s\w{0,2}r?a
                       r"wi-?fi|proxmox|ping|procedur\w*|runbook|sicur\w*|virus|malware|pericolos\w*|phishing|infett\w*)\b", re.I)
 FILE_TOPIC = re.compile(r"\b(file|allegat\w*|pdf|document\w*|immagin\w*|exif|favicon|hash|impront\w*|sha\d*|md5|unisci|dividi|"
                         r"pagin\w*|word|excel|docx|xlsx)\b", re.I)
-SITE_TOOL = re.compile(r"^(sito_|prodott|categoria_|menu_giorno|event)")
+ACTION_CLAIM_RE = re.compile(r"\b(ho |l'ho |li ho |le ho )?(riattivat|attivat|aggiunt|spent|nascost|pubblicat|modificat|rimess|inserit|"
+                             r"cambiat|inviat|mandat|salvat|cancellat|eliminat|tolt)\w*\b", re.I)
+SITE_TOOL = re.compile(r"^(sito_|prodott|categoria_|menu_giorno|event|piatti_)")
 
 
 TECH_TOOLS = {"calcola_subnet", "genera_password", "confronta_testi", "apri_strumento"}
@@ -749,6 +751,15 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             sys_txt += await conv_recall_prompt(user, body.messages, body.chat_id)
             asyncio.create_task(conv_index_pending(user))   # il PC e' acceso: si recupera quello rimasto indietro
             asyncio.create_task(brain_migrate_soon(user))
+            tail = []
+            for m in reversed(body.messages):
+                if m.get("role") != "tool":
+                    break
+                tail.append(str(m.get("content") or ""))
+            cancelled = bool(tail) and all(t.startswith("L'utente ha annullato") for t in tail)
+            if cancelled:
+                sys_txt += ("\n\nL'UTENTE HA APPENA ANNULLATO le azioni proposte: NON è stato fatto niente. Dillo in una frase (es. «Ok, "
+                            "lascio tutto com'era.») e non scrivere MAI che hai attivato, aggiunto, spento, inviato o cambiato qualcosa.")
             no_confirm = _wants_no_confirm(body.messages)
             if no_confirm:
                 sys_txt += "\n\nIn questo messaggio l'utente ha chiesto di NON chiedere conferma: le azioni vengono eseguite subito."
@@ -823,6 +834,11 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     msgs.append({"role": "system", "content": "L'utente ha chiesto una mail: chiama ADESSO mail_prepara con il testo "
                                  "completo (destinatario vuoto se non lo sai). Niente testo, solo lo strumento."})
                     continue
+                if (not calls and cancelled and not done_calls and ACTION_CLAIM_RE.search(content)
+                        and not re.search(r"\bnon (ho|è stat|sono stat)|annullat|com'era|niente", content, re.I)):
+                    fix = "\n\nCorreggo: hai premuto Annulla, quindi non ho cambiato niente."
+                    content += fix
+                    yield json.dumps({"message": {"role": "assistant", "content": fix}, "done": False}) + "\n"
                 turn_text = said_all + content   # anche quello scritto insieme a uno strumento diverso
                 if (not calls and not answered and DIARY_CLAIM_RE.search(turn_text) and not any(k[0] in ("diario_nota", "diario_giorno", "diario_fatto") for k in done_calls)
                         and any(t["function"]["name"] == "diario_nota" for t in tools)):

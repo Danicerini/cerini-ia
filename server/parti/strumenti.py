@@ -478,6 +478,129 @@ async def _tool_category_add(user: dict, args: dict, request: Request) -> dict:
     return {"content": f"Categoria creata: {c['nome']} (id {c['id']}).", "display": f"Categoria «{c['nome']}» creata"}
 
 
+# ---- piatti del giorno in un colpo solo: il modello da' solo l'elenco (da una foto o a voce), il resto lo fa il codice.
+# A pezzi (leggi, abbina, riattiva, crea, spegni) il modello sbagliava sempre qualcosa: id inventati, «gia' attivo» su piatti
+# nascosti, «pane integrale con tonno» scambiato per «pane integrale con bresaola».
+
+DISH_STOP = {"con", "del", "della", "delle", "dei", "di", "da", "al", "alla", "alle", "ai", "allo", "e", "ed", "in", "su", "il", "la",
+             "le", "lo", "gli", "i", "un", "una", "giorno"}
+
+
+def _dish_words(t: str) -> set:
+    return {w.rstrip("ie") if len(w) > 4 else w for w in _norm(t).split() if w not in DISH_STOP and len(w) > 2}
+
+
+def _dish_score(a: str, b: str) -> float:
+    import difflib
+    ta, tb = _dish_words(a), _dish_words(b)
+    jac = len(ta & tb) / len(ta | tb) if ta and tb else 0.0
+    return max(jac, difflib.SequenceMatcher(None, _norm(a), _norm(b)).ratio() - 0.1)
+
+
+def _dish_split(d: dict) -> tuple[str, str]:
+    nome, desc = str(d.get("nome") or "").strip(), str(d.get("descrizione") or "").strip()
+    if not desc and re.search(r"\s+con\s+", nome, re.I):   # «Panino con crudo e scamorza» -> «Panino» + «con crudo e scamorza»
+        head, tail = re.split(r"\s+con\s+", nome, maxsplit=1, flags=re.I)
+        nome, desc = head.strip(), "con " + tail.strip()
+    return nome[:1].upper() + nome[1:], desc
+
+
+def _dish_category(d: dict, cats: list[dict]) -> dict | None:
+    names = {c["nome"].lower(): c for c in cats}
+    want = str(d.get("categoria") or "").strip().lower()
+    if want in names:
+        return names[want]
+    t = _norm(d.get("nome") or "")
+    key = ("panin" if re.search(r"\b(panin\w*|pane|focacc\w*|piadin\w*|toast|tramezz\w*|hamburger|burger)\b", t) else
+           "taglier" if re.search(r"\b(bruschett\w*|taglier\w*|crostin\w*|salum\w*|formagg\w*)\b", t) else "piatt")
+    return next((c for c in cats if key in c["nome"].lower()), None)
+
+
+async def _dish_plan(args: dict) -> dict:
+    dishes = [d for d in args.get("piatti") or [] if isinstance(d, dict) and str(d.get("nome") or "").strip()]
+    if not dishes:
+        raise ValueError("servono i piatti del giorno (nome, e se li sai ingredienti e prezzo)")
+    base = await site("leggi")
+    cats = base["categorie"]
+    parts = await asyncio.gather(*(site("leggi", categoria_id=c["id"]) for c in cats if c["prodotti"]))
+    prods = [x for part in parts for x in part.get("prodotti", [])]
+    plan, used = {"on": [], "new": [], "off": [], "ok": []}, set()
+    for d in dishes:
+        nome, desc = _dish_split(d)
+        full = f"{d.get('nome')} {d.get('descrizione') or ''}"
+        best = max(((_dish_score(full, f"{p['nome']} {p.get('descrizione') or ''}"), p) for p in prods if p["id"] not in used),
+                   key=lambda x: x[0], default=(0, None))
+        if best[1] and best[0] >= 0.72:
+            p = best[1]
+            used.add(p["id"])
+            (plan["ok"] if p.get("visibile") and p.get("del_giorno") else plan["on"]).append(p)
+            continue
+        cat = _dish_category(d, cats)
+        if not cat:
+            raise ValueError(f"non so in che categoria mettere «{d.get('nome')}»: chiedilo all'utente e passalo in categoria")
+        price = _num(d.get("prezzo"))
+        if not price:   # il prezzo solito dei piatti del giorno di quella categoria
+            same = [x for x in prods if x["categoria"] == cat["nome"] and _num(x.get("prezzo"))]
+            pool = [x for x in same if x.get("del_giorno")] or same
+            vals = [_num(x["prezzo"]) for x in pool]
+            price = max(set(vals), key=vals.count) if vals else ""
+        if not price or price == "0,00":
+            raise ValueError(f"manca il prezzo di «{d.get('nome')}»: chiedilo all'utente")
+        plan["new"].append({"categoria": cat["nome"], "nome": nome, "descrizione": desc, "prezzo": price,
+                            "visibile": True, "del_giorno": True})
+    if args.get("spegni_vecchi") is not False:
+        plan["off"] = [p for p in prods if p.get("del_giorno") and p.get("visibile") and p["id"] not in used]
+    return plan
+
+
+def _dish_label(p: dict) -> str:
+    return f"{p['nome']}" + (f" ({p['descrizione']})" if p.get("descrizione") else "")
+
+
+async def _summary_dishes(args: dict) -> str:
+    plan = await _dish_plan(args)
+    s = "Piatti del giorno sul sito:"
+    s += "".join(f"\n- **Rimetto** {_dish_label(p)} · {p['prezzo']} € ({p['categoria']})" for p in plan["on"])
+    s += "".join(f"\n- **Aggiungo** {_dish_label(p)} · {p['prezzo']} € ({p['categoria']})" for p in plan["new"])
+    s += "".join(f"\n- Già attivo: {_dish_label(p)}" for p in plan["ok"])
+    s += "".join(f"\n- **Spengo** (di ieri) {_dish_label(p)}" for p in plan["off"])
+    if not (plan["on"] or plan["new"] or plan["off"]):
+        raise ValueError("sono già tutti attivi come piatti del giorno: non c'è niente da cambiare")
+    shown = [{**p, "visibile": True, "del_giorno": True} for p in plan["on"] + plan["ok"]] + [_preview_product(p) for p in plan["new"]]
+    return s, site_view({"prodotti": shown})
+
+
+async def _tool_dishes(user: dict, args: dict, request: Request) -> dict:
+    plan = await _dish_plan(args)
+    done, errs = [], []
+    for p in plan["on"]:
+        try:
+            await site("modifica_prodotto", id=p["id"], visibile=True, del_giorno=True)
+            done.append(f"rimesso {p['nome']}")
+        except ValueError as e:
+            errs.append(f"{p['nome']}: {e}")
+    for p in plan["new"]:
+        try:
+            await site("aggiungi_prodotto", **p)
+            done.append(f"aggiunto {p['nome']} ({p['descrizione']})" if p["descrizione"] else f"aggiunto {p['nome']}")
+        except ValueError as e:
+            errs.append(f"{p['nome']}: {e}")
+    for p in plan["off"]:
+        try:
+            await site("modifica_prodotto", id=p["id"], visibile=False)
+            done.append(f"spento {p['nome']}")
+        except ValueError as e:
+            errs.append(f"{p['nome']}: {e}")
+    if not done:
+        raise ValueError("il sito non ha accettato niente: " + "; ".join(errs))
+    after = await site("leggi")
+    return {"content": "Fatto sul sito: " + "; ".join(done) + "." + (f" NON riuscito: {'; '.join(errs)}." if errs else "")
+                       + " L'utente vede già la scheda: rispondi in una frase.",
+            "display": f"Piatti del giorno: {len(plan['on'])} rimessi, {len(plan['new'])} aggiunti, {len(plan['off'])} spenti"
+                       + (f", {len(errs)} non riusciti" if errs else ""),
+            "view": site_view({"proposte_del_giorno": [x for x in after.get("proposte_del_giorno", []) if x.get("visibile")]})}
+
+
 def _fn(name: str, description: str, properties: dict, required: list | None = None) -> dict:
     return {"type": "function", "function": {"name": name, "description": description,
             "parameters": {"type": "object", "properties": properties, "required": required or []}}}
@@ -537,6 +660,19 @@ if SITE_API_URL and SITE_API_KEY:
                         "contorno/dolce) di una data. Usalo SOLO se l'utente dice esattamente 'menu del giorno' o 'menu fisso'. "
                         "NON usarlo MAI per 'piatti del giorno' o 'proposte del giorno': quelli sono prodotti della carta con la "
                         "stellina e si spengono con prodotto_modifica visibile=false.", {"data": _DATE})},
+        "piatti_del_giorno": {
+            "admin": True, "confirm": True, "run": _tool_dishes, "summary": _summary_dishes,
+            "spec": _fn("piatti_del_giorno", "Mette sul sito i PIATTI DEL GIORNO (le proposte con la stellina) partendo dall'elenco "
+                        "dell'utente o da una sua foto: da solo riattiva quelli che esistono già nella carta, aggiunge i nuovi nella "
+                        "categoria giusta col prezzo solito e spegne quelli dei giorni prima. Usalo SEMPRE per i piatti del giorno, "
+                        "con TUTTI i piatti in una chiamata sola (non usare prodotto_* per questo). Non serve leggere prima il sito.",
+                        {"piatti": {"type": "array", "items": {"type": "object", "required": ["nome"], "properties": {
+                            "nome": {"type": "string", "description": "Come scritto dall'utente o nella foto, ingredienti compresi"},
+                            "descrizione": {"type": "string", "description": "Ingredienti, se sono scritti a parte"},
+                            "prezzo": {"type": "string", "description": "Solo se l'utente o la foto lo dicono"},
+                            "categoria": {"type": "string", "description": "Solo se l'utente la dice"}}}},
+                         "spegni_vecchi": {"type": "boolean", "description": "false solo se l'utente dice di lasciare accesi anche quelli di prima"}},
+                        ["piatti"])},
         "prodotto_aggiungi": {
             "admin": True, "confirm": True, "run": _tool_product_add, "summary": _summary_product_add,
             "spec": _fn("prodotto_aggiungi", "Aggiunge un prodotto alla CARTA fissa del sito (panini, piatti, birre, vini...), "
@@ -558,7 +694,8 @@ if SITE_API_URL and SITE_API_KEY:
 SITE_PROMPT = (f"\n\nGestisci anche il sito del locale {SITE_NAME}" + (f" ({SITE_DOMAIN})" if SITE_DOMAIN else "") + ". "
                "ATTENZIONE, distinzione fondamentale: 'MENU DEL GIORNO' è il riquadro a prezzo fisso con le portate (strumenti "
                "menu_giorno_*); 'PIATTI DEL GIORNO' o 'PROPOSTE DEL GIORNO' sono invece prodotti della carta con la stellina "
-               "(campo del_giorno, strumenti prodotto_*). Esempio: 'disattiva i piatti del giorno' = leggi le proposte del giorno "
+               "(campo del_giorno). METTERE i piatti del giorno (da un elenco o da una foto) = UNA chiamata a piatti_del_giorno con "
+               "tutti i piatti, e basta: riattiva, aggiunge e spegne i vecchi da solo. Esempio: 'disattiva i piatti del giorno' = leggi le proposte del giorno "
                "con sito_leggi e chiama prodotto_modifica visibile=false per OGNUNA; non toccare il menu del giorno. "
                "PIÙ COSE INSIEME: se l'utente chiede di aggiungere, modificare o spegnere più piatti, chiama lo strumento una "
                "volta per OGNI piatto nella stessa risposta: l'utente le conferma tutte insieme. "
