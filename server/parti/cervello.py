@@ -1518,10 +1518,11 @@ async def consuntivo(user: dict, day: str) -> dict:
     secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
     diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
     chats = _day_chats_text(user, day) or "(nessuna)"
-    crm = ""
+    crm, crm_rows = "", []
     if crm_on():
         try:
-            crm = crm_day_text(await crm_day(day))
+            crm_rows = await crm_day(day)
+            crm = crm_day_text(crm_rows)
         except ValueError as e:
             print(f"consuntivo: CRM non letto: {e}", flush=True)
     if diary == "(vuoto)" and chats == "(nessuna)" and not crm:
@@ -1555,6 +1556,12 @@ async def consuntivo(user: dict, day: str) -> dict:
         rows.append({"what": what[:160], "client": str(v.get("cliente") or main["name"]).strip()[:60], "min": _half_hours(v.get("minuti")),
                      "project": f["progetto"] if f else "", "contract": f["contratto"] if f else "",
                      "doubt": bool(v.get("dubbio")) or fixed or (bool(fl) and not f)})
+    for t in crm_rows:   # un ticket del CRM che il modello ha perso: torna come voce da controllare
+        if t["ticket"] and not any(t["ticket"] in r["what"] for r in rows):
+            f, _ = _fasc_fix({"cliente": t["cliente"]}, None, fl, amap)
+            rows.append({"what": f"{t['ticket']} - {t['titolo']}"[:160], "client": t["cliente"][:60] or main["name"],
+                         "min": _half_hours(t["ore"] * 60 if t["ore"] else 30), "project": f["progetto"] if f else "",
+                         "contract": f["contratto"] if f else "", "doubt": True})
     return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows),
             "excluded": [str(x)[:120] for x in d.get("esclusi") or [] if str(x).strip()][:8]}
 
