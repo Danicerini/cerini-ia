@@ -3218,7 +3218,7 @@ async function finishRec() {
   recUI('busy', liveText ? 'Rifinisco il testo…' : 'Trascrivo…');
   let text = '';
   try {
-    const r = await api('/api/transcribe?lang=it', undefined, { method: 'POST', headers: { 'Content-Type': type }, body: blob });
+    const r = await api(`/api/transcribe?lang=it${sttCloud()}`, undefined, { method: 'POST', headers: { 'Content-Type': type }, body: blob });
     text = cleanHeard((await r.json()).text);
   } catch (e) { text = liveText; if (!text) toast(e.message); }
   if (!text) toast('Non ho sentito niente: riprova parlando più vicino al microfono.');
@@ -3234,6 +3234,8 @@ $('#micBtn').onclick = () => startRec();
 
 // Testo provvisorio mentre si parla: a ogni secondo circa di audio nuovo manda la registrazione al modello veloce di Whisper.
 // Una richiesta alla volta: se il PC e' lento, gli aggiornamenti si diradano invece di accodarsi.
+// col modello cloud la frase finale la riconosce il cloud (Whisper grande), col modello locale il PC
+const sttCloud = () => S.me?.voice_cloud && isCloudM(activeModel()) ? '&cloud=1' : '';
 const cleanHeard = (t) => String(t || '').replace(/\s*sottotitoli[^.]*(amara\.org|a cura di)[^.]*\.?/gi, '').trim();
 function startLive(R, onText, ready) {
   let busy = false, sent = 0;
@@ -3353,7 +3355,7 @@ async function voiceEndTurn() {
   if (!Voice.on) return;
   let text = '';
   try {
-    const r = await api('/api/transcribe?lang=it', undefined, { method: 'POST', headers: { 'Content-Type': type }, body: blob });
+    const r = await api(`/api/transcribe?lang=it${sttCloud()}`, undefined, { method: 'POST', headers: { 'Content-Type': type }, body: blob });
     text = cleanHeard((await r.json()).text);
   } catch (e) { text = Voice.liveText; if (!text) toast(e.message); }
   if (!Voice.on || Voice.state !== 'transcribing') return;

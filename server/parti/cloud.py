@@ -110,6 +110,27 @@ def _cloud_headers() -> dict:
     return {"Authorization": f"Bearer {cloud_cfg()['api_key']}", "Content-Type": "application/json"}
 
 
+# Dettatura nel cloud: quando l'utente chatta col modello cloud, anche la voce si riconosce lì (molto meglio del Whisper
+# piccolo del PC). Modello di trascrizione per fornitore; «stt_model» in cloud.json lo cambia.
+CLOUD_STT = {"regolo": "faster-whisper-large-v3", "openai": "whisper-1"}
+
+
+def cloud_stt_model() -> str:
+    c = cloud_cfg()
+    return (c.get("stt_model") or CLOUD_STT.get(c.get("provider", ""), "")) if cloud_ready() else ""
+
+
+async def cloud_transcribe(data: bytes, ctype: str, lang: str) -> dict:
+    c = cloud_cfg()
+    ext = {"audio/mp4": "m4a", "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/wav": "wav"}.get(ctype.split(";")[0], "webm")
+    r = await client.post(c["base"].rstrip("/") + "/audio/transcriptions", headers={"Authorization": f"Bearer {c['api_key']}"},
+                          files={"file": (f"voce.{ext}", data, ctype)}, data={"model": cloud_stt_model(), "language": lang},
+                          timeout=httpx.Timeout(120.0, connect=5.0))
+    if r.status_code != 200:
+        raise ValueError(f"errore {r.status_code}: {r.text[:200]}")
+    return {"text": str(r.json().get("text") or "").strip(), "engine": "cloud"}
+
+
 _NO_STREAM_USAGE: set = set()   # fornitori che rifiutano stream_options
 
 

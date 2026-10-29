@@ -1281,15 +1281,23 @@ async def _whisper(data: bytes, ctype: str, lang: str, live: bool = False) -> ht
 
 
 @app.post("/api/transcribe")
-async def transcribe(request: Request, lang: str = "it", live: bool = False, _: dict = Depends(require_user)):
-    if not WHISPER_TOKEN:
-        raise HTTPException(503, "La dettatura non è configurata")
+async def transcribe(request: Request, lang: str = "it", live: bool = False, cloud: bool = False, _: dict = Depends(require_user)):
     data = await request.body()
     if not data:
         raise HTTPException(400, "Registrazione vuota")
     if len(data) > MAX_AUDIO:
         raise HTTPException(413, "Registrazione troppo lunga")
     ctype = request.headers.get("content-type", "audio/webm")
+    # col modello cloud la trascrizione finale la fa il cloud; il testo provvisorio (live) resta al PC, se acceso
+    if cloud and not live and cloud_stt_model():
+        try:
+            return await cloud_transcribe(data, ctype, lang)
+        except (httpx.HTTPError, ValueError) as e:
+            if not WHISPER_TOKEN:
+                raise HTTPException(502, f"Dettatura nel cloud non riuscita: {e}")
+            print(f"dettatura cloud non riuscita, provo il PC: {e}", flush=True)
+    if not WHISPER_TOKEN:
+        raise HTTPException(503, "La dettatura non è configurata")
     try:
         r = await _whisper(data, ctype, lang, live)
     except (httpx.ConnectError, httpx.ConnectTimeout):
