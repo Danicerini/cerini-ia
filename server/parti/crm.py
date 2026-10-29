@@ -352,7 +352,7 @@ async def _tool_crm_search(user: dict, args: dict, request: Request) -> dict:
 
 async def _tool_crm_detail(user: dict, args: dict, request: Request) -> dict:
     r = await crm_detail(args.get("ticket") or "")
-    coms = "\n".join(f"  [{c['at']}] {c['who']}{' (cliente)' if c['client'] else ''}: {c['text']}" for c in r["comments"]) or "  (nessuno)"
+    coms = "\n".join(f"  [{c['at']}] {'lui (l utente)' if c['me'] else c['who']}{' (cliente)' if c['client'] else ''}: {c['text']}" for c in r["comments"]) or "  (nessuno)"
     return {"content": "L'utente vede già il ticket in una scheda sopra la tua risposta: non ricopiarlo, rispondi a quello che ha chiesto. "
                        f"{CRM_DATA_NOTE}\n{r['no']} «{r['title']}» | cliente {r['client'] or '?'} | contatto {r['contact'] or '?'} | "
                        f"stato {r['status_it']} | assegnato a {r['owner'] or '?'} | aperto {r['created']} | modificato {r['modified']}"
