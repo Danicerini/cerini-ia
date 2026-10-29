@@ -1437,6 +1437,7 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "«Analisi mail di phishing segnalata, blocco mittente su antispam e risposta al ticket»); se nel testo c'è il numero del ticket "
                "inizia con «TK<numero> - »;\n- «cliente» = l'azienda per cui è stato fatto ({azienda} se interno).\n"
                "{fascicoli}"
+               "{crm}"
                "Giorno: {giorno}.\n\nDIARIO DEL GIORNO:\n{diario}\n\nMESSAGGI SCRITTI DALL'UTENTE QUEL GIORNO:\n{chat}\n\n"
                "Prima di rispondere ricontrolla: se due voci parlano dello stesso ticket, della stessa mail o dello stesso utente, "
                "uniscile in una (sommando i tempi, senza superare il realistico).\n"
@@ -1450,6 +1451,12 @@ CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESA
              "per {azienda} va nel fascicolo di assistenza interna di {azienda}. Nel dubbio tra NOC ed EXTRA scegli NOC e metti dubbio=true. "
              "Se il cliente non è nell'elenco, fascicolo vuoto. Un fascicolo tra parentesi ha la ragione sociale: i nomi brevi che usa "
              "l'utente possono essere diversi (sigle, gruppo).\n")
+
+CONS_CRM = ("\nTICKET DEL CRM su cui ha lavorato quel giorno (letti dal CRM aziendale, sono la fonte più sicura): ognuno è UNA voce, "
+            "col numero del ticket in testa alla descrizione come nel CRM (es. «TK-2026-001234 - …»), cliente = l'organizzazione del "
+            "ticket. Se il diario o i messaggi parlano dello stesso ticket (stesso numero, stesso utente o stesso problema), è la stessa "
+            "voce: usa il loro racconto per la descrizione e il tempo. Se nel CRM c'è un tempo registrato, usa quello arrotondato alla "
+            "mezz'ora. La descrizione dice cosa è stato fatto (dalla soluzione e dai suoi commenti), non il titolo copiato.\n{ticket}\n")
 
 
 def _fasc_file() -> dict:
@@ -1510,7 +1517,13 @@ async def consuntivo(user: dict, day: str) -> dict:
     secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
     diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
     chats = _day_chats_text(user, day) or "(nessuna)"
-    if diary == "(vuoto)" and chats == "(nessuna)":
+    crm = ""
+    if crm_on():
+        try:
+            crm = crm_day_text(await crm_day(day))
+        except ValueError as e:
+            print(f"consuntivo: CRM non letto: {e}", flush=True)
+    if diary == "(vuoto)" and chats == "(nessuna)" and not crm:
         return {"day": day, "rows": [], "total": 0, "excluded": []}
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
@@ -1527,7 +1540,7 @@ async def consuntivo(user: dict, day: str) -> dict:
                if alias else "")) if fl else ""
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
                                 clienti="; ".join(f"{e['name']} ({_clip(e.get('summary') or '', 90)})" for e in comp) or "quelli nominati",
-                                fascicoli=fasc, giorno=day, diario=diary, chat=chats)
+                                fascicoli=fasc, giorno=day, diario=diary, chat=chats, crm=CONS_CRM.format(ticket=crm) if crm else "")
     raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
     d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
     rows, amap = [], fasc_alias()
