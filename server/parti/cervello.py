@@ -1454,8 +1454,9 @@ CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESA
 
 CONS_CRM = ("\nTICKET DEL CRM su cui ha lavorato quel giorno (letti dal CRM aziendale, sono la fonte più sicura): ognuno è UNA voce, "
             "col numero del ticket in testa alla descrizione come nel CRM (es. «TK-2026-001234 - …»), cliente = l'organizzazione del "
-            "ticket. Se il diario o i messaggi parlano dello stesso ticket (stesso numero, stesso utente o stesso problema), è la stessa "
-            "voce: usa il loro racconto per la descrizione e il tempo. Se nel CRM c'è un tempo registrato, usa quello arrotondato alla "
+            "ticket. Se il diario o i messaggi parlano dello stesso ticket (stesso numero, stesso cliente con lo stesso utente o lo "
+            "stesso problema, anche solo la mail o la telefonata per quel ticket, o l'argomento dei suoi commenti), NON è una voce in "
+            "più: è dentro quella del ticket, e il loro racconto serve per la descrizione e il tempo. Se nel CRM c'è un tempo registrato, usa quello arrotondato alla "
             "mezz'ora. La descrizione dice cosa è stato fatto (dalla soluzione e dai suoi commenti), non il titolo copiato.\n{ticket}\n")
 
 

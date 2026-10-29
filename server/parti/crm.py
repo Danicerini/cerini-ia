@@ -90,9 +90,11 @@ async def crm_day(day: str) -> list[dict]:
             or day in (t.get("data_presa_in_carico"), t.get("data_chiusura_ticket"))}
     accounts = {str(t.get("parent_id")) for t in keep.values() if t.get("parent_id")}
     names = {}
-    if accounts:
-        ids = ",".join(f"'{_crm_q(a)}'" for a in accounts)
-        names = {a["id"]: a["accountname"] for a in await q(f"SELECT accountname FROM Accounts WHERE id IN ({ids});")}
+    for a in accounts:
+        try:
+            names[a] = (await _crm("retrieve", sessionName=s, id=a)).get("accountname", "")
+        except ValueError:
+            pass
     out = []
     for tid, t in keep.items():
         out.append({"ticket": t.get("ticket_no", ""), "cliente": names.get(t.get("parent_id"), ""), "titolo": t.get("ticket_title", ""),
