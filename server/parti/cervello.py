@@ -2265,14 +2265,93 @@ class TTSIn(BaseModel):
     voice: str = os.environ.get("AURA_VOICE", "giuseppe_hd")   # voce maschile naturale; AURA_VOICE nel .env per cambiarla
 
 
-@app.post("/api/tts")
-async def tts(body: TTSIn, user: dict = Depends(require_user)):
-    if not homebase_on():
-        raise HTTPException(409, "La voce usa la Homebase, che non è collegata")
-    text = re.sub(r"[`*_#>\[\]]|\(https?://[^)]*\)", " ", body.text)
-    text = re.sub(r"\s+", " ", text).strip()[:3000]
+# La voce la fa Aura stessa con edge-tts (le voci neurali di Microsoft, le stesse della Homebase) e la manda al browser
+# mentre arriva: la prima frase parte in meno di un secondo. Se edge-tts manca, la fa la Homebase (file intero, più lento).
+TTS_VOICES = {"giuseppe_hd": "it-IT-GiuseppeMultilingualNeural", "giuseppe": "it-IT-GiuseppeNeural", "diego": "it-IT-DiegoNeural",
+              "isabella": "it-IT-IsabellaNeural", "elsa": "it-IT-ElsaNeural"}
+_TTS_JOBS: dict[str, dict] = {}
+try:
+    import edge_tts
+except ImportError:
+    edge_tts = None
+
+
+def _tts_text(text: str) -> str:
+    text = re.sub(r"[`*_#>\[\]]|\(https?://[^)]*\)", " ", text)
+    return re.sub(r"\s+", " ", text).strip()[:3000]
+
+
+def _tts_voice(v: str) -> str:
+    return TTS_VOICES.get(v) or (v if re.fullmatch(r"[a-z]{2}-[A-Z]{2}-\w+Neural", v or "") else TTS_VOICES["giuseppe_hd"])
+
+
+async def _tts_run(job: dict, text: str, voice: str):
+    try:
+        async for c in edge_tts.Communicate(text, _tts_voice(voice)).stream():
+            if c.get("type") == "audio" and c.get("data"):
+                job["chunks"].append(c["data"])
+                job["ev"].set()
+    except Exception as e:   # rete o servizio voce giù: il browser riceve quello che c'è (o niente) e passa oltre
+        job["err"] = str(e)
+        print(f"voce: sintesi non riuscita: {e}", flush=True)
+    finally:
+        job["done"] = True
+        job["ev"].set()
+
+
+@app.post("/api/tts/start")
+async def tts_start(body: TTSIn, user: dict = Depends(require_user)):
+    """Fa partire la sintesi di una frase e restituisce l'indirizzo da cui ascoltarla (anche mentre è ancora in corso)."""
+    if not edge_tts:
+        raise HTTPException(409, "edge-tts non installato")
+    text = _tts_text(body.text)
     if not text:
         raise HTTPException(400, "Niente da leggere")
+    now = time.time()
+    for k in [k for k, j in _TTS_JOBS.items() if now - j["at"] > 180]:
+        _TTS_JOBS.pop(k, None)
+    jid = secrets.token_urlsafe(12)
+    job = _TTS_JOBS[jid] = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event(), "at": now, "uid": user["id"]}
+    asyncio.create_task(_tts_run(job, text, body.voice))
+    return {"url": f"/api/tts/play/{jid}"}
+
+
+@app.get("/api/tts/play/{jid}")
+async def tts_play(jid: str, user: dict = Depends(require_user)):
+    job = _TTS_JOBS.get(jid)
+    if not job or job["uid"] != user["id"]:
+        raise HTTPException(404, "Audio scaduto")
+
+    async def gen():
+        i = 0
+        while True:
+            while i < len(job["chunks"]):
+                yield job["chunks"][i]
+                i += 1
+            if job["done"]:
+                return
+            job["ev"].clear()
+            if i < len(job["chunks"]) or job["done"]:
+                continue
+            try:
+                await asyncio.wait_for(job["ev"].wait(), 30)
+            except asyncio.TimeoutError:
+                return
+    return StreamingResponse(gen(), media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+
+
+@app.post("/api/tts")
+async def tts(body: TTSIn, user: dict = Depends(require_user)):
+    text = _tts_text(body.text)
+    if not text:
+        raise HTTPException(400, "Niente da leggere")
+    if edge_tts:
+        job = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event()}
+        await _tts_run(job, text, body.voice)
+        if job["chunks"]:
+            return Response(b"".join(job["chunks"]), media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+    if not homebase_on():
+        raise HTTPException(409, "La voce usa la Homebase, che non è collegata")
     r = await hb("tts_generate", "POST", json_body={"text": text, "voice": body.voice}, raw=True, timeout=90)
     if "audio" not in r.headers.get("content-type", ""):
         raise HTTPException(502, "La sintesi vocale non ha risposto")

@@ -3403,7 +3403,10 @@ function voiceCut(final) {
 }
 function voiceSay(text) {
   if (!/[a-z0-9à-ú]/i.test(text)) return;
-  const url = api('/api/tts', { text }).then((r) => r.blob()).then((b) => URL.createObjectURL(b)).catch(() => null);
+  // la sintesi parte subito (anche per le frasi dopo, mentre legge la prima) e l'audio si ascolta mentre arriva;
+  // se il server non sa farlo in streaming, file intero come prima
+  const url = api('/api/tts/start', { text }).then((r) => r.json()).then((d) => d.url)
+    .catch(() => api('/api/tts', { text }).then((r) => r.blob()).then((b) => URL.createObjectURL(b)).catch(() => null));
   Voice.queue.push({ text, url });
   Voice.spoke = true;
   voicePump();
@@ -3429,7 +3432,13 @@ async function voicePump() {
     Voice.playing = false; voicePump();
   };
   Voice.cur = item;
-  Voice.audio.onended = next; Voice.audio.onerror = next;
+  Voice.audio.onended = next;
+  // un browser che non suona l'audio in streaming: si scarica intero e si riprova una volta
+  Voice.audio.onerror = !url.startsWith('blob:') && !item.retried ? async () => {
+    item.retried = true;
+    try { const b = await (await fetch(url)).blob(); if (!b.size || item.dropped || !Voice.on) return next(); Voice.audio.src = URL.createObjectURL(b); Voice.audio.play().catch(next); }
+    catch { next(); }
+  } : next;
   Voice.audio.src = url;
   Voice.audio.play().catch(next);
 }
