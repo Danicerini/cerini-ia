@@ -131,6 +131,8 @@ CRM_STATUS = {"Open": "Aperto", "In Progress": "In lavorazione", "Wait For Respo
               "Attesa verifica interna": "Attesa verifica interna", "Attesa risposta esterna": "Attesa risposta esterna",
               "Attività programmata": "Attività programmata", "Annullato": "Annullato"}
 CRM_DONE = ("Closed", "Annullato")
+_CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-]{7,}$|^\S+@\S+\.\w+$|^(?:https?://|www\.)\S+$|"
+                       r"\bP\.?\s?IVA\b|\bC\.?F\.?\s*:|\bPEC\b", re.I)
 _CRM_S = {"s": "", "uid": "", "at": 0.0}
 _CRM_NAMES: dict[str, str] = {}
 # dove finisce il messaggio vero di una mail: firma, avvisi legali, messaggio citato
@@ -170,8 +172,15 @@ def _crm_clean(h: str, n: int = 1500) -> str:
     m = _CRM_CUT.search(t)
     if m and m.start() > 20:
         t = t[:m.start()]
-    t = re.sub(r"[ \t]+", " ", t)
-    t = re.sub(r"\n\s*\n+", "\n", t).strip()
+    lines = [x.strip() for x in re.sub(r"[ \t]+", " ", t).split("\n") if x.strip()]
+    # la firma: dalla prima riga con telefono, mail, sito o partita IVA si taglia, insieme a nome e ruolo subito sopra
+    i = next((k for k, x in enumerate(lines) if k and _CRM_SIGN.search(x)), None)
+    if i is not None:
+        j = i
+        while j > 1 and i - j < 4 and len(lines[j - 1]) < 50 and not re.search(r"[.!?:,]$", lines[j - 1]):
+            j -= 1
+        lines = lines[:j]
+    t = "\n".join(lines)
     return t[:n] + ("…" if len(t) > n else "")
 
 
@@ -228,15 +237,14 @@ async def crm_list(stato: str = "aperti", cliente: str = "", testo: str = "", da
     if _crm_like(testo):
         where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
     lim = max(1, min(int(limite or 30), 100))
-    if _crm_like(cliente):
-        accs = await _crm_get("query", query=f"SELECT accountname FROM Accounts WHERE accountname LIKE '%{_crm_like(cliente)}%' LIMIT 15;")
-        if not accs:
-            return []
-        for a in accs:
-            _CRM_NAMES[a["id"]] = a.get("accountname", "")
-        where.append("parent_id IN (" + ",".join(f"'{_crm_q(a['id'])}'" for a in accs) + ")")
-    sql = f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + f" ORDER BY modifiedtime DESC LIMIT {lim};"
-    return [await _crm_row(t, uid) for t in await _crm_get("query", query=sql)]
+    who = _flat(cliente) if _crm_like(cliente) else ""
+    # le organizzazioni non si possono cercare per nome con questo utente: si filtra dopo, sul nome del cliente dei ticket
+    sql = (f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
+           + f" ORDER BY modifiedtime DESC LIMIT {100 if who else lim};")
+    rows = [await _crm_row(t, uid) for t in await _crm_get("query", query=sql)]
+    if who:
+        rows = [r for r in rows if who in _flat(r["client"]) or _flat(r["client"]).replace(" ", "").startswith(who.replace(" ", ""))]
+    return rows[:lim]
 
 
 _CRM_STOP = set("come avevo avevamo risolto risolvere problema problemi fatto fare quando questo questa quello quella della delle degli "
@@ -297,9 +305,9 @@ async def crm_detail(ref: str) -> dict:
     for c in coms:
         cust = c.get("customer") if str(c.get("customer") or "").strip("0x") else ""
         who = await _crm_name(cust) if cust else await _crm_name(c.get("creator"))
-        comments.append({"who": who or ("cliente" if cust else "noi"), "client": bool(cust), "me": not cust and c.get("creator") == uid,
+        comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and c.get("creator") == uid,
                          "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200)})
-    r.update(contact=await _crm_name(t.get("contact_id")), owner=await _crm_name(t.get("assigned_user_id")),
+    r.update(contact=await _crm_name(t.get("contact_id")), owner="tu" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
              taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 2500),
              solution=_crm_clean(t.get(CRM_SOLUTION), 2000), comments=comments)
