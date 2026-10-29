@@ -299,15 +299,15 @@ async def crm_detail(ref: str) -> dict:
             raise ValueError(f"ticket {ref} non trovato nel CRM")
         t = res[0]
     r = await _crm_row(t, uid)
-    coms = await _crm_get("query", query=f"SELECT commentcontent,creator,customer,createdtime FROM ModComments "
+    coms = await _crm_get("query", query=f"SELECT commentcontent,creator,assigned_user_id,customer,createdtime FROM ModComments "
                                           f"WHERE related_to='{_crm_q(t['id'])}' ORDER BY createdtime LIMIT 100;")
     comments = []
     for c in coms:
         cust = c.get("customer") if str(c.get("customer") or "").strip("0x") else ""
         who = await _crm_name(cust) if cust else await _crm_name(c.get("creator"))
-        comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and c.get("creator") == uid,
+        comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
                          "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200)})
-    r.update(contact=await _crm_name(t.get("contact_id")), owner="tu" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
+    r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
              taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 2500),
              solution=_crm_clean(t.get(CRM_SOLUTION), 2000), comments=comments)
