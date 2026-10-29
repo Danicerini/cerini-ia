@@ -209,7 +209,8 @@ async def logout_all(response: Response, user: dict = Depends(require_user)):
 async def me(user: dict = Depends(require_user)):
     admin = user["role"] == "admin"
     return {"user": user["username"], "email": user["email"], "role": user["role"], "site_name": SITE_NAME,
-            "wol": admin and bool(WOL_MAC), "power": admin and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool(WHISPER_TOKEN or cloud_stt_model()), "voice_cloud": bool(cloud_stt_model()),
+            "wol": admin and bool(WOL_MAC), "power": admin and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool(WHISPER_TOKEN or cloud_stt_model() or eleven_on()), "voice_cloud": bool(cloud_stt_model()),
+            "eleven": admin and eleven_on(),
             "gmail": admin and bool(_gmail_row(user["id"])), "calendar": admin,
             "homebase": admin and homebase_on(), "crm": admin and crm_on(),
             "autonomy": autonomy(user), "autonomy_groups": [g for g, d in AUTONOMY.items() if admin or not d["admin"]], "aura_chat": aura_chat_id(user["id"]),

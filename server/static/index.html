@@ -1573,6 +1573,24 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tk-q.free { border-style: dashed; color: var(--text-2); }
 .tk-card .tk-detail { gap: 10px; margin-top: 4px; }
 .tk-card .tk-meta { padding: 10px 12px; }
+/* Voce (ElevenLabs) nelle impostazioni */
+.vc-body { display: flex; flex-direction: column; gap: 14px; }
+.vc-credits { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; background: var(--hover); }
+.vc-cr-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.vc-cr-h small, .vc-note { color: var(--text-3); font-size: 12.5px; }
+.vc-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.vc-h { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-3); margin-bottom: -6px; }
+.vc-list { display: flex; flex-direction: column; gap: 4px; max-height: 360px; overflow-y: auto; }
+.vc-voice { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 10px; border: 1px solid transparent; }
+.vc-voice:hover { background: var(--hover); }
+.vc-voice.on { border-color: color-mix(in oklch, var(--accent) 45%, transparent); background: var(--accent-soft); }
+.vc-play { width: 32px; height: 32px; flex: none; display: grid; place-items: center; border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); cursor: pointer; }
+.vc-play:hover { color: var(--accent); border-color: var(--accent); }
+.vc-play:disabled { opacity: .4; cursor: default; }
+.vc-pick { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; border: 0; background: transparent; text-align: left; font: inherit; color: var(--text); cursor: pointer; padding: 4px 0; }
+.vc-pick small { color: var(--text-3); font-size: 12px; flex-basis: 100%; }
+.vc-it { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 5px; background: var(--accent-soft); color: var(--accent); }
+.vc-check { color: var(--accent); display: inline-flex; }
 #brainPanel { display: none; width: var(--brain-w, 300px); flex: none; background: var(--side); border-left: 1px solid var(--border); flex-direction: column; min-height: 0; }
 #app.brain-on #brainPanel { display: flex; }
 #brainScrim { display: none; }

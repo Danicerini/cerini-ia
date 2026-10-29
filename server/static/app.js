@@ -2315,7 +2315,7 @@ async function feedAct(it, action, mid, extra) {
   try { await loadAuraFeed(); } catch {}
   if (isAuraChat(current())) renderThread();
 }
-const AURA_KIND = { code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
+const AURA_KIND = { voce: ['Voce', 'sound'], code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
   reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'], deadline: ['Scadenza', 'calendar'],
   parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'] };
 const PARCEL_STEPS = ['ordinato', 'spedito', 'in consegna', 'consegnato'];
@@ -3764,7 +3764,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), startModelCard(), autonomyCard()] : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), whatsappCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), startModelCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), whatsappCard(), cloudCard()] : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
@@ -3963,6 +3963,52 @@ function usageCfgForm(u) {
         } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } })), out));
 }
 
+
+// La voce di Aura (ElevenLabs): crediti rimasti, scelta della voce con anteprima, qualità o risparmio
+function voiceCard() {
+  const box = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('sound', 'sm') + 'Voce' }),
+    h('p', { text: 'La voce con cui Aura ti risponde e che riconosce quando detti, con ElevenLabs. Se i crediti finiscono o ElevenLabs non risponde, torna da sola la voce di Microsoft.' })),
+    h('div', { class: 'bp-empty', text: 'Carico…' }));
+  (async () => {
+    let d;
+    try { d = await (await api('/api/voice/eleven')).json(); } catch (e) { box.lastChild.replaceWith(h('div', { class: 'form-msg err', text: e.message })); return; }
+    const parts = [];
+    const c = d.credits || {};
+    if (c.limit) {
+      const left = Math.max(0, c.limit - c.used), pct = Math.round((left / c.limit) * 100);
+      const reset = c.reset ? new Date(c.reset * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'long' }) : '';
+      parts.push(h('div', { class: 'vc-credits' },
+        h('div', { class: 'vc-cr-h' }, h('b', { text: `${left.toLocaleString('it-IT')} caratteri rimasti` }), h('small', { text: `su ${c.limit.toLocaleString('it-IT')}${c.tier ? ' · piano ' + c.tier : ''}` })),
+        h('div', { class: 'cs-bar' + (pct < 10 ? ' over' : '') }, h('i', { style: `width:${pct}%` })),
+        h('small', { class: 'vc-note', text: (d.usable ? '' : 'Crediti finiti: ora parla la voce di Microsoft. ') + (reset ? `Si rinnovano il ${reset}. ` : '') + `Una risposta di 2-3 frasi usa circa 150-250 caratteri.` })));
+    } else {
+      parts.push(h('div', { class: 'form-msg err', text: 'Non riesco a leggere i crediti: nella chiave API di ElevenLabs attiva il permesso «User → Lettura».' + (c.err ? ` (${c.err})` : '') }));
+    }
+    const segM = segmented(Object.entries(d.models || {}), d.model, async (v) => {
+      try { await api('/api/voice/eleven', { model: v }, { method: 'PUT' }); toast(v === 'eleven_flash_v2_5' ? 'Voce veloce: usa metà dei crediti' : 'Voce alla qualità massima'); } catch (e) { toast(e.message); }
+    }, 'Qualità della voce');
+    parts.push(h('div', { class: 'vc-row' }, h('span', { text: 'Qualità' }), segM));
+    if (d.voices) {
+      let cur = d.voice_id;
+      const audio = new Audio();
+      const list = h('div', { class: 'vc-list' });
+      const draw = () => list.replaceChildren(...d.voices.map((v) => h('div', { class: 'vc-voice' + (v.id === cur ? ' on' : '') },
+        h('button', { class: 'vc-play', title: 'Ascolta', 'aria-label': `Ascolta ${v.name}`, html: icon('play', 'sm'), disabled: !v.preview,
+          onclick: () => { audio.src = v.preview; audio.play().catch(() => {}); } }),
+        h('button', { class: 'vc-pick', onclick: async () => {
+          try { await api('/api/voice/eleven', { voice_id: v.id, voice_name: v.name }, { method: 'PUT' }); cur = v.id; draw(); toast(`Ora Aura parla con la voce di ${v.name}`); } catch (e) { toast(e.message); } } },
+          h('b', { text: v.name }), v.it ? h('span', { class: 'vc-it', text: 'IT' }) : null, v.desc ? h('small', { text: v.desc }) : null),
+        v.id === cur ? h('span', { class: 'vc-check', html: icon('check', 'sm') }) : null)));
+      draw();
+      parts.push(h('div', { class: 'vc-h', text: 'Scegli la voce' }), list,
+        h('small', { class: 'vc-note', text: 'Altre voci italiane: su ElevenLabs apri Voice Library, filtra «Italian» e premi «Add to my voices». Poi riapri questa pagina.' }));
+    } else {
+      parts.push(h('div', { class: 'form-msg err', text: 'Non riesco a leggere le voci: nella chiave API di ElevenLabs attiva il permesso «Voices → Lettura».' }));
+    }
+    box.lastChild.replaceWith(h('div', { class: 'vc-body' }, ...parts));
+  })();
+  return box;
+}
 // Quale modello parte da solo quando apri l'app: Gemma sul PC di casa o il modello nel cloud
 function startModelCard() {
   const cloud = S.status?.cloud;

@@ -2286,7 +2286,13 @@ def _tts_voice(v: str) -> str:
 
 
 async def _tts_run(job: dict, text: str, voice: str):
+    if eleven_usable() and await eleven_tts_stream(job, text):   # la voce bella; se non parte, Microsoft
+        job["done"] = True
+        job["ev"].set()
+        return
     try:
+        if not edge_tts:
+            raise RuntimeError("edge-tts non installato")
         async for c in edge_tts.Communicate(text, _tts_voice(voice)).stream():
             if c.get("type") == "audio" and c.get("data"):
                 job["chunks"].append(c["data"])
@@ -2302,7 +2308,7 @@ async def _tts_run(job: dict, text: str, voice: str):
 @app.post("/api/tts/start")
 async def tts_start(body: TTSIn, user: dict = Depends(require_user)):
     """Fa partire la sintesi di una frase e restituisce l'indirizzo da cui ascoltarla (anche mentre è ancora in corso)."""
-    if not edge_tts:
+    if not edge_tts and not eleven_usable():
         raise HTTPException(409, "edge-tts non installato")
     text = _tts_text(body.text)
     if not text:
@@ -2355,7 +2361,7 @@ async def tts(body: TTSIn, user: dict = Depends(require_user)):
     text = _tts_text(body.text)
     if not text:
         raise HTTPException(400, "Niente da leggere")
-    if edge_tts:
+    if edge_tts or eleven_usable():
         job = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event()}
         await _tts_run(job, text, body.voice)   # se non riesce, sotto la Homebase
         if job["chunks"]:

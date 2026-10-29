@@ -1288,7 +1288,13 @@ async def transcribe(request: Request, lang: str = "it", live: bool = False, clo
     if len(data) > MAX_AUDIO:
         raise HTTPException(413, "Registrazione troppo lunga")
     ctype = request.headers.get("content-type", "audio/webm")
-    # col modello cloud la trascrizione finale la fa il cloud; il testo provvisorio (live) resta al PC, se acceso
+    # la trascrizione finale la fa ElevenLabs; se non va, col modello cloud il Whisper del cloud, se no il PC.
+    # Il testo provvisorio (live) resta al PC, se acceso
+    if not live and eleven_usable():
+        try:
+            return await eleven_transcribe(data, ctype, lang)
+        except (httpx.HTTPError, ValueError) as e:
+            print(f"dettatura ElevenLabs non riuscita: {e}", flush=True)
     if cloud and not live and cloud_stt_model():
         try:
             return await cloud_transcribe(data, ctype, lang)

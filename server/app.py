@@ -395,6 +395,7 @@ async def lifespan(_app):
     hb_requests = asyncio.create_task(hb_admin_loop())
     wa_watch = asyncio.create_task(wa_status_loop())
     crm_watch = asyncio.create_task(crm_accounts_loop())
+    voice_watch = asyncio.create_task(eleven_loop())
     yield
     backfill.cancel()
     watcher.cancel()
@@ -403,6 +404,7 @@ async def lifespan(_app):
     hb_requests.cancel()
     wa_watch.cancel()
     crm_watch.cancel()
+    voice_watch.cancel()
     await client.aclose()
 
 
@@ -493,7 +495,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # Il resto dell'app sta in parti/, un file per argomento. Ogni parte viene eseguita qui dentro, nello stesso spazio
 # di nomi di app.py: per il codice e' come se fosse ancora un file solo (e «import app» vede tutto, come prima).
 # L'ordine conta: le rotte si registrano in quest'ordine.
-PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "cervello", "conversazioni", "procedure", "clienti", "whatsapp", "crm"]
+PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "cervello", "conversazioni", "procedure", "clienti", "whatsapp", "crm", "voce"]
 for _parte in PARTI:
     _f = Path(__file__).parent / "parti" / f"{_parte}.py"
     exec(compile(_f.read_text(encoding="utf-8"), str(_f), "exec"))
