@@ -13,6 +13,9 @@ ELEVEN_API = "https://api.elevenlabs.io/v1"
 ELEVEN_MODELS = {"eleven_multilingual_v2": "Qualità massima", "eleven_flash_v2_5": "Veloce, metà crediti"}
 ELEVEN_FALLBACK_VOICE = os.environ.get("ELEVEN_VOICE", "JBFqnCBsd6RMkjVDRZzb")
 ELEVEN_LOW = 0.10   # sotto il 10% dei crediti Aura avvisa
+# Il piano limita le richieste in parallelo (Free: 2). Le frasi di una risposta si preparano in anticipo: oltre il limite
+# aspettano il loro turno, in ordine, invece di finire alla voce di Microsoft (voci alternate a metà risposta).
+_ELEVEN_SEM = asyncio.Semaphore(int(os.environ.get("ELEVEN_CONCURRENCY", "2")))
 
 
 def eleven_on() -> bool:
@@ -112,7 +115,7 @@ def _eleven_err(r: httpx.Response) -> str:
         status = det.get("status", "") if isinstance(det, dict) else ""
     except ValueError:
         msg, status = r.text[:200], ""
-    if r.status_code in (401, 402, 429) and re.search(r"quota|credit|exceed", f"{status} {msg}", re.I):
+    if r.status_code in (401, 402, 429) and re.search(r"quota|credits?\b", f"{status} {msg}", re.I) and "concurrent" not in msg.lower():
         _eleven_out()
     return f"{r.status_code}: {msg}"
 
@@ -126,6 +129,23 @@ def eleven_cfg() -> dict:
 async def eleven_tts_stream(job: dict, text: str) -> bool:
     """Sintesi con ElevenLabs, a pezzi nel job mentre arriva. False se non è partita (si passa a Microsoft)."""
     c = eleven_cfg()
+    async with _ELEVEN_SEM:
+        for attempt in range(4):
+            got = await _eleven_tts_once(job, text, c)
+            if got != "busy":
+                break
+            await asyncio.sleep(0.4 * (attempt + 1))   # troppe richieste insieme: si riprova tra poco
+        else:
+            got = False
+    if not got:
+        return False
+    d = _voce_file()
+    if time.time() - (d.get("credits") or {}).get("at", 0) > 600:
+        asyncio.create_task(eleven_credits(True))
+    return True
+
+
+async def _eleven_tts_once(job: dict, text: str, c: dict):
     try:
         async with client.stream("POST", f"{ELEVEN_API}/text-to-speech/{c['voice_id']}/stream",
                                  params={"output_format": "mp3_44100_128"}, headers=_eleven_h(),
@@ -134,7 +154,10 @@ async def eleven_tts_stream(job: dict, text: str) -> bool:
                                  timeout=httpx.Timeout(60.0, connect=5.0)) as r:
             if r.status_code != 200:
                 await r.aread()
-                print(f"voce: ElevenLabs non ha risposto ({_eleven_err(r)}), uso Microsoft", flush=True)
+                err = _eleven_err(r)
+                if r.status_code == 429 and "concurrent" in err.lower():
+                    return "busy"
+                print(f"voce: ElevenLabs non ha risposto ({err}), uso Microsoft", flush=True)
                 return False
             async for chunk in r.aiter_bytes():
                 if chunk:
@@ -143,9 +166,6 @@ async def eleven_tts_stream(job: dict, text: str) -> bool:
     except httpx.HTTPError as e:
         print(f"voce: ElevenLabs non raggiungibile ({e})", flush=True)
         return bool(job["chunks"])
-    d = _voce_file()
-    if time.time() - (d.get("credits") or {}).get("at", 0) > 600:
-        asyncio.create_task(eleven_credits(True))
     return True
 
 
