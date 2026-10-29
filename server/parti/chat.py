@@ -476,9 +476,10 @@ def tools_for(user: dict) -> list:
     cal = gmail and has_calendar(user["id"])
     hbase = user["role"] == "admin" and homebase_on()
     wapp = user["role"] == "admin" and wa_linked()
+    crm = user["role"] == "admin" and crm_on()
     return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin")
             and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))
-            and (wapp or not t.get("whatsapp"))]
+            and (wapp or not t.get("whatsapp")) and (crm or not t.get("crm"))]
 
 
 
@@ -506,6 +507,7 @@ TECH_TOOLS = {"calcola_subnet", "genera_password", "confronta_testi", "apri_stru
 ADMIN_TOOLS = {"elenco_utenti", "crea_invito"}
 TECH_TOPIC = re.compile(r"\b(subnet\w*|cidr|netmask|maschera|password|passphrase|confront\w*|differenz\w*|diff|strument\w*|tool)\b", re.I)
 ADMIN_TOPIC = re.compile(r"\b(utent[ei]|invit\w*|account)\b", re.I)
+CRM_TOPIC = re.compile(r"\b(ticket\w*|tiket\w*|tichet\w*|tk[-\s]?\d+|tk|crm)\b", re.I)
 CONS_TOPIC = re.compile(r"\b(consuntiv\w*|ore lavorat\w*|riepilogo (delle ore|della giornata|di oggi|di ieri)|quante ore)\b", re.I)
 
 
@@ -516,6 +518,8 @@ def _tool_group(name: str) -> str:
         return "admin"
     if name.startswith("consuntivo"):
         return "cons"
+    if name.startswith("ticket_"):
+        return "crm"
     if name.startswith("homebase_"):
         return "hb"
     if name.startswith(("file_",)):
@@ -533,7 +537,7 @@ SEND_TO_RE = re.compile(r"\b(mand\w*|invi\w*|spedisc\w*|spedi\w*|inoltr\w*|scriv
 def _topics(messages: list[dict]) -> set:
     last = next((m.get("content") or "" for m in reversed(messages) if m.get("role") == "user"), "")
     found = {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC),
-                                       ("tech", TECH_TOPIC), ("admin", ADMIN_TOPIC), ("cons", CONS_TOPIC)) if rx.search(last)}
+                                       ("tech", TECH_TOPIC), ("admin", ADMIN_TOPIC), ("cons", CONS_TOPIC), ("crm", CRM_TOPIC)) if rx.search(last)}
     last_msg = next((m for m in reversed(messages) if m.get("role") == "user"), {})
     files = [f for f in last_msg.get("files") or [] if isinstance(f, dict)]
     if any(not f.get("image") for f in files):   # le foto le guarda il modello: non sono «lavoro sui file»
@@ -551,9 +555,9 @@ def _topics(messages: list[dict]) -> set:
 # Ogni strumento mandato al modello costa token a ogni chiamata (tutti insieme ~15 mila). Se il messaggio non tocca un
 # argomento preciso partono solo quelli di base; gli altri il modello li chiede con strumenti_extra e li riceve al volo.
 EXTRA_GROUPS = {"posta": "mail", "agenda": "cal", "homebase": "hb", "sito": "site", "file": "file", "tecnici": "tech", "utenti": "admin",
-                "consuntivo": "cons"}
+                "consuntivo": "cons", "ticket": "crm"}
 EXTRA_TOOLS_SPEC = _fn("strumenti_extra", "Se per la richiesta ti serve uno strumento che non vedi tra i tuoi (posta, agenda e promemoria, "
-                       "Homebase, sito del locale, file allegati, tecnici: subnet/password/confronto testi, utenti dell'app), chiedilo qui: "
+                       "Homebase, sito del locale, file allegati, tecnici: subnet/password/confronto testi, utenti dell'app, ticket del CRM di lavoro), chiedilo qui: "
                        "te lo do subito e poi lo usi.",
                        {"argomento": {"type": "string", "enum": list(EXTRA_GROUPS)}}, ["argomento"])
 

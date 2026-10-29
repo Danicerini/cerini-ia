@@ -34,6 +34,7 @@ const ICONS = {
   chart: '<path d="M3 3v18h18"/><path d="M8 16v-5M13 16V7M18 16v-8"/>',
   globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>',
   calendar: '<rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  ticket: '<path d="M3 8a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v2a2 2 0 0 0 0 4v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-2a2 2 0 0 0 0-4Z"/><path d="M14 6v12" stroke-dasharray="2 2"/>',
   folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
   link: '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
@@ -596,7 +597,7 @@ function stepsEl(steps) {
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
-const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo'];
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)' };
@@ -612,7 +613,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'tickets', 'ticket'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -700,7 +701,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
           try { await api(`/api/calendar/event/${encodeURIComponent(m.undo.id)}`, undefined, { method: 'DELETE' }); m.undone = true; m.display = 'Tolto dal calendario'; saveChat(chat); renderThread(); loadToday(); }
           catch (e) { toast(e.message); } } })
       : null;
-    const tIcon = isMem || m.open ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
+    const tIcon = (m.tool_name || '').startsWith('ticket_') ? 'ticket' : isMem || m.open ? 'brain' : m.undo?.type === 'cal_event' || (m.tool_name || '').startsWith('calendario') || m.tool_name === 'promemoria' ? 'calendar' : (m.tool_name || '').startsWith('mail_') ? 'mail' : 'tool';
     const card = m.open && !m.undone
       ? h('button', { class: 'tool-card link', title: 'Apri nel cervello', onclick: () => openBrainFile(m.open) }, h('span', { html: icon(tIcon, 'sm') }),
           h('span', { text: m.display || `Ha usato ${m.tool_name}` }), h('span', { class: 'tc-open', html: icon('chevron', 'sm') }))
@@ -709,7 +710,8 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
-        : m.view?.kind === 'consuntivo' ? consView(m.view) : null);
+        : m.view?.kind === 'consuntivo' ? consView(m.view)
+        : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -2669,6 +2671,11 @@ $('#brainScrim').onclick = () => toggleBrain(false);
 async function renderBrainPanel() {
   const root = $('#brainPanel');
   if (!$('#brainResize')) document.body.append(h('div', { id: 'brainResize', title: 'Trascina per allargare · doppio clic per tornare stretto' }));
+  BP.side = BP.side || pref.get('sidePane', 'brain');
+  if (BP.side === 'ticket' && S.me?.crm) {   // i ticket non si ricaricano a ogni cambio del cervello: solo all'apertura o col tasto
+    if (!root.querySelector('.tk-tools')) renderTicketPanel(root);
+    return;
+  }
   const now = new Date();
   BP.month = BP.month || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
   BP.sel = BP.sel || isoDay(now);
@@ -2728,14 +2735,119 @@ async function renderBrainPanel() {
       h('span', { class: 'bp-t', text: e.name }), e.status ? h('span', { class: 'bp-badge ' + e.status, text: e.status.toUpperCase() }) : null))
       : [h('div', { class: 'bp-empty', text: 'Ancora niente qui.' })]));
   root.replaceChildren(
-    h('div', { class: 'bp-top' }, h('b', { html: icon('brain', 'sm') + 'Cervello' }),
-      h('button', { class: 'icon-btn sm', title: 'Chiudi', 'aria-label': 'Chiudi il cervello', html: icon('x', 'sm'), onclick: () => toggleBrain(false) })),
+    sideHead(),
     h('div', { class: 'bp-scroll' },
       h('div', { class: 'bp-sec' }, h('div', { class: 'bp-h' }, h('span', { text: 'DIARIO' })), cal, dayBox),
       wiki),
     h('div', { class: 'bp-foot' },
       h('button', { class: 'bp-skill', html: icon('bulb', 'sm') + 'Skill', onclick: openBrainSkills }),
       h('button', { class: 'bp-boot', title: 'Chi sono io e chi sei tu (boot/)', html: icon('auto', 'sm') + 'Boot', onclick: () => openBrainFile('boot/user.md') })));
+}
+
+// ---- Ticket del CRM di lavoro (solo lettura): pannello a destra, pagina del ticket, elenchi in chat
+const TK = { stato: 'aperti', q: '', all: false, closed: {} };
+const tkNum = (no) => (no || '').replace(/^TK-\d{4}-0*/, '#');
+const tkDay = (s) => s ? `${s.slice(8, 10)}/${s.slice(5, 7)}${s.slice(0, 4) !== String(new Date().getFullYear()) ? '/' + s.slice(2, 4) : ''}` : '';
+const tkTone = (st) => ({ Closed: 'ok', Annullato: 'gray', Open: 'blue', 'In Progress': 'amber', 'Attività programmata': 'violet' }[st] || 'violet');
+function sideHead() {
+  const seg = (k, ic, label) => h('button', { class: 'sp-seg' + (BP.side === k ? ' on' : ''), html: icon(ic, 'sm') + label,
+    onclick: () => { if (BP.side === k) return; BP.side = k; pref.set('sidePane', k); $('#brainPanel').replaceChildren(); renderBrainPanel(); } });
+  return h('div', { class: 'bp-top' },
+    S.me?.crm ? h('div', { class: 'sp-segs', role: 'tablist' }, seg('brain', 'brain', 'Cervello'), seg('ticket', 'ticket', 'Ticket'))
+      : h('b', { html: icon('brain', 'sm') + 'Cervello' }),
+    h('button', { class: 'icon-btn sm', title: 'Chiudi', 'aria-label': 'Chiudi il pannello', html: icon('x', 'sm'), onclick: () => toggleBrain(false) }));
+}
+function tkItem(r, showClient) {
+  return h('button', { class: 'tk-item', title: `${r.no} · ${r.status_it}`, onclick: () => openTicket(r.no) },
+    h('i', { class: 'tk-dot t-' + tkTone(r.status) }),
+    h('span', { class: 'tk-no tnum', text: tkNum(r.no) }),
+    h('span', { class: 'tk-t' }, h('span', { text: r.title }), showClient && r.client ? h('small', { text: r.client }) : null),
+    h('small', { class: 'tk-when tnum', text: tkDay(r.closed || r.modified) }));
+}
+async function renderTicketPanel(root) {
+  const search = h('input', { class: 'tk-search', type: 'search', value: TK.q, 'aria-label': 'Cerca ticket',
+    placeholder: TK.all ? 'Problema da cercare in tutto il CRM…' : 'Cerca nel titolo dei miei ticket…',
+    onkeydown: (e) => { if (e.key === 'Enter') { TK.q = e.target.value.trim(); renderTicketPanel(root); } },
+    onsearch: (e) => { if (!e.target.value && TK.q) { TK.q = ''; renderTicketPanel(root); } } });
+  const chip = (k, label) => h('button', { class: 'bp-tab' + (!TK.all && TK.stato === k ? ' on' : ''), text: label,
+    onclick: () => { TK.stato = k; TK.all = false; renderTicketPanel(root); } });
+  const allChip = h('button', { class: 'bp-tab' + (TK.all ? ' on' : ''), html: icon('globe', 'sm') + 'Tutto il CRM', title: 'Come è stato risolto un problema: cerca nei ticket chiusi di tutti',
+    onclick: () => { TK.all = true; renderTicketPanel(root); } });
+  const body = h('div', { class: 'bp-scroll tk-scroll' }, h('div', { class: 'bp-empty', text: TK.all ? 'Cerco nel CRM…' : 'Carico i ticket…' }));
+  root.replaceChildren(sideHead(), h('div', { class: 'tk-tools' }, search, h('div', { class: 'bp-tabs' }, chip('aperti', 'Aperti'), chip('chiusi', 'Chiusi'), chip('tutti', 'Tutti'), allChip)), body);
+  if (TK.all && !TK.q) {
+    body.replaceChildren(h('div', { class: 'tk-hint' }, h('b', { text: 'Com\'era stato risolto?' }),
+      h('span', { text: 'Scrivi il problema (es. «outlook non sincronizza», «stampante offline») e premi Invio: cerco nei ticket chiusi di tutti, anche dei colleghi.' })));
+    return;
+  }
+  let d;
+  try { d = await (await api('/api/crm/tickets?' + new URLSearchParams({ stato: TK.stato, q: TK.q, miei: TK.all ? '0' : '1' }))).json(); }
+  catch (e) { body.replaceChildren(h('div', { class: 'bp-err', text: e.message })); return; }
+  const rows = d.rows || [];
+  if (!rows.length) { body.replaceChildren(h('div', { class: 'bp-empty', text: TK.q ? 'Nessun ticket trovato.' : TK.stato === 'aperti' ? 'Nessun ticket aperto: tutto chiuso 🎉' : 'Nessun ticket.' })); return; }
+  if (d.search) {   // ricerca in tutto il CRM: niente cartelle, in ordine di somiglianza, con un pezzo della soluzione
+    body.replaceChildren(h('div', { class: 'bp-h' }, h('span', { text: `${rows.length} TICKET CHIUSI SIMILI` })),
+      ...rows.map((r) => h('div', { class: 'tk-found' }, tkItem(r, true), r.solution ? h('p', { class: 'tk-sol', text: r.solution }) : null)));
+    return;
+  }
+  // le «cartelle»: una per cliente, la più recente in cima
+  const groups = new Map();
+  rows.forEach((r) => { const k = r.client || 'Senza cliente'; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); });
+  body.replaceChildren(h('div', { class: 'bp-h' }, h('span', { text: `${rows.length} TICKET · ${groups.size} CLIENTI` })),
+    ...[...groups].map(([k, list]) => {
+      const det = h('details', { class: 'tk-folder', open: TK.closed[k] ? null : true, ontoggle: () => { TK.closed[k] = !det.open; } },
+        h('summary', {}, h('span', { class: 'tk-fi', html: icon('folder', 'sm') }), h('span', { class: 'tk-fn', text: k }),
+          h('span', { class: 'bp-n', text: String(list.length) }), h('span', { class: 'chev', html: icon('chevron', 'sm') })),
+        ...list.map((r) => tkItem(r, false)));
+      return det;
+    }));
+}
+function tkAsk(text) {
+  closeBrainView(); if (isMobile()) toggleBrain(false);
+  input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit();
+}
+function tkDetail(t, full) {
+  const meta = (label, val) => val ? h('div', { class: 'tk-m' }, h('small', { text: label }), h('span', { text: val })) : null;
+  const sec = (label, txt, cls) => txt ? h('div', { class: 'tk-sec ' + (cls || '') }, h('div', { class: 'tk-sec-h', text: label }), h('div', { class: 'tk-txt', text: txt })) : null;
+  return h('div', { class: 'tk-detail' },
+    h('div', { class: 'tk-head' },
+      h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
+      h('b', { class: 'tnum', text: t.no }), t.mine ? null : h('span', { class: 'tk-other', text: 'di un collega' })),
+    h('div', { class: 'tk-meta' }, meta('Cliente', t.client), meta('Contatto', t.contact), meta('Assegnato a', t.owner),
+      meta('Aperto', tkDay(t.created)), meta('Preso in carico', tkDay(t.taken)), meta('Chiuso', tkDay(t.closed)), meta('Tipo', [t.category, t.kind].filter(Boolean).join(' · '))),
+    sec('Richiesta', full ? t.description : _clipTxt(t.description, 420)),
+    sec('Soluzione', full ? t.solution : _clipTxt(t.solution, 420), 'sol'),
+    (t.comments || []).length ? h('div', { class: 'tk-sec' }, h('div', { class: 'tk-sec-h', text: `Commenti (${t.comments.length})` }),
+      h('div', { class: 'tk-coms' }, ...(full ? t.comments : t.comments.slice(-3)).map((c) => h('div', { class: 'tk-com' + (c.client ? ' client' : '') + (c.me ? ' me' : '') },
+        h('div', { class: 'tk-com-h' }, h('b', { text: c.me ? 'Tu' : c.who }), h('small', { class: 'tnum', text: `${tkDay(c.at)} ${c.at.slice(11, 16)}` })),
+        h('div', { class: 'tk-txt', text: c.text }))))) : null);
+}
+const _clipTxt = (s, n) => !s || s.length <= n ? s : s.slice(0, n).replace(/\s\S*$/, '') + '…';
+async function openTicket(ref) {
+  let t;
+  try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(ref))).json(); } catch (e) { toast(e.message); return; }
+  const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => tkAsk(text) });
+  brainShell(t.title, [t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null].filter(Boolean),
+    h('div', { class: 'tk-asks' }, h('span', { html: icon('bulb', 'sm') + 'Chiedi ad Aura' }),
+      q('Riassumilo', `Riassumimi il ticket ${t.no}: cosa chiede il cliente, cosa è stato fatto, a che punto è.`),
+      q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
+      q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
+      h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeBrainView(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
+    tkDetail(t, true));
+}
+// in chat: elenco di ticket (ticket_elenco, ticket_cerca) e un ticket aperto (ticket_dettaglio)
+function tkListView(v) {
+  const rows = v.rows || [];
+  return h('div', { class: 'cs-card tk-card' },
+    h('div', { class: 'cs-head' }, h('b', { html: icon('ticket', 'sm') + (v.title || 'Ticket') }), h('small', { class: 'tnum', text: String(rows.length) })),
+    rows.length ? h('div', { class: 'tk-list' }, ...rows.map((r) => h('div', { class: 'tk-found' }, tkItem(r, true),
+      v.search && r.solution ? h('p', { class: 'tk-sol', text: _clipTxt(r.solution, 260) }) : null))) : h('div', { class: 'bp-empty', text: 'Nessun ticket.' }));
+}
+function tkCardView(t) {
+  return h('div', { class: 'cs-card tk-card' },
+    h('div', { class: 'cs-head' }, h('b', { html: icon('ticket', 'sm') + t.title }),
+      h('button', { class: 'cs-copy', html: 'Apri ' + icon('chevron', 'sm'), title: 'Apri il ticket intero', onclick: () => openTicket(t.no) })),
+    tkDetail(t, false));
 }
 
 // ---- la pagina al centro: un file del cervello
