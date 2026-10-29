@@ -203,6 +203,91 @@ async def _crm_name(rid: str) -> str:
     return _CRM_NAMES[rid]
 
 
+_CRM_THANKS = re.compile(r"\b(grazie|saluti|cordialmente|buona (giornata|serata)|buon lavoro|a presto)\b", re.I)
+
+
+def _crm_signer(text: str) -> str:
+    """Il nome con cui un collega firma il commento («Grazie, / Giacomo»)."""
+    lines = [x.strip(" ,.") for x in (text or "").split("\n") if x.strip(" ,.")]
+    for k in range(len(lines) - 1, max(0, len(lines) - 3), -1):
+        if re.fullmatch(r"[A-ZÀ-Ý][a-zà-ÿ']+(?: [A-ZÀ-Ý][a-zà-ÿ']+)?", lines[k]) and _CRM_THANKS.search(" ".join(lines[max(0, k - 2):k])):
+            return lines[k]
+    return ""
+
+
+def _crm_learn(uid: str, name: str):
+    """Un utente del CRM (collega) di cui si è letto il nome nella firma: si ricorda (anche su disco)."""
+    if not name or not re.fullmatch(r"19x\d+", str(uid or "")):
+        return
+    _CRM_NAMES[uid] = name
+    d = _crm_file()
+    if d.setdefault("colleghi", {}).get(uid) != name:
+        d["colleghi"][uid] = name
+        _crm_save(d)
+
+
+def _crm_file() -> dict:
+    try:
+        return json.loads((DATA_DIR / "crm.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _crm_save(d: dict):
+    f = DATA_DIR / "crm.json"
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(f)
+
+
+_CRM_ACC: dict[str, str] = {}
+
+
+def _crm_accounts() -> dict:
+    if not _CRM_ACC:
+        _CRM_ACC.update(_crm_file().get("clienti") or {})
+    return _CRM_ACC
+
+
+async def crm_accounts_refresh():
+    """L'elenco dei clienti (organizzazioni con almeno un ticket), letto dai ticket a pagine da 100: la prima volta tutti,
+    poi solo quelli cambiati. Serve al filtro per cliente, perché l'utente del CRM non può cercare le organizzazioni."""
+    d = _crm_file()
+    names, since, top = d.get("clienti") or {}, d.get("fino_a") or "", d.get("fino_a") or ""
+    for uid, n in (d.get("colleghi") or {}).items():
+        _CRM_NAMES.setdefault(uid, n)
+    seen, off = set(), 0
+    while off < 50000:
+        where = f" WHERE modifiedtime>'{_crm_q(since)}'" if since else ""
+        rows = await _crm_get("query", query=f"SELECT parent_id,modifiedtime FROM HelpDesk{where} ORDER BY modifiedtime LIMIT {off},100;")
+        for t in rows:
+            if re.fullmatch(r"\d+x\d+", str(t.get("parent_id") or "")):
+                seen.add(t["parent_id"])
+            top = max(top, t.get("modifiedtime") or "")
+        if len(rows) < 100:
+            break
+        off += 100
+        await asyncio.sleep(0.05)
+    for a in seen - set(names):
+        names[a] = await _crm_name(a)
+        await asyncio.sleep(0.03)
+    d.update(clienti={k: v for k, v in names.items() if v}, fino_a=top)
+    _crm_save(d)
+    _CRM_ACC.clear()
+    _CRM_ACC.update(d["clienti"])
+
+
+async def crm_accounts_loop():
+    await asyncio.sleep(30)
+    while True:
+        if crm_on():
+            try:
+                await crm_accounts_refresh()
+            except Exception as e:   # il CRM giù non deve fermare niente: si riprova tra un'ora
+                print(f"CRM: elenco clienti non aggiornato: {e}", flush=True)
+        await asyncio.sleep(3600)
+
+
 def crm_link(tid: str) -> str:
     return f"{CRM_URL}/index.php?module=HelpDesk&view=Detail&record={str(tid).split('x')[-1]}" if CRM_URL else ""
 
@@ -238,7 +323,11 @@ async def crm_list(stato: str = "aperti", cliente: str = "", testo: str = "", da
         where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
     lim = max(1, min(int(limite or 30), 100))
     who = _flat(cliente) if _crm_like(cliente) else ""
-    # le organizzazioni non si possono cercare per nome con questo utente: si filtra dopo, sul nome del cliente dei ticket
+    # le organizzazioni non si possono cercare per nome con questo utente: si usa l'elenco dei clienti costruito dai ticket
+    ids = [i for i, n in _crm_accounts().items() if who and (who in _flat(n) or _flat(n).replace(" ", "").startswith(who.replace(" ", "")))]
+    if ids:
+        where.append("parent_id IN (" + ",".join(f"'{_crm_q(i)}'" for i in ids[:60]) + ")")
+        who = ""
     sql = (f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
            + f" ORDER BY modifiedtime DESC LIMIT {100 if who else lim};")
     rows = [await _crm_row(t, uid) for t in await _crm_get("query", query=sql)]
@@ -304,7 +393,10 @@ async def crm_detail(ref: str) -> dict:
     comments = []
     for c in coms:
         cust = c.get("customer") if str(c.get("customer") or "").strip("0x") else ""
-        who = await _crm_name(cust) if cust else await _crm_name(c.get("creator"))
+        author = c.get("creator") or c.get("assigned_user_id")
+        if not cust and author and not _CRM_NAMES.get(author):
+            _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
+        who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
                          "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200)})
     r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),

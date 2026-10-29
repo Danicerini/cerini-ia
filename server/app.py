@@ -394,6 +394,7 @@ async def lifespan(_app):
     reminders = asyncio.create_task(agenda_loop())
     hb_requests = asyncio.create_task(hb_admin_loop())
     wa_watch = asyncio.create_task(wa_status_loop())
+    crm_watch = asyncio.create_task(crm_accounts_loop())
     yield
     backfill.cancel()
     watcher.cancel()
@@ -401,6 +402,7 @@ async def lifespan(_app):
     reminders.cancel()
     hb_requests.cancel()
     wa_watch.cancel()
+    crm_watch.cancel()
     await client.aclose()
 
 
