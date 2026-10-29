@@ -2311,7 +2311,8 @@ async def tts_start(body: TTSIn, user: dict = Depends(require_user)):
     for k in [k for k, j in _TTS_JOBS.items() if now - j["at"] > 180]:
         _TTS_JOBS.pop(k, None)
     jid = secrets.token_urlsafe(12)
-    job = _TTS_JOBS[jid] = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event(), "at": now, "uid": user["id"]}
+    job = _TTS_JOBS[jid] = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event(), "at": now, "uid": user["id"],
+                            "text": text, "voice": body.voice}
     asyncio.create_task(_tts_run(job, text, body.voice))
     return {"url": f"/api/tts/play/{jid}"}
 
@@ -2325,6 +2326,15 @@ async def tts_play(jid: str, user: dict = Depends(require_user)):
     async def gen():
         i = 0
         while True:
+            if job["done"] and not job["chunks"] and homebase_on():   # edge-tts non ha dato niente: file intero dalla Homebase
+                try:
+                    r = await hb("tts_generate", "POST", json_body={"text": job["text"], "voice": job["voice"]}, raw=True, timeout=90)
+                    if "audio" in r.headers.get("content-type", ""):
+                        job["chunks"].append(r.content)
+                except (HTTPException, httpx.HTTPError):
+                    pass
+                if not job["chunks"]:
+                    return
             while i < len(job["chunks"]):
                 yield job["chunks"][i]
                 i += 1
@@ -2347,7 +2357,7 @@ async def tts(body: TTSIn, user: dict = Depends(require_user)):
         raise HTTPException(400, "Niente da leggere")
     if edge_tts:
         job = {"chunks": [], "done": False, "err": "", "ev": asyncio.Event()}
-        await _tts_run(job, text, body.voice)
+        await _tts_run(job, text, body.voice)   # se non riesce, sotto la Homebase
         if job["chunks"]:
             return Response(b"".join(job["chunks"]), media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
     if not homebase_on():
