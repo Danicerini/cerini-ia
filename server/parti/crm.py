@@ -101,7 +101,7 @@ async def crm_day(day: str) -> list[dict]:
         out.append({"ticket": t.get("ticket_no", ""), "cliente": names.get(t.get("parent_id"), ""), "titolo": t.get("ticket_title", ""),
                     "stato": t.get("ticketstatus", ""), "tipo": t.get("tipo_intervento", ""),
                     "preso": t.get("data_presa_in_carico") == day, "chiuso": t.get("data_chiusura_ticket") == day,
-                    "soluzione": crm_two_lines(t.get(CRM_SOLUTION)), "commenti": said.get(tid, []),
+                    "soluzione": crm_closing(t.get(CRM_SOLUTION)), "commenti": said.get(tid, []),
                     "ore": round(spent.get(tid, 0.0), 2)})
     return sorted(out, key=lambda x: x["ticket"])
 
@@ -590,17 +590,12 @@ async def crm_folder_api(fid: int, q: str = "", _: dict = Depends(require_admin)
 
 
 # ---- sorveglianza: quando l'utente prende in carico o chiude un ticket, Aura lo sa da sola
-# Ogni 5 minuti (nelle ore di lavoro) guarda i ticket dell'utente cambiati da poco. Presa in carico e chiusura finiscono nel
-# diario del giorno, nella sezione del progetto di lavoro: così Aura le conosce in chat e il consuntivo le conta.
-_CRM_GREET = re.compile(r"^(buon(giorno|asera|pomeriggio)|salve|ciao|gentil\w*|spett\w*)\b", re.I)
-_CRM_BYE = re.compile(r"^(grazie|cordiali|distinti|saluti|buona giornata|a disposizione)\b", re.I)
-
-
-def crm_two_lines(text: str) -> str:
-    """Le prime due righe vere di un messaggio di chiusura: senza saluti iniziali e finali."""
-    lines = [x.strip() for x in _crm_clean(text, 2000).split("\n") if x.strip()]
-    lines = [x for x in lines if not (_CRM_GREET.match(x) and len(x) < 40) and not _CRM_BYE.match(x)]
-    return " ".join(lines[:2])[:300]
+# Ogni 5 minuti (nelle ore di lavoro) guarda i ticket dell'utente cambiati da poco. Presa in carico e chiusura (col messaggio
+# di chiusura intero) finiscono nel diario del giorno, nella sezione del progetto di lavoro: così Aura le conosce in chat e il
+# consuntivo le conta.
+def crm_closing(text: str) -> str:
+    """Il messaggio di chiusura intero (senza firma e avvisi legali), su una riga sola per il diario."""
+    return " ".join(x.strip() for x in _crm_clean(text, 2000).split("\n") if x.strip())
 
 
 async def crm_watch_once():
@@ -629,7 +624,7 @@ async def crm_watch_once():
                             project=main["id"] if main else "")
         if t.get("ticketstatus") == "Closed" and t.get("data_chiusura_ticket") == today and f"chiuso:{today}" not in got:
             got.append(f"chiuso:{today}")
-            sol = crm_two_lines(t.get(CRM_SOLUTION))
+            sol = crm_closing(t.get(CRM_SOLUTION))
             await diary_add(user, f"Chiuso {t.get('ticket_no')}", f"Chiuso il ticket {what}" + (f": {sol}" if sol else "") + " (dal CRM).",
                             project=main["id"] if main else "")
     d = _crm_file()
