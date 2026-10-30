@@ -1546,8 +1546,15 @@ async def consuntivo(user: dict, day: str) -> dict:
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
                                 clienti="; ".join(f"{e['name']} ({_clip(e.get('summary') or '', 90)})" for e in comp) or "quelli nominati",
                                 fascicoli=fasc, giorno=day, diario=diary, chat=chats, crm=CONS_CRM.format(ticket=crm) if crm else "")
-    raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
-    d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
+    d = {}
+    for _ in range(2):   # a volte il modello risponde vuoto o non in JSON: si riprova una volta
+        raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
+        try:
+            d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
+        except ValueError:
+            d = {}
+        if d.get("voci"):
+            break
     rows, amap = [], fasc_alias()
     for v in d.get("voci") or []:
         what = str(v.get("descrizione") or v.get("attivita") or "").strip() if isinstance(v, dict) else ""
@@ -1560,7 +1567,8 @@ async def consuntivo(user: dict, day: str) -> dict:
                      "project": f["progetto"] if f else "", "contract": f["contratto"] if f else "",
                      "doubt": bool(v.get("dubbio")) or fixed or (bool(fl) and not f)})
     for t in crm_rows:   # un ticket del CRM che il modello ha perso: torna come voce da controllare
-        if t["ticket"] and not any(t["ticket"] in r["what"] for r in rows):
+        num = re.sub(r"^\D*\d{4}-0*", "", t["ticket"])   # «TK-2026-005695» -> «5695»: il modello a volte lo scrive accorciato
+        if t["ticket"] and not any(t["ticket"] in r["what"] or re.search(rf"(?<!\d)0*{re.escape(num)}(?!\d)", r["what"]) for r in rows):
             f, _ = _fasc_fix({"cliente": t["cliente"]}, None, fl, amap)
             rows.append({"what": f"{t['ticket']} - {t['titolo']}"[:160], "client": t["cliente"][:60] or main["name"],
                          "min": _half_hours(t["ore"] * 60 if t["ore"] else 30), "project": f["progetto"] if f else "",

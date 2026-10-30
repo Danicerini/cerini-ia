@@ -601,7 +601,8 @@ const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)]
 const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
-const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)' };
+const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)',
+  consuntivo: 'Sto preparando il consuntivo: leggo CRM, diario e chat… (può volerci un minuto)' };
 const READING_LABEL = { cerca_memoria: 'Sto leggendo la memoria…', mail_cerca: 'Sto leggendo la posta…', mail_leggi: 'Sto leggendo la mail…', calendario_vedi: 'Sto guardando il calendario…', web_cerca: 'Sto cercando sul web…', web_leggi: 'Sto leggendo una pagina…', homebase_note: 'Sto guardando le note…', homebase_nota: 'Sto leggendo la nota…', homebase_cerca: 'Sto cercando nella Homebase…', homebase_servizi: 'Sto guardando i servizi…', homebase_rete: 'Sto guardando la rete…', homebase_scratchpad: 'Sto leggendo lo scratchpad…', homebase_scratchpad_archivio: 'Cerco negli scratchpad archiviati…', file_leggi: 'Sto leggendo il file…' };
 function groupMemoryNotes(msgs) {
   let start = 0;
