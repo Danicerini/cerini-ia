@@ -1518,15 +1518,18 @@ async def consuntivo(user: dict, day: str) -> dict:
     secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
     diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
     chats = _day_chats_text(user, day) or "(nessuna)"
-    crm, crm_rows = "", []
+    crm, crm_rows, stale = "", [], []
     if crm_on():
         try:
             crm_rows = await crm_day(day)
             crm = crm_day_text(crm_rows)
+            done_no = {r["ticket"] for r in crm_rows}
+            stale = [t for t in await crm_stale(day) if t["no"] not in done_no]
         except ValueError as e:
             print(f"consuntivo: CRM non letto: {e}", flush=True)
+    ask = [{"no": t["no"], "client": t["client"], "title": t["title"], "taken": t.get("taken", "")} for t in stale]
     if diary == "(vuoto)" and chats == "(nessuna)" and not crm:
-        return {"day": day, "rows": [], "total": 0, "excluded": []}
+        return {"day": day, "rows": [], "total": 0, "excluded": [], "ask": ask}
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
     fl = fascicoli()
@@ -1562,7 +1565,9 @@ async def consuntivo(user: dict, day: str) -> dict:
             rows.append({"what": f"{t['ticket']} - {t['titolo']}"[:160], "client": t["cliente"][:60] or main["name"],
                          "min": _half_hours(t["ore"] * 60 if t["ore"] else 30), "project": f["progetto"] if f else "",
                          "contract": f["contratto"] if f else "", "doubt": True})
-    return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows),
+    # i ticket fermi di cui il diario o le chat parlano già sono lavoro fatto: non si chiedono
+    ask = [a for a in ask if not any(a["no"] in r["what"] or a["no"][-4:].lstrip("0") in r["what"] for r in rows)]
+    return {"day": day, "rows": rows, "total": sum(r["min"] for r in rows), "ask": ask,
             "excluded": [str(x)[:120] for x in d.get("esclusi") or [] if str(x).strip()][:8]}
 
 
@@ -1578,11 +1583,15 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
             f"Superi le 8 ore di {_hm(-gap)}: dimmi cosa accorciare." if gap < 0 else "Fanno 8 ore giuste.")
     lines = [f"- [{r['project'] or 'fascicolo da scegliere'}] {r['what']} ({r['client']}): {_hm(r['min'])}" + (" (da controllare)" if r["doubt"] else "")
              for r in rows]
-    view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"]}
+    ask = c.get("ask") or []
+    view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"], "ask": ask}
     return {"content": "L'UTENTE VEDE GIÀ IL CONSUNTIVO in una tabella sopra la tua risposta (fascicoli, descrizioni, ore, totale). "
                        "Rispondi con UNA o DUE frasi al massimo, senza tabelle né elenchi e senza ripetere le voci: solo quanto manca alle 8 ore "
                        f"e cosa gli chiedi, oppure le voci «da controllare». Stato: {note}\n"
-                       "Se l'utente corregge un fascicolo, un cliente o un tempo, salva la correzione come regola generale con consuntivo_regola "
+                       + ("TICKET SUOI ANCORA APERTI, senza niente fatto quel giorno nel CRM (sono anche nella scheda, sotto «Ci hai "
+                          "lavorato?»): chiedigli in una frase se ci ha fatto qualcosa: "
+                          + "; ".join(f"{a['no']} ({a['client'] or '?'}, {a['title']})" for a in ask) + ".\n" if ask else "")
+                       + "Se l'utente corregge un fascicolo, un cliente o un tempo, salva la correzione come regola generale con consuntivo_regola "
                        "(es. «I reset password di quel cliente vanno sul suo fascicolo NOC») e poi rifai il consuntivo.\n\n"
                        "Dati, solo per quando l'utente aggiunge lavori o cambia un tempo (allora rifai il consuntivo con le stesse regole: "
                        "mezz'ore, minimo 30 minuti, fascicolo esatto, descrizione di una frase):\n" + "\n".join(lines)

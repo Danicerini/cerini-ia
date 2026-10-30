@@ -645,6 +645,57 @@ button:disabled { cursor: default; }
 @media (max-width: 560px) { .wa-qr { grid-template-columns: 1fr; justify-items: center; } .wa-qr img { grid-row: auto; } }
 .btn.danger { color: var(--err); border-color: color-mix(in oklch, var(--err) 40%, var(--border)); }
 
+/* ticket del CRM: pagina intera con le cartelle */
+#ticketsView { display: none; flex: 1; overflow-y: auto; }
+#main.tickets-open #ticketsView { display: block; }
+#main.tickets-open .center-wrap, #main.tickets-open #toBottom, #main.tickets-open #modelBtn { display: none; }
+.tkp-wrap { max-width: 1180px; margin: 0 auto; padding: 18px 22px 60px; display: grid; grid-template-columns: 240px 1fr; gap: 24px; align-items: start; }
+.tkp-side { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; }
+.tkp-fh { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; color: var(--text-3); padding: 14px 10px 6px; }
+.tkp-fh:first-child { padding-top: 4px; }
+.tkp-f { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 9px; background: transparent; font: inherit;
+  font-size: 13.5px; color: var(--text-2); text-align: left; cursor: pointer; }
+.tkp-f:hover { background: var(--hover); color: var(--text); }
+.tkp-f.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.tkp-fn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkp-fc { font-size: 12px; color: var(--text-3); }
+.tkp-f.on .tkp-fc { color: var(--accent); }
+.tkp-ref { margin-top: 12px; display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; height: 30px; padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 12.5px; color: var(--text-2); cursor: pointer; }
+.tkp-col { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.tkp-pickbox { display: none; }
+.tkp-main { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.tkp-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.tkp-head .tx { flex: 1; min-width: 200px; }
+.tkp-head h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+.tkp-head p { margin: 4px 0 0; color: var(--text-2); font-size: 14px; }
+.tkp-head .tk-search { max-width: 280px; }
+.tkp-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
+.tkp-row { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border: 0; border-top: 1px solid var(--border); background: transparent;
+  font: inherit; color: var(--text); text-align: left; cursor: pointer; min-width: 0; }
+.tkp-row:first-child { border-top: 0; }
+.tkp-row:hover { background: var(--hover); }
+.tkp-no { font-size: 12.5px; font-weight: 600; color: var(--text-3); min-width: 44px; }
+.tkp-t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tkp-t b { font-weight: 550; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkp-t small { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkp-when { font-size: 12px; color: var(--text-3); min-width: 44px; text-align: right; }
+@media (max-width: 760px) {
+  .tkp-wrap { grid-template-columns: 1fr; padding: 12px 14px 50px; gap: 12px; }
+  .tkp-side { display: none; }
+  .tkp-pickbox { display: block; }
+  .tkp-pick { width: 100%; height: 38px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); font: inherit; padding: 0 10px; }
+  .tkp-row .tk-tag { display: none; }
+  .tkp-head .tk-search { max-width: none; }
+}
+/* consuntivo: ticket aperti senza attività nel giorno */
+.cs-ask { margin-top: 10px; padding: 10px 12px; border-radius: 12px; border: 1px dashed var(--border-strong); display: flex; flex-direction: column; gap: 6px; }
+.cs-ask > b { font-size: 13px; }
+.cs-ask-row { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.cs-ask-row .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); }
+.cs-ask-row button { height: 26px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.cs-ask-row button:hover { border-color: var(--accent); color: var(--accent); }
+
 /* clienti: attivita' della zona senza sito o con un sito da rifare */
 #clientiView { display: none; flex: 1; overflow-y: auto; }
 #main.clienti-open #clientiView { display: block; }
@@ -1517,6 +1568,9 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tk-search { width: 100%; height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
 .tk-search:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .tk-tools .bp-tab { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
+.tk-tools .bp-tab[hidden] { display: none; }
+.tk-tools .dd:has(.tk-fsel) { flex: 1; min-width: 0; display: flex; }
+.tk-tools .dd-btn.tk-fsel { flex: 1; max-width: 100%; }
 .t-ok { --tc: var(--ok); } .t-blue { --tc: var(--accent); } .t-amber { --tc: var(--warn); } .t-violet { --tc: oklch(0.65 0.16 300); } .t-gray { --tc: var(--text-3); }
 .tk-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--tc); }
 .tk-tag { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 99px; font-size: 12px; font-weight: 600; color: var(--tc);
@@ -1836,6 +1890,7 @@ body.brain-resizing { cursor: col-resize; user-select: none; }
     <button class="side-link" id="memoryBtn"><span data-icon="brain"></span>Memoria<span class="n" id="memoryCount"></span></button>
     <button class="side-link hidden" id="mailBtn"><span data-icon="mail"></span>Posta<span class="n" id="mailCount"></span></button>
     <button class="side-link hidden" id="agendaBtn"><span data-icon="calendar"></span>Agenda</button>
+    <button class="side-link hidden" id="ticketsBtn"><span data-icon="ticket"></span>Ticket</button>
     <button class="side-link hidden" id="clientiBtn"><span data-icon="globe"></span>Clienti</button>
     <nav id="chatList"></nav>
     <div class="side-foot">
@@ -1887,6 +1942,7 @@ body.brain-resizing { cursor: col-resize; user-select: none; }
     <section id="memoryView" aria-label="Memoria"></section>
     <section id="mailView" aria-label="Posta"></section>
     <section id="agendaView" aria-label="Agenda"></section>
+    <section id="ticketsView" aria-label="Ticket"></section>
     <section id="clientiView" aria-label="Clienti"></section>
     <section id="auraView" aria-label="Da Aura"></section>
     <section id="brainView" aria-label="Cervello"></section>

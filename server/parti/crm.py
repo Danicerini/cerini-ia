@@ -101,7 +101,7 @@ async def crm_day(day: str) -> list[dict]:
         out.append({"ticket": t.get("ticket_no", ""), "cliente": names.get(t.get("parent_id"), ""), "titolo": t.get("ticket_title", ""),
                     "stato": t.get("ticketstatus", ""), "tipo": t.get("tipo_intervento", ""),
                     "preso": t.get("data_presa_in_carico") == day, "chiuso": t.get("data_chiusura_ticket") == day,
-                    "soluzione": _crm_text(t.get(CRM_SOLUTION), 300), "commenti": said.get(tid, []),
+                    "soluzione": crm_two_lines(t.get(CRM_SOLUTION)), "commenti": said.get(tid, []),
                     "ore": round(spent.get(tid, 0.0), 2)})
     return sorted(out, key=lambda x: x["ticket"])
 
@@ -497,3 +497,168 @@ TOOLS.update({
                     "su un ticket preciso (riassunto, a che punto è, cosa ha chiesto il cliente, bozza di risposta).",
                     {"ticket": {"type": "string", "description": "Numero, es. TK-2026-005819 o 5819"}}, ["ticket"])},
 })
+
+
+# ---- cartelle come nel CRM (Lista personale / Lista condivisa)
+# L'API non dà le liste salvate del CRM: si rifanno qui con gli stessi criteri (stato, assegnazione, categoria, gruppo di
+# supporto). Quelle vere dell'utente stanno in data/crm.json («cartelle»), perché hanno nomi di aziende; queste sono la base.
+CRM_FOLDERS_BASE = [
+    {"nome": "Ticket non assegnati", "lista": "personale", "stato": "aperti", "non_assegnati": True},
+    {"nome": "Ticket miei aperti", "lista": "personale", "stato": "aperti", "miei": True},
+    {"nome": "Ticket miei chiusi", "lista": "personale", "stato": "chiusi", "miei": True},
+    {"nome": "Tutti", "lista": "condivisa", "stato": "tutti"},
+    {"nome": "Ticket Tecnici Aperti", "lista": "condivisa", "stato": "aperti", "categoria": "Tecnico"},
+    {"nome": "Ticket Commerciali Aperti", "lista": "condivisa", "stato": "aperti", "categoria": "Commerciale"},
+]
+
+
+def crm_folders() -> list[dict]:
+    return [{**f, "id": i} for i, f in enumerate(_crm_file().get("cartelle") or CRM_FOLDERS_BASE)]
+
+
+def _crm_where(f: dict, uid: str) -> list[str]:
+    w = []
+    if f.get("miei"):
+        w.append(f"assigned_user_id='{_crm_q(uid)}'")
+    if f.get("stato") == "aperti":
+        w += [f"ticketstatus!='{s}'" for s in CRM_DONE]
+    elif f.get("stato") == "chiusi":
+        w.append("ticketstatus='Closed'")
+    for field, key in (("ticketcategories", "categoria"), ("gruppo_di_supporto", "gruppo")):
+        if f.get(key):
+            w.append(f"{field}='{_crm_like(f[key])}'")
+    return w
+
+
+async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
+    """I ticket di una cartella, i più recenti in cima. «Non assegnati» = assegnati a un gruppo e non a una persona."""
+    f = next((x for x in crm_folders() if x["id"] == fid), None)
+    if not f:
+        raise ValueError("cartella sconosciuta")
+    _, uid = await _crm_sess()
+    where = _crm_where(f, uid)
+    if _crm_like(testo):
+        where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
+    sql = (f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
+           + f" ORDER BY modifiedtime DESC LIMIT {100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
+    rows = await _crm_get("query", query=sql)
+    if f.get("non_assegnati"):
+        rows = [t for t in rows if str(t.get("assigned_user_id", "")).startswith("20x")]
+    out = []
+    for t in rows[:limite]:
+        r = await _crm_row(t, uid)
+        r["owner"] = "te" if r["mine"] else await _crm_name(t.get("assigned_user_id"))
+        out.append(r)
+    return out
+
+
+async def crm_folder_counts() -> dict:
+    _, uid = await _crm_sess()
+    out = {}
+    for f in crm_folders():
+        try:
+            if f.get("non_assegnati"):
+                out[f["id"]] = len(await crm_folder(f["id"], limite=100))
+            else:
+                where = _crm_where(f, uid)
+                r = await _crm_get("query", query="SELECT count(*) FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + ";")
+                out[f["id"]] = int(r[0]["count"]) if r else 0
+        except ValueError:
+            out[f["id"]] = None
+    return out
+
+
+@app.get("/api/crm/folders")
+async def crm_folders_api(counts: int = 1, _: dict = Depends(require_admin)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        c = await crm_folder_counts() if counts else {}
+    except ValueError as e:
+        raise HTTPException(502, str(e))
+    return {"folders": [{**f, "count": c.get(f["id"])} for f in crm_folders()]}
+
+
+@app.get("/api/crm/folder/{fid}")
+async def crm_folder_api(fid: int, q: str = "", _: dict = Depends(require_admin)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        return {"rows": await crm_folder(fid, q)}
+    except ValueError as e:
+        raise HTTPException(502, str(e))
+
+
+# ---- sorveglianza: quando l'utente prende in carico o chiude un ticket, Aura lo sa da sola
+# Ogni 5 minuti (nelle ore di lavoro) guarda i ticket dell'utente cambiati da poco. Presa in carico e chiusura finiscono nel
+# diario del giorno, nella sezione del progetto di lavoro: così Aura le conosce in chat e il consuntivo le conta.
+_CRM_GREET = re.compile(r"^(buon(giorno|asera|pomeriggio)|salve|ciao|gentil\w*|spett\w*)\b", re.I)
+_CRM_BYE = re.compile(r"^(grazie|cordiali|distinti|saluti|buona giornata|a disposizione)\b", re.I)
+
+
+def crm_two_lines(text: str) -> str:
+    """Le prime due righe vere di un messaggio di chiusura: senza saluti iniziali e finali."""
+    lines = [x.strip() for x in _crm_clean(text, 2000).split("\n") if x.strip()]
+    lines = [x for x in lines if not (_CRM_GREET.match(x) and len(x) < 40) and not _CRM_BYE.match(x)]
+    return " ".join(lines[:2])[:300]
+
+
+async def crm_watch_once():
+    _, uid = await _crm_sess()
+    d = _crm_file()
+    seen = d.get("eventi") or {}
+    today = local_now().strftime("%Y-%m-%d")
+    since = (local_now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+    fields = f"ticket_no,ticket_title,ticketstatus,parent_id,data_presa_in_carico,data_chiusura_ticket,{CRM_SOLUTION}"
+    rows = await _crm_get("query", query=f"SELECT {fields} FROM HelpDesk WHERE assigned_user_id='{_crm_q(uid)}' "
+                                         f"AND modifiedtime>='{since}' ORDER BY modifiedtime LIMIT 100;")
+    with db() as c:
+        urow = c.execute("SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").fetchone()
+    if not urow:
+        return
+    user = dict(urow)
+    wp = work_projects(user)
+    main = next((p for p in wp if p["main"]), wp[0] if wp else None)
+    for t in rows:
+        got = seen.setdefault(t["id"], [])
+        client = await _crm_name(t.get("parent_id"))
+        what = f"{t.get('ticket_no')} ({client or '?'}) «{_html.unescape(t.get('ticket_title', ''))}»"
+        if t.get("data_presa_in_carico") == today and f"preso:{today}" not in got:
+            got.append(f"preso:{today}")
+            await diary_add(user, f"Preso in carico {t.get('ticket_no')}", f"Preso in carico il ticket {what} (dal CRM).",
+                            project=main["id"] if main else "")
+        if t.get("ticketstatus") == "Closed" and t.get("data_chiusura_ticket") == today and f"chiuso:{today}" not in got:
+            got.append(f"chiuso:{today}")
+            sol = crm_two_lines(t.get(CRM_SOLUTION))
+            await diary_add(user, f"Chiuso {t.get('ticket_no')}", f"Chiuso il ticket {what}" + (f": {sol}" if sol else "") + " (dal CRM).",
+                            project=main["id"] if main else "")
+    d = _crm_file()
+    d["eventi"] = dict(list(seen.items())[-400:])
+    _crm_save(d)
+
+
+async def crm_watch_loop():
+    await asyncio.sleep(60)
+    while True:
+        now = local_now()
+        if crm_on() and now.weekday() < 6 and 7 <= now.hour < 21:
+            try:
+                await crm_watch_once()
+            except Exception as e:   # il CRM giù non deve fermare niente
+                print(f"CRM: sorveglianza ticket non riuscita: {e}", flush=True)
+        await asyncio.sleep(300)
+
+
+async def crm_stale(day: str) -> list[dict]:
+    """Ticket ancora aperti dell'utente, presi in carico prima di quel giorno e senza niente fatto quel giorno nel CRM:
+    il consuntivo gli chiede se ci ha lavorato."""
+    _, uid = await _crm_sess()
+    rows = await _crm_get("query", query=f"SELECT {_CRM_LIST_F},data_presa_in_carico FROM HelpDesk WHERE assigned_user_id='{_crm_q(uid)}' "
+                                         + " AND ".join([""] + [f"ticketstatus!='{s}'" for s in CRM_DONE]) + " LIMIT 50;")
+    out = []
+    for t in rows:
+        if (t.get("data_presa_in_carico") or "9999") < day and not str(t.get("modifiedtime", "")).startswith(day):
+            r = await _crm_row(t, uid)
+            r["taken"] = t.get("data_presa_in_carico", "")
+            out.append(r)
+    return out

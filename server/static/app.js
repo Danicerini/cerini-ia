@@ -188,6 +188,7 @@ async function showApp() {
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
   $('#clientiBtn').classList.toggle('hidden', !isAdmin());
+  $('#ticketsBtn').classList.toggle('hidden', !S.me?.crm);
   refreshAuraBadge();
   if (new URLSearchParams(location.search).get('aura')) { history.replaceState(null, '', '/'); openAura(); }
   if (!isMobile() && pref.get('brainPanel', true)) toggleBrain(true);
@@ -1834,6 +1835,72 @@ async function runTriage() {
   paintMailSide();
 }
 
+// ================================================================== ticket (pagina intera, solo lettura)
+// Le cartelle come nel CRM (Lista personale / Lista condivisa), l'elenco della cartella e il ticket aperto con le domande ad Aura.
+const TKP = { fid: null, q: '', sel: null, folders: null };
+function closeTickets() { $('#main').classList.remove('tickets-open'); }
+async function openTickets() {
+  closeSide(); togglePicker(false); closeViews();
+  $('#main').classList.add('tickets-open');
+  await renderTickets(true);
+}
+$('#ticketsBtn').onclick = openTickets;
+async function renderTickets(reloadFolders) {
+  const root = $('#ticketsView');
+  if (reloadFolders || !TKP.folders) {
+    if (!TKP.folders) root.replaceChildren(h('div', { class: 'cl-wrap' }, h('div', { class: 'cl-empty', text: 'Carico le cartelle del CRM…' })));
+    try { TKP.folders = (await (await api('/api/crm/folders')).json()).folders; }
+    catch (e) { root.replaceChildren(h('div', { class: 'cl-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return; }
+  }
+  const fl = TKP.folders;
+  if (TKP.fid === null) TKP.fid = (fl.find((f) => /miei aperti/i.test(f.nome)) || fl[0]).id;
+  const cur = fl.find((f) => f.id === TKP.fid) || fl[0];
+  const fbtn = (f) => h('button', { class: 'tkp-f' + (f.id === TKP.fid ? ' on' : ''), onclick: () => { TKP.fid = f.id; TKP.sel = null; TKP.q = ''; renderTickets(); } },
+    h('span', { class: 'tkp-fn', text: f.nome }), f.count != null ? h('span', { class: 'tkp-fc tnum', text: String(f.count) }) : null);
+  const group = (lista, label) => { const items = fl.filter((f) => (f.lista || 'personale') === lista); return items.length ? [h('div', { class: 'tkp-fh', text: label }), ...items.map(fbtn)] : []; };
+  const pick = h('select', { class: 'tkp-pick', 'aria-label': 'Cartella', onchange: (e) => { TKP.fid = Number(e.target.value); TKP.sel = null; renderTickets(); } },
+    ...fl.map((f) => h('option', { value: f.id, selected: f.id === TKP.fid ? true : null, text: `${f.nome}${f.count != null ? ` (${f.count})` : ''}` })));
+  const aside = h('aside', { class: 'tkp-side' }, ...group('personale', 'LISTA PERSONALE'), ...group('condivisa', 'LISTA CONDIVISA'),
+    h('button', { class: 'tkp-ref', html: icon('retry', 'sm') + 'Aggiorna', onclick: () => renderTickets(true) }));
+  const main = h('div', { class: 'tkp-main' });
+  root.replaceChildren(h('div', { class: 'tkp-wrap' }, aside, h('div', { class: 'tkp-col' }, h('div', { class: 'tkp-pickbox' }, pick), main)));
+  if (TKP.sel) return tkpDetail(main, TKP.sel);
+  const search = h('input', { class: 'tk-search', type: 'search', value: TKP.q, placeholder: 'Cerca nel titolo…', 'aria-label': 'Cerca nella cartella',
+    onkeydown: (e) => { if (e.key === 'Enter') { TKP.q = e.target.value.trim(); renderTickets(); } },
+    onsearch: (e) => { if (!e.target.value && TKP.q) { TKP.q = ''; renderTickets(); } } });
+  const list = h('div', { class: 'tkp-list' }, h('div', { class: 'cl-empty', text: 'Carico i ticket…' }));
+  main.replaceChildren(h('div', { class: 'tkp-head' }, h('div', { class: 'tx' }, h('h1', { text: cur.nome }),
+    h('p', { text: 'Dal CRM, in sola lettura. Apri un ticket per leggerlo tutto o per chiedere ad Aura.' })), search), list);
+  let rows;
+  try { rows = (await (await api(`/api/crm/folder/${cur.id}?` + new URLSearchParams({ q: TKP.q }))).json()).rows; }
+  catch (e) { list.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); return; }
+  if (!rows.length) { list.replaceChildren(h('div', { class: 'cl-empty', text: TKP.q ? 'Nessun ticket con queste parole.' : 'Cartella vuota.' })); return; }
+  list.replaceChildren(...rows.map((r) => h('button', { class: 'tkp-row', onclick: () => { TKP.sel = r.no; renderTickets(); } },
+    h('i', { class: 'tk-dot t-' + tkTone(r.status) }),
+    h('span', { class: 'tkp-no tnum', text: tkNum(r.no) }),
+    h('span', { class: 'tkp-t' }, h('b', { text: r.title }), h('small', { text: [r.client, r.owner && r.owner !== 'te' ? r.owner : ''].filter(Boolean).join(' · ') })),
+    h('span', { class: 'tk-tag t-' + tkTone(r.status), text: r.status_it }),
+    h('small', { class: 'tkp-when tnum', text: tkDay(r.closed || r.modified) }))));
+}
+async function tkpDetail(main, no) {
+  main.replaceChildren(h('div', { class: 'cl-empty', text: 'Apro il ticket…' }));
+  let t;
+  try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(no))).json(); }
+  catch (e) { main.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); return; }
+  const ask = (text) => { closeTickets(); input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit(); };
+  const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => ask(text) });
+  main.replaceChildren(
+    h('div', { class: 'tkp-head' }, h('button', { class: 'btn sm', html: '‹ Indietro', onclick: () => { TKP.sel = null; renderTickets(); } }),
+      h('div', { class: 'tx' }, h('h1', { text: t.title })),
+      t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null),
+    h('div', { class: 'tk-asks' }, h('span', { html: icon('bulb', 'sm') + 'Chiedi ad Aura' }),
+      q('Riassumilo', `Riassumimi il ticket ${t.no}: cosa chiede il cliente, cosa è stato fatto, a che punto è.`),
+      q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
+      q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
+      h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeTickets(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
+    tkDetail(t, true));
+}
+
 // ================================================================== clienti (siti vetrina)
 // Le attivita' della zona (scelta nelle impostazioni) senza sito o con un sito da rifare: numero, mail, motivo e una mail pronta da mandare.
 const CL = { tab: 'nuovo', q: '', town: '', shown: 60 };
@@ -2408,6 +2475,12 @@ function consView(v) {
     h('div', { class: 'cs-total' }, h('span', { text: 'Totale' }), h('b', { text: `${hm(v.total)} su ${hm(v.target || 480)}` })),
     h('div', { class: 'cs-bar' + (v.total > (v.target || 480) ? ' over' : v.total === (v.target || 480) ? ' full' : '') }, h('i', { style: `width:${pct}%` })),
     v.note ? h('div', { class: 'cs-note', text: v.note }) : null,
+    (v.ask || []).length ? h('div', { class: 'cs-ask' }, h('b', { text: 'Ci hai lavorato? Ticket tuoi ancora aperti, senza niente fatto quel giorno nel CRM' }),
+      ...v.ask.map((a) => { const row = h('div', { class: 'cs-ask-row' },
+        h('span', { class: 'tx', text: `${tkNum(a.no)} · ${a.title}${a.client ? ' · ' + a.client : ''}` }),
+        h('button', { text: 'Sì', title: 'Scrivi cosa hai fatto: lo aggiunge al consuntivo', onclick: () => { input.value = `Il ${day} sul ticket ${a.no} ho fatto: `; autosize(); renderComposer(); input.focus(); } }),
+        h('button', { text: 'No', onclick: () => row.remove() }));
+        return row; })) : null,
     (v.excluded || []).length ? h('details', { class: 'cs-ex' }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): non sono lavoro` }),
       h('ul', {}, ...v.excluded.map((x) => h('li', { text: x })))) : null);
 }
@@ -2745,7 +2818,7 @@ async function renderBrainPanel() {
 }
 
 // ---- Ticket del CRM di lavoro (solo lettura): pannello a destra, pagina del ticket, elenchi in chat
-const TK = { stato: 'aperti', q: '', all: false, closed: {} };
+const TK = { fid: null, q: '', all: false, closed: {}, folders: null };
 const tkNum = (no) => (no || '').replace(/^TK-\d{4}-0*/, '#');
 const tkDay = (s) => s ? `${s.slice(8, 10)}/${s.slice(5, 7)}${s.slice(0, 4) !== String(new Date().getFullYear()) ? '/' + s.slice(2, 4) : ''}` : '';
 const tkTone = (st) => ({ Closed: 'ok', Annullato: 'gray', Open: 'blue', 'In Progress': 'amber', 'Attività programmata': 'violet' }[st] || 'violet');
@@ -2769,22 +2842,28 @@ async function renderTicketPanel(root) {
     placeholder: TK.all ? 'Problema da cercare in tutto il CRM…' : 'Cerca nel titolo dei miei ticket…',
     onkeydown: (e) => { if (e.key === 'Enter') { TK.q = e.target.value.trim(); renderTicketPanel(root); } },
     onsearch: (e) => { if (!e.target.value && TK.q) { TK.q = ''; renderTicketPanel(root); } } });
-  const chip = (k, label) => h('button', { class: 'bp-tab' + (!TK.all && TK.stato === k ? ' on' : ''), text: label,
-    onclick: () => { TK.stato = k; TK.all = false; renderTicketPanel(root); } });
+  if (!TK.folders) { try { TK.folders = (await (await api('/api/crm/folders?counts=0')).json()).folders; } catch { TK.folders = []; } }
+  if (TK.fid === null && TK.folders.length) TK.fid = (TK.folders.find((f) => /miei aperti/i.test(f.nome)) || TK.folders[0]).id;
+  const folderSel = h('select', { class: 'bp-tab bp-other tk-fsel' + (!TK.all ? ' on' : ''), 'aria-label': 'Cartella del CRM',
+    onchange: (e) => { TK.fid = Number(e.target.value); TK.all = false; renderTicketPanel(root); } },
+    ...TK.folders.map((f) => h('option', { value: f.id, selected: f.id === TK.fid ? true : null, text: f.nome })));
   const allChip = h('button', { class: 'bp-tab' + (TK.all ? ' on' : ''), html: icon('globe', 'sm') + 'Tutto il CRM', title: 'Come è stato risolto un problema: cerca nei ticket chiusi di tutti',
     onclick: () => { TK.all = true; renderTicketPanel(root); } });
   const body = h('div', { class: 'bp-scroll tk-scroll' }, h('div', { class: 'bp-empty', text: TK.all ? 'Cerco nel CRM…' : 'Carico i ticket…' }));
-  root.replaceChildren(sideHead(), h('div', { class: 'tk-tools' }, search, h('div', { class: 'bp-tabs' }, chip('aperti', 'Aperti'), chip('chiusi', 'Chiusi'), chip('tutti', 'Tutti'), allChip)), body);
+  root.replaceChildren(sideHead(), h('div', { class: 'tk-tools' }, search, h('div', { class: 'bp-tabs' }, folderSel, allChip)), body);
   if (TK.all && !TK.q) {
     body.replaceChildren(h('div', { class: 'tk-hint' }, h('b', { text: 'Com\'era stato risolto?' }),
       h('span', { text: 'Scrivi il problema (es. «outlook non sincronizza», «stampante offline») e premi Invio: cerco nei ticket chiusi di tutti, anche dei colleghi.' })));
     return;
   }
   let d;
-  try { d = await (await api('/api/crm/tickets?' + new URLSearchParams({ stato: TK.stato, q: TK.q, miei: TK.all ? '0' : '1' }))).json(); }
+  try {
+    d = TK.all ? await (await api('/api/crm/tickets?' + new URLSearchParams({ q: TK.q, miei: '0' }))).json()
+      : await (await api(`/api/crm/folder/${TK.fid}?` + new URLSearchParams({ q: TK.q }))).json();
+  }
   catch (e) { body.replaceChildren(h('div', { class: 'bp-err', text: e.message })); return; }
   const rows = d.rows || [];
-  if (!rows.length) { body.replaceChildren(h('div', { class: 'bp-empty', text: TK.q ? 'Nessun ticket trovato.' : TK.stato === 'aperti' ? 'Nessun ticket aperto: tutto chiuso 🎉' : 'Nessun ticket.' })); return; }
+  if (!rows.length) { body.replaceChildren(h('div', { class: 'bp-empty', text: TK.q ? 'Nessun ticket trovato.' : 'Cartella vuota.' })); return; }
   if (d.search) {   // ricerca in tutto il CRM: niente cartelle, in ordine di somiglianza, con un pezzo della soluzione
     body.replaceChildren(h('div', { class: 'bp-h' }, h('span', { text: `${rows.length} TICKET CHIUSI SIMILI` })),
       ...rows.map((r) => h('div', { class: 'tk-found' }, tkItem(r, true), r.solution ? h('p', { class: 'tk-sol', text: r.solution }) : null)));
@@ -3714,7 +3793,7 @@ const hueOf = (name) => [...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 
 const avatar = (name, cls = '') => h('span', { class: 'avatar c ' + cls, style: `--h:${hueOf(name)}`, text: (name[0] || '?') });
 
 function closeSettings() { $('#main').classList.remove('settings-open'); }
-function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeClienti === 'function') closeClienti(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
+function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeClienti === 'function') closeClienti(); if (typeof closeTickets === 'function') closeTickets(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
 async function openSettings(tab) {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('settings-open');
