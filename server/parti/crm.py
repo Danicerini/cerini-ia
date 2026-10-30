@@ -197,7 +197,7 @@ async def _crm_name(rid: str) -> str:
         try:
             r = await _crm_get("retrieve", id=rid)
             _CRM_NAMES[rid] = (r.get("accountname") or " ".join(x for x in (r.get("firstname") or r.get("first_name"),
-                               r.get("lastname") or r.get("last_name")) if x) or r.get("label") or "").strip()
+                               r.get("lastname") or r.get("last_name")) if x) or r.get("groupname") or r.get("label") or "").strip()
         except ValueError:
             _CRM_NAMES[rid] = ""
     return _CRM_NAMES[rid]
