@@ -35,6 +35,9 @@ rm -f "$PKG"
     mkdir -p data/whatsapp && chown ollamaweb:ollamaweb data/whatsapp && chmod 700 data/whatsapp
     install -m 644 aura-whatsapp.service /etc/systemd/system/aura-whatsapp.service && systemctl daemon-reload
     systemctl enable --quiet aura-whatsapp; systemctl restart aura-whatsapp
+    # le CLI per usare gli account Claude e ChatGPT come modello
+    command -v claude >/dev/null || npm install -g --no-audit --no-fund --silent @anthropic-ai/claude-code
+    command -v codex >/dev/null || npm install -g --no-audit --no-fund --silent @openai/codex
   fi
   systemctl restart ollama-web; sleep 4; systemctl is-active ollama-web
   curl -s -o /dev/null -w \"pagina: %{http_code}\n\" http://127.0.0.1:8080/'"

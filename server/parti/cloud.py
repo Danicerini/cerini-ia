@@ -22,6 +22,13 @@ CLOUD_PRESETS = {
     "openrouter": {"name": "OpenRouter", "base": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat"},
     "anthropic": {"name": "Anthropic (Claude)", "base": "https://api.anthropic.com/v1", "model": "claude-haiku-5-5"},
     "custom": {"name": "Altro (compatibile OpenAI)", "base": "", "model": ""},
+    # con l'abbonamento invece delle API a consumo (parte «account»): niente chiave, si collega l'account
+    "claude-code": {"name": "Account Claude (Claude Code)", "base": "", "model": "sonnet", "account": True,
+                    "note": "Usa il tuo abbonamento Claude, solo per te. I messaggi vanno ad Anthropic, fuori dall'Italia.",
+                    "models": [["sonnet", "consigliato"], ["opus", "il più forte"], ["fable", ""], ["haiku", "consuma meno"]]},
+    "codex": {"name": "Account ChatGPT (Codex)", "base": "", "model": "gpt-5.5", "account": True,
+              "note": "Usa il tuo abbonamento ChatGPT, solo per te. I messaggi vanno a OpenAI, fuori dall'Italia.",
+              "models": [["gpt-5.5", ""], ["gpt-5.6-terra", ""], ["gpt-6-luna", ""], ["gpt-6.1-terra", ""], ["gpt-6.1-sol", ""]]},
 }
 CLOUD_CTX = int(os.environ.get("CLOUD_CTX", "64000"))
 CLOUD_MAX_TOKENS = int(os.environ.get("CLOUD_MAX_TOKENS", "8192"))   # lunghezza massima di una risposta
@@ -36,6 +43,8 @@ def cloud_cfg() -> dict:
 
 def cloud_ready() -> bool:
     c = cloud_cfg()
+    if is_account(c.get("provider", "")):
+        return bool(c.get("enabled") and c.get("model") and account_ready(c["provider"]))
     return bool(c.get("enabled") and c.get("api_key") and c.get("base") and c.get("model"))
 
 
@@ -206,7 +215,7 @@ async def llm_stream(payload: dict):
             yield {"error": "Il modello nel cloud non è configurato: inserisci la chiave in Impostazioni → Collegamenti"}
             return
         first = True
-        async for d in cloud_stream(payload):
+        async for d in (account_stream(payload) if is_account() else cloud_stream(payload)):
             if first and d.get("error") and await _pc_on():
                 why = cloud_error_text(d["error"])
                 local = {**payload, "model": await _chat_model(), "options": {**(payload.get("options") or {}), "num_ctx": NUM_CTX or 8192}}
@@ -235,6 +244,8 @@ async def llm_stream(payload: dict):
 def cloud_error_text(err: str) -> str:
     """L'errore del fornitore detto in parole semplici."""
     e = str(err or "")
+    if e.startswith("Account"):
+        return e[:200]
     if "daily_limit" in e or "Daily token limit" in e:
         return "Il cloud ha finito i token di oggi (si sblocca a mezzanotte)"
     if "key_model_access_denied" in e or "not allowed to access model" in e:
@@ -256,6 +267,8 @@ async def llm_once(messages: list[dict], json_mode: bool = False, temperature: f
     if use_cloud:
         if not cloud_ready():
             raise HTTPException(503, "Il modello nel cloud non è configurato")
+        if is_account():
+            return await account_once(payload, timeout)
         base, body = cloud_cfg()["base"], _cloud_body(payload, False)
         url = base.rstrip("/") + "/chat/completions"
         # senza ragionamento, come Gemma qui sotto: certi modelli altrimenti spendono tutti i token a ragionare e non rispondono niente
@@ -438,6 +451,14 @@ async def cloud_put(body: CloudIn, _: dict = Depends(require_admin)):
 @app.post("/api/cloud/test")
 async def cloud_test(_: dict = Depends(require_admin)):
     c = cloud_cfg()
+    if is_account(c.get("provider", "")):
+        if not cloud_ready():
+            raise HTTPException(400, "Prima collega l'account, attivalo e salva")
+        try:
+            reply = await llm_once([{"role": "user", "content": "Rispondi solo: ok"}], model=cloud_name(), timeout=90)
+        except HTTPException as e:
+            raise HTTPException(400, str(e.detail))
+        return {"ok": True, "models": [], "reply": reply[:80]}
     if not (c.get("api_key") and c.get("base")):
         raise HTTPException(400, "Prima inserisci la chiave e salva")
     models = []

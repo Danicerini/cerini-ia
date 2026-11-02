@@ -3162,20 +3162,54 @@ function cloudCard() {
     const base = h('input', { class: 'ag-in', value: c.base || '', placeholder: 'https://…/v1', 'aria-label': 'Indirizzo API' });
     const model = h('input', { class: 'ag-in', value: c.model || '', placeholder: 'nome del modello', list: 'cloudModels', 'aria-label': 'Modello' });
     const models = h('datalist', { id: 'cloudModels' });
+    const acct = h('div', { class: 'stack' });
+    let acctPoll = 0;
+    // Account Claude o ChatGPT: si fa l'accesso nel browser, sul server resta solo il suo token
+    const showAccount = async () => {
+      clearTimeout(acctPoll);
+      const p = prov.value;
+      if (!c.presets[p]?.account) { acct.replaceChildren(); return; }
+      let a;
+      try { a = await (await api(`/api/account/${p}`)).json(); } catch (e) { acct.replaceChildren(h('div', { class: 'form-msg err', text: e.message })); return; }
+      if (prov.value !== p) return;
+      const act = async (fn) => { try { await fn(); } catch (e) { toast(e.message); } showAccount(); };
+      const lg = a.login || {}, running = lg.state === 'running', inp = (ph) => h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', placeholder: ph });
+      const code = inp('Incolla qui il codice che ti mostra Claude'), secret = inp(p === 'codex' ? 'Contenuto di auth.json' : 'Token sk-ant-…');
+      const kids = [h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: a.linked ? 'Account collegato' : 'Account non collegato' }),
+        h('small', { text: !a.cli ? 'Il programma non è installato sul server.' : a.linked ? 'Aura usa il tuo abbonamento per questo modello.' : 'Fai l\'accesso con il tuo account: non serve nessuna chiave.' })),
+        running ? null : a.linked ? h('button', { class: 'btn', text: 'Scollega', onclick: () => act(() => api(`/api/account/${p}`, undefined, { method: 'DELETE' })) })
+          : h('button', { class: 'btn primary', text: 'Collega', disabled: !a.cli, onclick: (e) => { e.currentTarget.disabled = true; act(() => api(`/api/account/${p}/login`, {})); } }))];
+      if (running) {
+        kids.push(lg.url ? h('a', { class: 'btn', href: lg.url, target: '_blank', rel: 'noopener', text: '1. Apri la pagina di accesso' }) : h('small', { class: 'cloud-note', text: 'Preparo l\'accesso…' }));
+        if (lg.code) kids.push(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: lg.code }), h('small', { text: '2. Scrivi questo codice nella pagina. Il collegamento si completa da solo.' })),
+          h('button', { class: 'btn', text: 'Copia', onclick: (e) => copyText(lg.code, e.currentTarget) })));
+        if (p === 'claude-code' && lg.url) kids.push(h('label', { class: 'ag-f' }, h('span', { text: '2. Dopo l\'accesso, incolla il codice' }), code),
+          h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Completa', onclick: (e) => { e.currentTarget.disabled = true; act(() => api(`/api/account/${p}/code`, { code: code.value })); } })));
+        // con Claude l'utente sta incollando il codice: il modulo non si ridisegna sotto le sue mani
+        if (p === 'codex' || !lg.url) acctPoll = setTimeout(showAccount, 3000);
+      }
+      if (lg.state === 'error') kids.push(h('div', { class: 'form-msg err', text: lg.msg }));
+      if (!a.linked && !running) kids.push(h('details', { class: 'cloud-adv' }, h('summary', { text: p === 'codex' ? 'Ho già il file auth.json' : 'Ho già un token di «claude setup-token»' }), secret,
+        h('div', { class: 'form-actions' }, h('button', { class: 'btn', text: 'Salva', onclick: () => act(() => api(`/api/account/${p}/secret`, { code: secret.value }, { method: 'PUT' })) }))));
+      acct.replaceChildren(...kids.filter(Boolean));
+    };
     const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', placeholder: c.has_key ? `Chiave salvata (${c.key_hint}): lascia vuoto per tenerla` : 'Incolla qui la chiave API', 'aria-label': 'Chiave API' });
     const sw = (on, label) => { const b = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label,
       onclick: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')) }, h('span')); return b; };
     const en = sw(c.enabled, 'Attivo'), bg = sw(c.background, 'Lavori in sottofondo');
     // i modelli consigliati del fornitore: un clic e il campo si riempie
     const note = h('small', { class: 'cloud-note' }), picks = h('div', { class: 'cloud-picks' });
+    const keyF = h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key), adv = h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base);
     const showPicks = () => {
       const p = c.presets[prov.value] || {};
       note.textContent = p.note || '';
+      keyF.style.display = adv.style.display = p.account ? 'none' : '';
       picks.replaceChildren(...(p.models || []).map(([m, why]) => h('button', { type: 'button', class: 'cloud-pick' + (model.value === m ? ' on' : ''),
         onclick: () => { model.value = m; showPicks(); } }, h('b', { text: m }), why ? h('span', { text: why }) : '')));
     };
     const fill = () => { const p = c.presets[prov.value]; if (prov.value !== 'custom') { base.value = p.base; if (!model.value || Object.values(c.presets).some((x) => x.model === model.value || (x.models || []).some(([m]) => m === model.value))) model.value = p.model; } showPicks(); };
-    prov.onchange = fill;
+    // l'abbonamento non si consuma coi lavori di sottofondo, se non lo chiedi
+    prov.onchange = () => { fill(); if (c.presets[prov.value]?.account) bg.setAttribute('aria-checked', 'false'); showAccount(); };
     model.oninput = showPicks;
     showPicks();
     if (!c.model) fill();
@@ -3199,14 +3233,14 @@ function cloudCard() {
       } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; }
       testBtn.disabled = false; } });
     card.lastChild.replaceWith(h('div', { class: 'stack cloud-form' },
-      h('label', { class: 'ag-f' }, h('span', { text: 'Fornitore' }), prov, note),
-      h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Fornitore' }), prov, note), acct, keyF,
       h('label', { class: 'ag-f' }, h('span', { text: 'Modello' }), model, models), picks,
-      h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base),
+      adv,
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Attivo' }), h('small', { text: 'Compare nel menu dei modelli.' })), en),
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Lavora anche in sottofondo' }),
         h('small', { text: 'A PC spento smista la posta, scrive il diario e i messaggi di Aura (consuma un po\' di credito).' })), bg),
       h('div', { class: 'form-actions' }, saveBtn, testBtn), out));
+    showAccount();
   })();
   return card;
 }
