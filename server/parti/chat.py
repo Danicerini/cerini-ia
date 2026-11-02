@@ -1143,8 +1143,8 @@ async def _pc_alive() -> str | None:
 def init_power_db():
     with db() as c:
         c.execute("CREATE TABLE IF NOT EXISTS power_log (id INTEGER PRIMARY KEY, user_id INTEGER, at INTEGER NOT NULL, result TEXT NOT NULL)")
-        # accensione automatica: ogni giorno (o solo lun-ven) all'ora scelta, se il PC e' spento
-        c.execute("CREATE TABLE IF NOT EXISTS power_schedule (user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, "
+        # accensione automatica: spenta finche' l'utente non la attiva dalle impostazioni
+        c.execute("CREATE TABLE IF NOT EXISTS power_schedule (user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, "
                   "at TEXT NOT NULL DEFAULT '08:30', days TEXT NOT NULL DEFAULT '1234567', last_day TEXT NOT NULL DEFAULT '')")
 
 
@@ -1205,7 +1205,7 @@ POWER_WINDOW = 3600   # se il CT riparte dopo l'ora scelta, l'accensione automat
 
 def _power_sched(uid: int) -> dict:
     with db() as c:
-        c.execute("INSERT OR IGNORE INTO power_schedule (user_id) VALUES (?)", (uid,))
+        c.execute("INSERT OR IGNORE INTO power_schedule (user_id, enabled) VALUES (?, 0)", (uid,))
         return dict(c.execute("SELECT * FROM power_schedule WHERE user_id = ?", (uid,)).fetchone())
 
 

@@ -1569,7 +1569,7 @@ async def consuntivo(user: dict, day: str) -> dict:
     for t in crm_rows:   # un ticket del CRM che il modello ha perso: torna come voce da controllare
         num = re.sub(r"^\D*\d{4}-0*", "", t["ticket"])   # «TK-2026-005695» -> «5695»: il modello a volte lo scrive accorciato
         if t["ticket"] and not any(t["ticket"] in r["what"] or re.search(rf"(?<!\d)0*{re.escape(num)}(?!\d)", r["what"]) for r in rows):
-            f, _ = _fasc_fix({"cliente": t["cliente"]}, None, fl, amap)
+            f, _ = _fasc_fix({"cliente": t["cliente"] or main["name"]}, None, fl, amap)
             rows.append({"what": f"{t['ticket']} - {t['titolo']}"[:160], "client": t["cliente"][:60] or main["name"],
                          "min": _half_hours(t["ore"] * 60 if t["ore"] else 30), "project": f["progetto"] if f else "",
                          "contract": f["contratto"] if f else "", "doubt": True})

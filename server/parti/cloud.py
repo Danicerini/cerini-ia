@@ -132,6 +132,7 @@ async def cloud_transcribe(data: bytes, ctype: str, lang: str) -> dict:
 
 
 _NO_STREAM_USAGE: set = set()   # fornitori che rifiutano stream_options
+_NO_THINK_OPT: set = set()      # fornitori che rifiutano chat_template_kwargs
 
 
 async def cloud_stream(payload: dict):
@@ -255,8 +256,14 @@ async def llm_once(messages: list[dict], json_mode: bool = False, temperature: f
     if use_cloud:
         if not cloud_ready():
             raise HTTPException(503, "Il modello nel cloud non è configurato")
-        r = await client.post(cloud_cfg()["base"].rstrip("/") + "/chat/completions", json=_cloud_body(payload, False), headers=_cloud_headers(),
-                              timeout=httpx.Timeout(timeout, connect=10.0))
+        base, body = cloud_cfg()["base"], _cloud_body(payload, False)
+        url = base.rstrip("/") + "/chat/completions"
+        # senza ragionamento, come Gemma qui sotto: certi modelli altrimenti spendono tutti i token a ragionare e non rispondono niente
+        think_off = {"chat_template_kwargs": {"enable_thinking": False}} if base not in _NO_THINK_OPT else {}
+        r = await client.post(url, json={**body, **think_off}, headers=_cloud_headers(), timeout=httpx.Timeout(timeout, connect=10.0))
+        if think_off and r.status_code in (400, 422):
+            _NO_THINK_OPT.add(base)
+            r = await client.post(url, json=body, headers=_cloud_headers(), timeout=httpx.Timeout(timeout, connect=10.0))
         if r.status_code != 200:
             raise HTTPException(502, f"Modello nel cloud: errore {r.status_code} {r.text[:200]}")
         u = r.json().get("usage") or {}

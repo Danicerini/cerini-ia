@@ -615,7 +615,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'tickets', 'ticket'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
