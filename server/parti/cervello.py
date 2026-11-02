@@ -1519,12 +1519,14 @@ def _fasc_match(title: str, fl: list[dict]) -> dict | None:
 
 async def consuntivo(user: dict, day: str) -> dict:
     wp = work_projects(user)
-    if not wp:
-        raise ValueError("nessun progetto è segnato come lavoro (lavoro: true nella scheda del progetto)")
-    main = next((p for p in wp if p["main"]), wp[0])
+    # chi non ha segnato nessun progetto come lavoro (un cervello nuovo) non resta senza consuntivo: tra lavoro e resto sceglie il modello
+    main = next((p for p in wp if p["main"]), wp[0]) if wp else {"name": "Lavoro", "summary": "", "main": True}
     text = brain_read(user, day_path(day))
     secs = [(t, b) for t, b in day_sections(text) if t not in ("Aura",)] if text else []
     other = {p["name"].lower() for p in projects(user)} - {p["name"].lower() for p in wp}
+    if not wp:
+        other = {p["name"].lower() for p in projects(user)
+                 if str(fm_split(brain_read(user, p["path"]))[0].get("lavoro") or "").lower() in ("false", "no", "0")}
     secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
     diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
     chats = _day_chats_text(user, day) or "(nessuna)"
