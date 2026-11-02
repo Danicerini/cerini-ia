@@ -42,7 +42,7 @@ def _eleven_h() -> dict:
 
 def eleven_usable() -> bool:
     """ElevenLabs si usa se c'è la chiave e i crediti non risultano finiti (dopo il rinnovo si riprova da solo)."""
-    if not ELEVEN_KEY:
+    if not ELEVEN_KEY or not is_owner():
         return False
     d = _voce_file()
     return not (d.get("exhausted") and time.time() < (d.get("credits") or {}).get("reset", 0))

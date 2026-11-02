@@ -827,6 +827,11 @@ a.btn { text-decoration: none; color: inherit; }
 .feed-trash .tx b { display: block; font-size: 13.5px; font-weight: 500; }
 .feed-trash .tx small { display: block; font-size: 12.5px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .feed-trash small.ok { color: var(--ok); }
+.provider-gate { position: fixed; inset: 0; z-index: 1000; overflow: auto; background: var(--bg); display: flex; justify-content: center; padding: 32px 16px; }
+.provider-box { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 14px; align-items: flex-start; }
+.provider-box > .card { width: 100%; }
+.provider-box h1 { font-size: 26px; margin: 0; color: var(--text); }
+.provider-box > p { margin: 0; color: var(--text-2); }
 .feed-set-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 0; border-top: 1px solid var(--border); }
 .feed-set-row .tx { flex: 1; min-width: 220px; }
 .feed-set-row .tx b { display: block; font-size: 14.5px; font-weight: 600; }

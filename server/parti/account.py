@@ -410,13 +410,13 @@ def _acct_public(p: str) -> dict:
 
 
 @app.get("/api/account/{p}")
-async def account_get(p: str, _: dict = Depends(require_admin)):
+async def account_get(p: str, _: dict = Depends(require_owner)):
     _acct_check(p)
     return _acct_public(p)
 
 
 @app.post("/api/account/{p}/login")
-async def account_login(p: str, _: dict = Depends(require_admin)):
+async def account_login(p: str, _: dict = Depends(require_owner)):
     _acct_check(p)
     if not _acct_bin(p):
         raise HTTPException(400, f"Il programma {ACCOUNT_BIN[p]} non è installato sul server")
@@ -435,7 +435,7 @@ class AccountCode(BaseModel):
 
 
 @app.post("/api/account/{p}/code")
-async def account_code(p: str, body: AccountCode, _: dict = Depends(require_admin)):
+async def account_code(p: str, body: AccountCode, _: dict = Depends(require_owner)):
     """Il codice che Claude mostra dopo l'accesso, da passare alla CLI che lo sta aspettando."""
     _acct_check(p)
     lg = _ACCT_LOGIN.get(p) or {}
@@ -452,7 +452,7 @@ async def account_code(p: str, body: AccountCode, _: dict = Depends(require_admi
 
 
 @app.put("/api/account/{p}/secret")
-async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_admin)):
+async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_owner)):
     """Riserva: il token di «claude setup-token» o il file auth.json di Codex, presi su un altro PC e incollati qui."""
     _acct_check(p)
     text = body.code.strip()
@@ -470,7 +470,7 @@ async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_ad
 
 
 @app.delete("/api/account/{p}")
-async def account_logout(p: str, _: dict = Depends(require_admin)):
+async def account_logout(p: str, _: dict = Depends(require_owner)):
     _acct_check(p)
     _acct_token_file(p).unlink(missing_ok=True)
     _ACCT_LOGIN.pop(p, None)

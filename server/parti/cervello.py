@@ -149,7 +149,7 @@ type: boot
 # Aura
 
 Sono **Aura**, l'assistente personale di {name}. Sono un ragazzo: parlo di me al maschile.
-Giro sul server di casa (CT 110) e penso con Gemma sul PC di casa, o con un modello nel cloud quando serve.
+Penso con il modello scelto nelle impostazioni: quello che ho in uso me lo dice il sistema.
 
 ## Come parlo
 - Italiano, diretto e amichevole, come un amico competente. Frasi brevi, niente giri di parole.
@@ -184,6 +184,8 @@ Lo legge solo lui (e Aura).
 
 
 def _local_yaml() -> str:
+    if not is_owner():
+        return "# boot/local.yaml — dove gira Aura\nplatform: server\nplugs:\n  agenda: interna\n"
     return ("# boot/local.yaml — dove gira Aura\nplatform: server\nhostname: " + socket.gethostname() + "\n"
             f"llm:\n  locale: Ollama sul PC di casa ({PC_HOST or 'PC'})\n  cloud: {cloud_cfg().get('model') or 'non configurato'}\n"
             "plugs:\n  posta: Gmail\n  homebase: " + (HOMEBASE_HOST or "no") + "\n  accensione_pc: " + ("ESP32" if ESP32_URL else "no") + "\n  agenda: interna\n")
@@ -1462,7 +1464,7 @@ CONS_CRM = ("\nTICKET DEL CRM su cui ha lavorato quel giorno (letti dal CRM azie
 
 def _fasc_file() -> dict:
     try:
-        return json.loads((DATA_DIR / "fascicoli.json").read_text(encoding="utf-8"))
+        return json.loads(user_file("fascicoli.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -1618,7 +1620,7 @@ async def _tool_cons_rule(user: dict, args: dict, request: Request) -> dict:
     if any(_same_thing(rule, r) for r in rules):
         return {"content": "Questa regola c'era già.", "display": "Regola del consuntivo già presente"}
     d["regole"] = rules + [rule]
-    p = DATA_DIR / "fascicoli.json"
+    p = user_file("fascicoli.json")
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
     tmp.replace(p)
@@ -2418,6 +2420,6 @@ async def _tool_mail_attachments(user: dict, args: dict, request: Request) -> di
             "display": f"Ho salvato {len(saved)} allegati della mail", "files": [{"id": f["id"], "name": f["name"], "size": f["size"]} for f in saved]}
 
 
-TOOLS["mail_allegati"] = {"admin": True, "gmail": True, "confirm": False, "run": _tool_mail_attachments,
+TOOLS["mail_allegati"] = {"admin": False, "gmail": True, "confirm": False, "run": _tool_mail_attachments,
     "spec": _fn("mail_allegati", "Salva gli allegati di una mail (numero n.) come file, per leggerli o controllarli (es. un PDF sospetto).",
                 {"numero": {"type": "integer"}}, ["numero"])}

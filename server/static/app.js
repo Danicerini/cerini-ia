@@ -61,8 +61,8 @@ document.querySelectorAll('[data-icon]').forEach((el) => { el.insertAdjacentHTML
   }).join('');
   const html = `<div class="brand"><span class="brand-mark">${MARK}</span>Cerini IA</div>
     <svg class="rings" viewBox="0 0 400 400">${rings}<circle cx="200" cy="200" r="13"/></svg>
-    <div class="art-copy"><h2>Il tuo assistente.<br>Sul PC di casa.</h2>
-    <p>I modelli girano sul nostro computer, non su servizi esterni: le conversazioni restano qui.</p></div>`;
+    <div class="art-copy"><h2>Il tuo assistente.<br>Con il modello che scegli tu.</h2>
+    <p>Collega il tuo fornitore e la tua posta: Aura ricorda, organizza e lavora con i tuoi strumenti.</p></div>`;
   document.querySelectorAll('.auth-art').forEach((el) => { el.innerHTML = html; });
 })();
 document.querySelectorAll('.pw-toggle').forEach((b) => {
@@ -175,6 +175,14 @@ function showLogin() {
   $('#app').classList.add('hidden'); $('#invite').classList.add('hidden'); $('#login').classList.remove('hidden');
   setTimeout(() => $('#u').focus(), 50);
 }
+function showProviderGate() {
+  document.getElementById('providerGate')?.remove();
+  document.body.append(h('div', { id: 'providerGate', class: 'provider-gate' }, h('div', { class: 'provider-box' },
+    h('h1', { text: 'Scegli il tuo modello' }),
+    h('p', { text: 'Per usare Aura serve un fornitore tuo: scegline uno e incolla la tua chiave API. I consumi li paghi tu direttamente al fornitore. Dopo potrai usare anche i modelli locali.' }),
+    cloudCard({ gate: true }),
+    h('button', { class: 'btn', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }))));
+}
 async function showApp() {
   $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
   $('#invite').classList.add('hidden');
@@ -184,6 +192,8 @@ async function showApp() {
     $('#avatar').classList.add('c'); $('#avatar').style.setProperty('--h', hueOf(S.me.user));
     $('#userRole').textContent = isAdmin() ? 'Amministratore' : 'Utente';
   } catch { return; }
+  // chi non e' il proprietario sceglie prima il suo fornitore: senza non si entra
+  if (S.me.needs_provider) { showProviderGate(); return; }
   S.currentId = null; closeViews(); refreshMemoryCount();
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
@@ -664,7 +674,7 @@ function renderHero() {
   $('#heroTitle').textContent = hr < 6 ? 'Ancora sveglio?' : hr < 13 ? 'Buongiorno. Di cosa hai bisogno?' : hr < 18 ? 'Di cosa hai bisogno?' : 'Buonasera. Di cosa hai bisogno?';
   const am = activeModel();
   $('#heroSub').textContent = !s ? '' : isCloudM(am) && canChat() ? `Sono Aura · ${am.slice(6)}, nel cloud: i messaggi escono da casa.`
-    : !s.online ? 'Il PC è spento: accendilo per iniziare.' : am ? `Sono Aura · ${am}, sul PC di casa.` : '';
+    : !s.online ? (isAdmin() ? 'Il PC è spento: accendilo per iniziare.' : 'Il PC è spento: scegli il tuo modello nel cloud.') : am ? `Sono Aura · ${am}, sul PC di casa.` : '';
   $('#heroToday')?.remove();
 
 }
@@ -3150,9 +3160,9 @@ function whatsappCard() {
 }
 
 // Modello nel cloud (facoltativo): fornitore, chiave, modello. La chiave resta sul server: qui si vede solo se c'e'.
-function cloudCard() {
+function cloudCard({ gate = false } = {}) {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('globe', 'sm') + 'Modello nel cloud' }),
-    h('p', { text: 'Facoltativo: un modello grande a pagamento, per le cose difficili o quando il PC è spento. Lo scegli nel menu dei modelli in alto (☁).' })),
+    h('p', { text: gate ? 'La chiave resta sul server, solo per te.' : isAdmin() ? 'Facoltativo: un modello grande a pagamento, per le cose difficili o quando il PC è spento. Lo scegli nel menu dei modelli in alto (☁).' : 'Il tuo fornitore: la chiave è tua e i consumi li paghi tu. Lo scegli nel menu dei modelli in alto (☁).' })),
     h('div', { class: 'list-empty', text: 'Carico…' }));
   (async () => {
     let c;
@@ -3196,7 +3206,7 @@ function cloudCard() {
     const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', placeholder: c.has_key ? `Chiave salvata (${c.key_hint}): lascia vuoto per tenerla` : 'Incolla qui la chiave API', 'aria-label': 'Chiave API' });
     const sw = (on, label) => { const b = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label,
       onclick: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')) }, h('span')); return b; };
-    const en = sw(c.enabled, 'Attivo'), bg = sw(c.background, 'Lavori in sottofondo');
+    const en = sw(gate || c.enabled, 'Attivo'), bg = sw(c.background, 'Lavori in sottofondo');
     // i modelli consigliati del fornitore: un clic e il campo si riempie
     const note = h('small', { class: 'cloud-note' }), picks = h('div', { class: 'cloud-picks' });
     const keyF = h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key), adv = h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base);
@@ -3222,11 +3232,12 @@ function cloudCard() {
       refresh();
     };
     const saveBtn = h('button', { class: 'btn primary', text: 'Salva', onclick: async () => { try { await save(); out.className = 'form-msg ok'; out.textContent = c.ready ? 'Salvato: lo trovi nel menu dei modelli (☁).' : 'Salvato.'; } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } });
-    const testBtn = h('button', { class: 'btn', text: 'Prova', onclick: async () => {
+    const testBtn = h('button', { class: gate ? 'btn primary' : 'btn', text: gate ? 'Prova e continua' : 'Prova', onclick: async () => {
       testBtn.disabled = true; out.className = 'form-msg'; out.textContent = 'Provo…';
       try {
         await save();
         const r = await (await api('/api/cloud/test', {})).json();
+        if (gate) { location.reload(); return; }
         models.replaceChildren(...r.models.map((m) => h('option', { value: m })));
         out.className = 'form-msg ok';
         out.textContent = `Funziona${r.reply ? ` (ha risposto «${r.reply}»)` : ''}. ${r.models.length ? r.models.length + ' modelli disponibili: scrivi nel campo «modello» per sceglierne un altro.' : ''}`;
@@ -3239,7 +3250,7 @@ function cloudCard() {
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Attivo' }), h('small', { text: 'Compare nel menu dei modelli.' })), en),
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Lavora anche in sottofondo' }),
         h('small', { text: 'A PC spento smista la posta, scrive il diario e i messaggi di Aura (consuma un po\' di credito).' })), bg),
-      h('div', { class: 'form-actions' }, saveBtn, testBtn), out));
+      h('div', { class: 'form-actions' }, gate ? null : saveBtn, testBtn), out));
     showAccount();
   })();
   return card;
@@ -3878,9 +3889,9 @@ function accountTab(body) {
       h('div', { class: 'p-name' }, S.me.user, h('span', { class: 'badge' + (isAdmin() ? ' admin' : ''), text: isAdmin() ? 'amministratore' : 'utente' })),
       h('div', { class: 'p-sub', text: S.me.email || 'Nessuna email collegata' })),
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
-  const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.filter(([k]) => k !== 'links' || isAdmin()).map(([k, t, ic]) =>
+  const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), startModelCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), whatsappCard(), cloudCard()] : lookCard();
+  const content = sec === 'aura' ? [personaCard(), startModelCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null, cloudCard()].filter(Boolean) : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
@@ -3921,6 +3932,30 @@ function lookCard() {
     h('div', { class: 'theme-tiles' }, tile('auto', 'Automatico', 'auto'), tile('light', 'Chiaro', 'sun'), tile('dark', 'Scuro', 'moon')));
 }
 
+// Il CRM dei ticket: ognuno collega il suo (quello del proprietario sta sul server). La chiave non torna mai al browser.
+function crmCard() {
+  const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('ticket', 'sm') + 'CRM dei ticket' }),
+    h('p', { text: 'Aura legge i tuoi ticket, solo in lettura. Funziona con vtiger / OpenCRM.' })), h('div', { class: 'list-empty', text: 'Controllo…' }));
+  const paint = (s) => {
+    S.me.crm = s.linked; $('#ticketsBtn').classList.toggle('hidden', !s.linked);
+    if (s.managed) { card.lastChild.replaceWith(h('small', { class: 'cloud-note', text: s.linked ? `Collegato: ${s.url}` : 'Non configurato sul server.' })); return; }
+    if (s.linked) {
+      card.lastChild.replaceWith(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: `${s.url} · ${s.user}` })),
+        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/crm/link', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })));
+      return;
+    }
+    const url = h('input', { class: 'ag-in', placeholder: 'https://crm.tuaazienda.it', 'aria-label': 'Indirizzo del CRM' }), usr = h('input', { class: 'ag-in', autocomplete: 'off', 'aria-label': 'Utente' });
+    const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', 'aria-label': 'Chiave di accesso', placeholder: 'La chiave di accesso del tuo profilo nel CRM' }), out = h('div', { class: 'form-msg', role: 'status' });
+    card.lastChild.replaceWith(h('div', { class: 'stack cloud-form' },
+      h('label', { class: 'ag-f' }, h('span', { text: 'Indirizzo' }), url), h('label', { class: 'ag-f' }, h('span', { text: 'Utente' }), usr), h('label', { class: 'ag-f' }, h('span', { text: 'Chiave di accesso' }), key),
+      h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Collega', onclick: async () => {
+        out.className = 'form-msg'; out.textContent = 'Provo…';
+        try { paint(await (await api('/api/crm/link', { url: url.value, user: usr.value, key: key.value }, { method: 'PUT' })).json()); }
+        catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } })), out));
+  };
+  api('/api/crm/link').then((r) => r.json()).then(paint).catch((e) => { card.lastChild.textContent = e.message; });
+  return card;
+}
 function gmailCard() {
   const p = h('p', { text: 'Controllo…' }), actions = h('div', { class: 'form-actions' });
   const card = h('section', { class: 'card row-card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('mail', 'sm') + 'Google: posta' }), p), actions);
@@ -4035,7 +4070,7 @@ function usageCards() {
             : c.real ? 'Il credito vero, letto dal fornitore.' : `Stimato: ${fmtMoney(c.total)} caricati dal ${new Date(c.since).toLocaleDateString('it-IT')}, meno ${fmtMoney(c.spent)} spesi da allora.` })),
         c ? h('div', { class: 'u-credit' + (low || c.left < 0 ? ' low' : '') }, h('b', { class: 'tnum', text: fmtMoney(c.left, c.currency) }), h('span', { text: c.left < 0 ? 'credito finito' : 'rimasti' }),
           c.total ? h('div', { class: 'u-meter' }, h('i', { style: `width:${Math.max(0, Math.min(100, (100 * c.left) / c.total))}%` })) : null) : null,
-        isAdmin() ? usageCfgForm(u) : null));
+        usageCfgForm(u)));
     }
     // tutti i modelli
     cards.push(h('section', { class: 'card' },

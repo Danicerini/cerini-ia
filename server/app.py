@@ -5,6 +5,7 @@ Hash password:  python app.py hash-password
 """
 import asyncio
 import base64
+import contextvars
 import hashlib
 import hmac
 import html
@@ -20,6 +21,7 @@ import sys
 import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta
+from http.cookies import CookieError, SimpleCookie
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -216,6 +218,40 @@ def read_token(token: str) -> dict | None:
         return None
 
 
+# Di chi e' il lavoro in corso: lo imposta Security per ogni richiesta, i giri di sottofondo per ogni utente che servono.
+# Vuoto (0) non e' nessuno: niente chiavi, niente CRM. Chiavi e collegamenti del proprietario non passano mai a un altro utente.
+ACT_UID = contextvars.ContextVar("act_uid", default=0)
+_OWNER = {"id": 0}
+
+
+def owner_id() -> int:
+    """Il proprietario: il primo amministratore. Suoi sono il .env e i file in data/."""
+    if not _OWNER["id"]:
+        with db() as c:
+            _OWNER["id"] = c.execute("SELECT MIN(id) FROM users WHERE role = 'admin'").fetchone()[0] or 0
+    return _OWNER["id"]
+
+
+def is_owner(uid: int | None = None) -> bool:
+    uid = ACT_UID.get() if uid is None else uid
+    return bool(uid) and uid == owner_id()
+
+
+def user_file(name: str) -> Path:
+    """Un file di configurazione dell'utente in corso: quelli del proprietario in data/, gli altri in data/users/<id>/."""
+    uid = ACT_UID.get()
+    if is_owner(uid):
+        return DATA_DIR / name
+    d = DATA_DIR / "users" / str(uid)
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d / name
+
+
+# Chi non e' il proprietario sceglie il suo fornitore prima di tutto il resto: qui arrivano solo queste richieste
+SETUP_PATHS = {"/api/me", "/api/cloud", "/api/cloud/test", "/api/logout"}
+
+
 def require_user(request: Request) -> dict:
     data = read_token(request.cookies.get(COOKIE, ""))
     if not data or "uid" not in data:
@@ -225,12 +261,20 @@ def require_user(request: Request) -> dict:
     # session_ver cambia quando si cambia password o si disattiva l'account: le vecchie sessioni decadono
     if not row or not row["active"] or row["session_ver"] != data["v"]:
         raise HTTPException(401, "Non autenticato")
+    if not is_owner(row["id"]) and request.url.path not in SETUP_PATHS and not cloud_ready():
+        raise HTTPException(428, "Prima scegli il tuo fornitore e metti la tua chiave")
     return dict(row)
 
 
 def require_admin(user: dict = Depends(require_user)) -> dict:
     if user["role"] != "admin":
         raise HTTPException(403, "Solo l'amministratore può farlo")
+    return user
+
+
+def require_owner(user: dict = Depends(require_user)) -> dict:
+    if not is_owner(user["id"]):
+        raise HTTPException(403, "Solo il proprietario può farlo")
     return user
 
 
@@ -459,6 +503,11 @@ class Security:
             return await reject(403, "Accesso non consentito")
         scope.setdefault("state", {})
         scope["state"]["ip"], scope["state"]["https"] = ip, https
+        try:
+            morsel = SimpleCookie(hdr.get("cookie", "")).get(COOKIE)
+        except CookieError:
+            morsel = None
+        ACT_UID.set(int((read_token(morsel.value) or {}).get("uid") or 0) if morsel else 0)
 
         try:
             if int(hdr.get("content-length") or 0) > MAX_BODY:

@@ -361,7 +361,7 @@ async def _tool_cal_list(user: dict, args: dict, request: Request) -> dict:
 # ---- API della pagina Agenda e del calendario piccolo in alto
 
 @app.get("/api/calendar/agenda")
-async def cal_agenda(days: int = 14, start: str = "", user: dict = Depends(require_admin)):
+async def cal_agenda(days: int = 14, start: str = "", user: dict = Depends(require_user)):
     day = None
     if start:
         try:
@@ -407,7 +407,7 @@ def _event_form(body: EventIn) -> dict:
 
 
 @app.post("/api/calendar/event")
-async def cal_create_api(body: EventIn, user: dict = Depends(require_admin)):
+async def cal_create_api(body: EventIn, user: dict = Depends(require_user)):
     f = _event_form(body)
     with db() as c:
         eid = c.execute("INSERT INTO agenda (user_id, kind, title, allday, start_ts, end_ts, location, notes, remind_at, created) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -433,7 +433,7 @@ class DoneIn(BaseModel):
 
 
 @app.post("/api/calendar/event/{eid}/done")
-async def cal_done_api(eid: str, body: DoneIn, user: dict = Depends(require_admin)):
+async def cal_done_api(eid: str, body: DoneIn, user: dict = Depends(require_user)):
     e = agenda_done(user["id"], eid, body.done)
     if not e:
         raise HTTPException(404, "Impegno non trovato")
@@ -455,7 +455,7 @@ async def _tool_cal_done(user: dict, args: dict, request: Request) -> dict:
 
 
 @app.put("/api/calendar/event/{eid}")
-async def cal_update_api(eid: str, body: EventIn, user: dict = Depends(require_admin)):
+async def cal_update_api(eid: str, body: EventIn, user: dict = Depends(require_user)):
     f = _event_form(body)
     with db() as c:
         n = c.execute("UPDATE agenda SET kind = ?, title = ?, allday = ?, start_ts = ?, end_ts = ?, location = ?, notes = ?, remind_at = ?, reminded = 0 "
@@ -467,7 +467,7 @@ async def cal_update_api(eid: str, body: EventIn, user: dict = Depends(require_a
 
 
 @app.delete("/api/calendar/event/{eid}")
-async def cal_delete_api(eid: str, user: dict = Depends(require_admin)):
+async def cal_delete_api(eid: str, user: dict = Depends(require_user)):
     with db() as c:
         c.execute("DELETE FROM agenda WHERE id = ? AND user_id = ?", (_int(eid) or 0, user["id"]))
     return {"ok": True}
@@ -505,6 +505,7 @@ async def agenda_tick():
         for r in due:   # segnati subito: un promemoria non deve arrivare due volte se il messaggio tarda
             c.execute("UPDATE agenda SET reminded = 1 WHERE id = ?", (r["id"],))
     for r in due:
+        ACT_UID.set(r["user_id"])
         with db() as c:
             user = dict(c.execute("SELECT * FROM users WHERE id = ?", (r["user_id"],)).fetchone())
         e = _ev_out(r["user_id"], r)
@@ -525,8 +526,9 @@ async def agenda_tick():
     if t.hour < 7:
         return
     with db() as c:
-        users = c.execute("SELECT * FROM users WHERE role = 'admin' AND active = 1").fetchall()
+        users = c.execute("SELECT * FROM users WHERE active = 1").fetchall()
     for u in users:
+        ACT_UID.set(u["id"])
         day = t.date().isoformat()
         with db() as c:
             if c.execute("SELECT 1 FROM aura_daily WHERE user_id = ? AND day = ?", (u["id"], day)).fetchone():
@@ -572,21 +574,21 @@ _WHEN_PROPS = {
 
 TOOLS.update({
     "calendario_vedi": {
-        "admin": True, "confirm": False, "run": _tool_cal_list,
+        "admin": False, "confirm": False, "run": _tool_cal_list,
         "spec": _fn("calendario_vedi", "Guarda l'agenda dell'utente (impegni e promemoria, di base i prossimi 7 giorni). "
                     "Restituisce gli impegni con un numero n. da usare per modificarli o toglierli.",
                     {"da": {"type": "string", "description": "Da che giorno (oggi, domani, AAAA-MM-GG). Di base oggi"},
                      "giorni": {"type": "integer", "description": "Quanti giorni guardare (es. 1 = solo quel giorno)"},
                      "ricerca": {"type": "string", "description": "Parola da cercare nei titoli, es. dentista"}})},
     "promemoria": {
-        "admin": True, "confirm": True, "run": _cal_create("promemoria"), "summary": _cal_summary("promemoria"),
+        "admin": False, "confirm": True, "run": _cal_create("promemoria"), "summary": _cal_summary("promemoria"),
         "spec": _fn("promemoria", "Crea un promemoria: quando l'utente dice 'ricordami di...', 'avvisami...', 'non farmi "
                     "dimenticare...'. All'ora indicata glielo scrivi tu nella sezione «Da Aura» (arriva anche sul telefono).",
                     {"testo": {"type": "string", "description": "Cosa ricordare, breve, es. 'Chiamare il dentista'"}, **_WHEN_PROPS,
                      "note": {"type": "string", "description": "I dettagli da ricordargli, per intero (es. la lista di cose da fare presa da un foglio)"}},
                     ["testo"])},
     "calendario_crea": {
-        "admin": True, "confirm": True, "run": _cal_create("evento"), "summary": _cal_summary("evento"),
+        "admin": False, "confirm": True, "run": _cal_create("evento"), "summary": _cal_summary("evento"),
         "spec": _fn("calendario_crea", "Aggiunge un impegno o un appuntamento nell'agenda (es. dentista, riunione, cena). "
                     "Di base lo avvisi 30 minuti prima.",
                     {"titolo": _S, **_WHEN_PROPS, "durata_minuti": {"type": "integer", "description": "Di base 60"},
@@ -594,18 +596,18 @@ TOOLS.update({
                      "avviso_minuti": {"type": "integer", "description": "Minuti prima per l'avviso (di base 30)"}},
                     ["titolo"])},
     "calendario_modifica": {
-        "admin": True, "confirm": True, "run": _tool_cal_edit, "summary": _summary_cal_edit,
+        "admin": False, "confirm": True, "run": _tool_cal_edit, "summary": _summary_cal_edit,
         "spec": _fn("calendario_modifica", "Sposta o modifica un impegno (numero n. da calendario_vedi): solo i campi da cambiare.",
                     {"numero": {"type": "integer"}, "titolo": _S, **_WHEN_PROPS, "durata_minuti": {"type": "integer"},
                      "luogo": _S, "note": _S}, ["numero"])},
     "promemoria_fatto": {
-        "admin": True, "confirm": False, "run": _tool_cal_done,
+        "admin": False, "confirm": False, "run": _tool_cal_done,
         "spec": _fn("promemoria_fatto", "Segna come FATTO un promemoria o un impegno dell'agenda quando l'utente dice che l'ha fatto "
                     "(«fatto», «ho chiamato il commercialista»). Resta in agenda, barrato.",
                     {"numero": {"type": "integer", "description": "n. da calendario_vedi (se lo sai)"},
                      "testo": {"type": "string", "description": "Di cosa si tratta, se non sai il numero"}})},
     "calendario_elimina": {
-        "admin": True, "confirm": True, "run": _tool_cal_delete, "summary": _summary_cal_delete,
+        "admin": False, "confirm": True, "run": _tool_cal_delete, "summary": _summary_cal_delete,
         "spec": _fn("calendario_elimina", "Toglie un impegno o un promemoria dall'agenda (numero n. da calendario_vedi).",
                     {"numero": {"type": "integer"}}, ["numero"])},
 })
@@ -656,7 +658,7 @@ async def _tool_mail_draft(user: dict, args: dict, request: Request) -> dict:
 
 
 TOOLS["mail_bozza"] = {
-    "admin": True, "gmail": True, "confirm": False, "run": _tool_mail_draft,
+    "admin": False, "gmail": True, "confirm": False, "run": _tool_mail_draft,
     "spec": _fn("mail_bozza", "Salva una bozza di mail nelle Bozze di Gmail, senza inviarla (anche come risposta: rispondi_a = "
                 "numero n.). Usala quando l'utente chiede di preparare, scrivere o abbozzare una mail; l'invio lo decide lui. Non chiedere l'indirizzo: se scrive a una persona, cercala prima con mail_cerca (from:nome) e usa rispondi_a o il suo indirizzo; se non la trovi, salva la bozza senza destinatario.",
                 {"a": {"type": "string", "description": "Destinatario (facoltativo)"}, "oggetto": _S, "testo": _S,

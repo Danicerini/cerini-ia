@@ -211,8 +211,9 @@ async def me(user: dict = Depends(require_user)):
     return {"user": user["username"], "email": user["email"], "role": user["role"], "site_name": SITE_NAME,
             "wol": admin and bool(WOL_MAC), "power": admin and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool(WHISPER_TOKEN or cloud_stt_model() or eleven_on()), "voice_cloud": bool(cloud_stt_model()),
             "eleven": admin and eleven_on(),
-            "gmail": admin and bool(_gmail_row(user["id"])), "calendar": admin,
-            "homebase": admin and homebase_on(), "crm": admin and crm_on(),
+            "gmail": bool(_gmail_row(user["id"])), "calendar": True,
+            "homebase": admin and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]),
+            "needs_provider": not is_owner(user["id"]) and not cloud_ready(),
             "autonomy": autonomy(user), "autonomy_groups": [g for g, d in AUTONOMY.items() if admin or not d["admin"]], "aura_chat": aura_chat_id(user["id"]),
             "mem_display": _prefs(user).get("mem_display", "list"), "start_model": _prefs(user).get("start_model", "local")}
 
@@ -232,9 +233,9 @@ AUTONOMY = {
     "sito_eventi": {"default": "ask", "admin": True, "tools": ["evento_aggiungi", "evento_modifica", "evento_duplica"]},
     "sito_elimina": {"default": "ask", "admin": True, "tools": ["prodotto_elimina", "evento_elimina", "menu_giorno_elimina"]},
     "utenti": {"default": "ask", "admin": True, "tools": ["crea_invito"]},
-    "mail_pulizia": {"default": "ask", "admin": True, "tools": ["mail_cestina", "mail_spam", "mail_archivia"]},
-    "calendario": {"default": "auto", "admin": True, "tools": ["promemoria", "calendario_crea", "calendario_modifica"]},
-    "calendario_elimina": {"default": "ask", "admin": True, "tools": ["calendario_elimina"]},
+    "mail_pulizia": {"default": "ask", "admin": False, "tools": ["mail_cestina", "mail_spam", "mail_archivia"]},
+    "calendario": {"default": "auto", "admin": False, "tools": ["promemoria", "calendario_crea", "calendario_modifica"]},
+    "calendario_elimina": {"default": "ask", "admin": False, "tools": ["calendario_elimina"]},
 }
 TOOL_GROUP = {t: g for g, d in AUTONOMY.items() for t in d["tools"]}
 
@@ -371,7 +372,7 @@ async def change_password(body: PasswordChange, request: Request, response: Resp
 
 
 @app.get("/api/status")
-async def status(_: dict = Depends(require_user)):
+async def status(user: dict = Depends(require_user)):
     try:
         version = (await ollama("GET", "/api/version", timeout=2.5)).json()["version"]
         ps, tags = await ollama("GET", "/api/ps"), await ollama("GET", "/api/tags")
@@ -402,7 +403,7 @@ async def status(_: dict = Depends(require_user)):
     helper = {n for n, c in caps.items() if "embedding" in c and "completion" not in c}
     helpers = [{"name": n, "loaded": any(l["name"] == n for l in loaded),
                 "size_vram": next((l["size_vram"] for l in loaded if l["name"] == n), 0)} for n in sorted(helper)]
-    return {"online": True, "version": version, "host": host, "helpers": helpers, "cloud": cloud_name(), "default_model": DEFAULT_MODEL,
+    return {"online": True, "version": version, "host": host if is_owner(user["id"]) else "", "helpers": helpers, "cloud": cloud_name(), "default_model": DEFAULT_MODEL,
             "loaded": [l for l in loaded if l["name"] not in helper], "models": [m for m in models if m["name"] not in helper]}
 
 

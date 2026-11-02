@@ -239,6 +239,7 @@ _WATCH_LOCK: dict[int, asyncio.Lock] = {}
 
 
 async def watch_user(uid: int) -> dict:
+    ACT_UID.set(uid)
     lock = _WATCH_LOCK.setdefault(uid, asyncio.Lock())
     if lock.locked():
         return {"busy": True}
@@ -428,7 +429,7 @@ async def _tool_parcels(user: dict, args: dict, request: Request) -> dict:
 
 
 TOOLS["pacchi"] = {
-    "admin": True, "gmail": True, "confirm": False, "run": _tool_parcels,
+    "admin": False, "gmail": True, "confirm": False, "run": _tool_parcels,
     "spec": _fn("pacchi", "I pacchi e gli ordini dell'utente che Aura ha visto nelle mail: cosa arriva, quando, con che corriere, "
                 "cosa è già stato consegnato. Usalo quando chiede dei suoi pacchi, ordini, spedizioni o consegne.", {})}
 
@@ -624,7 +625,7 @@ class FeedActIn(BaseModel):
 
 
 @app.post("/api/aura/feed/{fid}/act")
-async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_admin)):
+async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_user)):
     uid = user["id"]
     with db() as c:
         r = c.execute("SELECT * FROM aura_feed WHERE id = ? AND user_id = ?", (fid, uid)).fetchone()
@@ -684,7 +685,7 @@ class WatchIn(BaseModel):
 
 
 @app.put("/api/aura/watch")
-async def aura_watch_set(body: WatchIn, user: dict = Depends(require_admin)):
+async def aura_watch_set(body: WatchIn, user: dict = Depends(require_user)):
     if not _gmail_row(user["id"]):
         raise HTTPException(409, "Collega prima Gmail da Impostazioni → Account")
     _watch_on(user["id"])
@@ -695,7 +696,7 @@ async def aura_watch_set(body: WatchIn, user: dict = Depends(require_admin)):
 
 
 @app.post("/api/aura/watch/now")
-async def aura_watch_now(user: dict = Depends(require_admin)):
+async def aura_watch_now(user: dict = Depends(require_user)):
     if not _gmail_row(user["id"]):
         raise HTTPException(409, "Collega prima Gmail da Impostazioni → Account")
     return await watch_user(user["id"])

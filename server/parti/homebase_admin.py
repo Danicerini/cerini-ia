@@ -58,6 +58,7 @@ async def hb_admin_tick():
     uid = _hb_admin_uid()
     if not uid:
         return
+    ACT_UID.set(uid)
     pend = await hb_pending()
     open_ids = {(k, str(x.get("id"))) for k, xs in pend.items() for x in xs}
     for kind, items in pend.items():

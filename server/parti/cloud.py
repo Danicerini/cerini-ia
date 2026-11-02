@@ -7,8 +7,8 @@
 # Un modello grande a pagamento, via API compatibile OpenAI (DeepSeek, Gemini, OpenAI, OpenRouter, Anthropic…): basta la chiave.
 # Si sceglie nel menu dei modelli come «☁ nome»; se il PC e' spento fa anche i lavori di sottofondo (posta, diario).
 # La chiave sta in data/cloud.json (solo il server la legge) e non torna mai al browser.
+# Ognuno ha il suo: quello del proprietario in data/, gli altri in data/users/<id>/ (user_file), e li paga chi li mette.
 
-CLOUD_FILE = DATA_DIR / "cloud.json"
 CLOUD_PRESETS = {
     # Regolo (Seeweb): azienda italiana, server in Europa, non conserva i messaggi (zero data retention)
     "regolo": {"name": "Regolo (Italia)", "base": "https://api.regolo.ai/v1", "model": "qwen3.5-122b",
@@ -34,9 +34,15 @@ CLOUD_CTX = int(os.environ.get("CLOUD_CTX", "64000"))
 CLOUD_MAX_TOKENS = int(os.environ.get("CLOUD_MAX_TOKENS", "8192"))   # lunghezza massima di una risposta
 
 
+def _cloud_file() -> Path:
+    return user_file("cloud.json")
+
+
 def cloud_cfg() -> dict:
+    if not ACT_UID.get():
+        return {}   # lavoro di nessuno: non si usa la chiave di nessuno
     try:
-        return json.loads(CLOUD_FILE.read_text(encoding="utf-8"))
+        return json.loads(_cloud_file().read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
@@ -294,9 +300,15 @@ async def llm_once(messages: list[dict], json_mode: bool = False, temperature: f
 
 def init_usage_db():
     with db() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS usage (day TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
+        cols = [r[1] for r in c.execute("PRAGMA table_info(usage)")]
+        if cols and "uid" not in cols:   # prima i consumi erano tutti del proprietario
+            c.execute("ALTER TABLE usage RENAME TO usage_old")
+        c.execute("""CREATE TABLE IF NOT EXISTS usage (uid INTEGER NOT NULL, day TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
                      calls INTEGER NOT NULL DEFAULT 0, tin INTEGER NOT NULL DEFAULT 0, tout INTEGER NOT NULL DEFAULT 0,
-                     PRIMARY KEY (day, model, kind))""")
+                     PRIMARY KEY (uid, day, model, kind))""")
+        if cols and "uid" not in cols:
+            c.execute("INSERT INTO usage SELECT (SELECT COALESCE(MIN(id), 1) FROM users WHERE role = 'admin'), day, model, kind, calls, tin, tout FROM usage_old")
+            c.execute("DROP TABLE usage_old")
 
 
 def usage_add(model: str | None, kind: str, tin: int, tout: int):
@@ -304,9 +316,9 @@ def usage_add(model: str | None, kind: str, tin: int, tout: int):
         return
     try:
         with db() as c:
-            c.execute("""INSERT INTO usage (day, model, kind, calls, tin, tout) VALUES (?, ?, ?, 1, ?, ?)
-                         ON CONFLICT (day, model, kind) DO UPDATE SET calls = calls + 1, tin = tin + excluded.tin, tout = tout + excluded.tout""",
-                      (local_now().strftime("%Y-%m-%d"), model, kind, int(tin or 0), int(tout or 0)))
+            c.execute("""INSERT INTO usage (uid, day, model, kind, calls, tin, tout) VALUES (?, ?, ?, ?, 1, ?, ?)
+                         ON CONFLICT (uid, day, model, kind) DO UPDATE SET calls = calls + 1, tin = tin + excluded.tin, tout = tout + excluded.tout""",
+                      (ACT_UID.get() or owner_id(), local_now().strftime("%Y-%m-%d"), model, kind, int(tin or 0), int(tout or 0)))
     except sqlite3.Error:
         pass   # il contatore non deve mai rompere una risposta
 
@@ -351,8 +363,8 @@ async def usage_get(user: dict = Depends(require_user)):
     today = local_now().strftime("%Y-%m-%d")
     month = today[:7]
     with db() as c:
-        rows = c.execute("SELECT day, model, kind, calls, tin, tout FROM usage WHERE day >= ? ORDER BY day",
-                         ((local_now() - timedelta(days=90)).strftime("%Y-%m-%d"),)).fetchall()
+        rows = c.execute("SELECT day, model, kind, calls, tin, tout FROM usage WHERE uid = ? AND day >= ? ORDER BY day",
+                         (user["id"], (local_now() - timedelta(days=90)).strftime("%Y-%m-%d"))).fetchall()
     cfg = cloud_cfg()
     since = cfg.get("credit_since") or ""
     models: dict[str, dict] = {}
@@ -376,7 +388,7 @@ async def usage_get(user: dict = Depends(require_user)):
         m["month_cost"] = round((m["month"][1] * p[0] + m["month"][2] * p[1]) / 1e6, 4) if p else None
         m["days"] = [[d, m["days"][d]] for d in sorted(m["days"])[-30:]]
     credit = None
-    real = await _provider_balance() if user["role"] == "admin" else None
+    real = await _provider_balance()
     if real:
         credit = {"left": round(real["amount"], 2), "currency": real["currency"], "real": True}
     elif cfg.get("credit"):
@@ -395,7 +407,7 @@ class UsageCfgIn(BaseModel):
 
 
 @app.put("/api/usage/config")
-async def usage_cfg(body: UsageCfgIn, _: dict = Depends(require_admin)):
+async def usage_cfg(body: UsageCfgIn, _: dict = Depends(require_user)):
     cfg = cloud_cfg()
     prices = cfg.get("prices") or {}
     for name, p in body.prices.items():
@@ -406,8 +418,8 @@ async def usage_cfg(body: UsageCfgIn, _: dict = Depends(require_admin)):
     cfg["prices"] = prices
     cfg["credit"] = body.credit if body.credit and body.credit > 0 else None
     cfg["credit_since"] = body.credit_since or local_now().strftime("%Y-%m-%d")
-    CLOUD_FILE.write_text(json.dumps(cfg), encoding="utf-8")
-    os.chmod(CLOUD_FILE, 0o600)
+    _cloud_file().write_text(json.dumps(cfg), encoding="utf-8")
+    os.chmod(_cloud_file(), 0o600)
     return {"ok": True}
 
 
@@ -423,33 +435,39 @@ class CloudIn(BaseModel):
 def _cloud_public() -> dict:
     c = cloud_cfg()
     k = c.get("api_key") or ""
-    return {"provider": c.get("provider", "deepseek"), "base": c.get("base", ""), "model": c.get("model", ""), "enabled": bool(c.get("enabled")),
+    # gli account in abbonamento sono solo del proprietario: gli altri usano una loro chiave API
+    presets = {k: v for k, v in CLOUD_PRESETS.items() if is_owner() or not v.get("account")}
+    return {"provider": c.get("provider", "regolo"), "base": c.get("base", ""), "model": c.get("model", ""), "enabled": bool(c.get("enabled")),
             "background": c.get("background", True), "has_key": bool(k), "key_hint": ("…" + k[-4:]) if len(k) > 8 else "",
-            "ready": cloud_ready(), "presets": CLOUD_PRESETS}
+            "ready": cloud_ready(), "presets": presets}
 
 
 @app.get("/api/cloud")
-async def cloud_get(_: dict = Depends(require_admin)):
+async def cloud_get(_: dict = Depends(require_user)):
     return _cloud_public()
 
 
 @app.put("/api/cloud")
-async def cloud_put(body: CloudIn, _: dict = Depends(require_admin)):
+async def cloud_put(body: CloudIn, _: dict = Depends(require_user)):
     old = cloud_cfg()
     preset = CLOUD_PRESETS.get(body.provider, CLOUD_PRESETS["custom"])
+    if preset.get("account") and not is_owner():
+        raise HTTPException(403, "Questo fornitore è solo per il proprietario: usa una tua chiave API")
     base = (body.base or preset["base"]).strip().rstrip("/")
     if base and not base.startswith("https://"):
         raise HTTPException(400, "L'indirizzo dell'API deve iniziare con https://")
+    if base and not is_owner() and not await _public_host(httpx.URL(base).host):
+        raise HTTPException(400, "L'indirizzo dell'API deve essere pubblico")
     cfg = {"provider": body.provider, "base": base, "model": (body.model or preset["model"]).strip(),
            "api_key": body.api_key.strip() or old.get("api_key", ""), "enabled": body.enabled, "background": body.background,
            **{k: old[k] for k in ("prices", "credit", "credit_since") if k in old}}
-    CLOUD_FILE.write_text(json.dumps(cfg), encoding="utf-8")
-    os.chmod(CLOUD_FILE, 0o600)
+    _cloud_file().write_text(json.dumps(cfg), encoding="utf-8")
+    os.chmod(_cloud_file(), 0o600)
     return _cloud_public()
 
 
 @app.post("/api/cloud/test")
-async def cloud_test(_: dict = Depends(require_admin)):
+async def cloud_test(_: dict = Depends(require_user)):
     c = cloud_cfg()
     if is_account(c.get("provider", "")):
         if not cloud_ready():

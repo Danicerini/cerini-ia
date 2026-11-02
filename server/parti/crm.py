@@ -5,28 +5,99 @@
 # ruff: noqa: F821
 
 # ================================================================== CRM
-# Indirizzo, utente e chiave di accesso stanno nel .env del server (CRM_URL, CRM_USER, CRM_KEY), mai nel codice.
+# Quelli del proprietario stanno nel .env del server (CRM_URL, CRM_USER, CRM_KEY), quelli degli altri in data/users/<id>/, mai nel codice.
 # Si usano solo le operazioni di lettura dell'API webservice: qualunque altra viene rifiutata qui, prima di partire.
 
 import hashlib
 import html as _html
 
-CRM_URL = os.environ.get("CRM_URL", "").rstrip("/")
-CRM_USER = os.environ.get("CRM_USER", "")
-CRM_KEY = os.environ.get("CRM_KEY", "")
+OWNER_CRM = {"url": os.environ.get("CRM_URL", "").rstrip("/"), "user": os.environ.get("CRM_USER", ""), "key": os.environ.get("CRM_KEY", "")}
 CRM_READ_OPS = {"getchallenge", "login", "query", "retrieve", "describe", "listtypes"}
 # campi del modulo ticket (personalizzati nel CRM dell'azienda): soluzione, tempo, cliente
 CRM_SOLUTION = os.environ.get("CRM_SOLUTION_FIELD", "cf_acf_rtf_soluzione_ticket")
 
 
+def crm_cfg() -> dict:
+    """Il CRM dell'utente in corso: il proprietario il suo nel .env, gli altri quello che collegano dalle impostazioni."""
+    uid = ACT_UID.get()
+    if not uid:
+        return {}
+    if is_owner(uid):
+        return OWNER_CRM
+    try:
+        return json.loads(user_file("crm_login.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
 def crm_on() -> bool:
-    return bool(CRM_URL and CRM_USER and CRM_KEY)
+    c = crm_cfg()
+    return bool(c.get("url") and c.get("user") and c.get("key"))
+
+
+class _PerUser:
+    """Sessione e nomi in memoria, separati per utente: ognuno parla col suo CRM."""
+
+    def __init__(self, make):
+        self.make, self.by = make, {}
+
+    def _d(self) -> dict:
+        return self.by.setdefault(ACT_UID.get(), self.make())
+
+    def __getitem__(self, k):
+        return self._d()[k]
+
+    def __setitem__(self, k, v):
+        self._d()[k] = v
+
+    def __contains__(self, k):
+        return k in self._d()
+
+    def __bool__(self):
+        return bool(self._d())
+
+    def get(self, k, default=None):
+        return self._d().get(k, default)
+
+    def setdefault(self, k, v):
+        return self._d().setdefault(k, v)
+
+    def update(self, *a, **kw):
+        self._d().update(*a, **kw)
+
+    def clear(self):
+        self._d().clear()
+
+    def items(self):
+        return self._d().items()
+
+    def __iter__(self):
+        return iter(self._d())
+
+    def __len__(self):
+        return len(self._d())
+
+    def keys(self):
+        return self._d().keys()
+
+    def values(self):
+        return self._d().values()
+
+
+def crm_users():
+    """Per i giri di sottofondo: passa uno a uno gli utenti con un CRM collegato."""
+    with db() as c:
+        ids = [r["id"] for r in c.execute("SELECT id FROM users WHERE active = 1")]
+    for uid in ids:
+        ACT_UID.set(uid)
+        if crm_on():
+            yield uid
 
 
 async def _crm(op: str, **p) -> dict | list:
     if op not in CRM_READ_OPS:
         raise ValueError(f"operazione CRM non permessa: {op} (il collegamento è solo in lettura)")
-    url = CRM_URL + "/webservice.php"
+    url = crm_cfg().get("url", "") + "/webservice.php"
     try:
         if op == "login":
             r = await client.post(url, data={"operation": op, **p}, timeout=20)
@@ -41,8 +112,9 @@ async def _crm(op: str, **p) -> dict | list:
 
 
 async def _crm_login() -> tuple[str, str]:
-    tok = (await _crm("getchallenge", username=CRM_USER))["token"]
-    r = await _crm("login", username=CRM_USER, accessKey=hashlib.md5((tok + CRM_KEY).encode()).hexdigest())
+    cfg = crm_cfg()
+    tok = (await _crm("getchallenge", username=cfg.get("user", "")))["token"]
+    r = await _crm("login", username=cfg.get("user", ""), accessKey=hashlib.md5((tok + cfg.get("key", "")).encode()).hexdigest())
     return r["sessionName"], r["userId"]
 
 
@@ -126,8 +198,8 @@ CRM_STATUS = {"Open": "Aperto", "In Progress": "In lavorazione", "Wait For Respo
 CRM_DONE = ("Closed", "Annullato")
 _CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-]{7,}$|^\S+@\S+\.\w+$|^(?:https?://|www\.)\S+$|"
                        r"\bP\.?\s?IVA\b|\bC\.?F\.?\s*:|\bPEC\b", re.I)
-_CRM_S = {"s": "", "uid": "", "at": 0.0}
-_CRM_NAMES: dict[str, str] = {}
+_CRM_S = _PerUser(lambda: {"s": "", "uid": "", "at": 0.0})
+_CRM_NAMES = _PerUser(dict)
 # dove finisce il messaggio vero di una mail: firma, avvisi legali, messaggio citato
 _CRM_CUT = re.compile(r"(Codice in materia di protezione|Nota di riservatezza|Rispetta l'ambiente|Questo messaggio e gli eventuali|"
                       r"-{2,}\s*Messaggio originale|-{2,}\s*Original Message|\bDa:\s.{0,120}\bInviato:|\bFrom:\s.{0,120}\bSent:|"
@@ -136,7 +208,7 @@ _CRM_CUT = re.compile(r"(Codice in materia di protezione|Nota di riservatezza|Ri
 
 async def _crm_sess() -> tuple[str, str]:
     if not crm_on():
-        raise ValueError("il CRM non è collegato (mancano CRM_URL, CRM_USER, CRM_KEY nel .env)")
+        raise ValueError("il CRM non è collegato: fallo in Impostazioni → Collegamenti")
     if _CRM_S["s"] and time.time() - _CRM_S["at"] < 600:
         return _CRM_S["s"], _CRM_S["uid"]
     s, uid = await _crm_login()
@@ -221,19 +293,19 @@ def _crm_learn(uid: str, name: str):
 
 def _crm_file() -> dict:
     try:
-        return json.loads((DATA_DIR / "crm.json").read_text(encoding="utf-8"))
+        return json.loads(user_file("crm.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
 
 
 def _crm_save(d: dict):
-    f = DATA_DIR / "crm.json"
+    f = user_file("crm.json")
     tmp = f.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
     tmp.replace(f)
 
 
-_CRM_ACC: dict[str, str] = {}
+_CRM_ACC = _PerUser(dict)
 
 
 def _crm_accounts() -> dict:
@@ -273,7 +345,7 @@ async def crm_accounts_refresh():
 async def crm_accounts_loop():
     await asyncio.sleep(30)
     while True:
-        if crm_on():
+        for _uid in crm_users():
             try:
                 await crm_accounts_refresh()
             except Exception as e:   # il CRM giù non deve fermare niente: si riprova tra un'ora
@@ -282,7 +354,8 @@ async def crm_accounts_loop():
 
 
 def crm_link(tid: str) -> str:
-    return f"{CRM_URL}/index.php?module=HelpDesk&view=Detail&record={str(tid).split('x')[-1]}" if CRM_URL else ""
+    url = crm_cfg().get("url", "")
+    return f"{url}/index.php?module=HelpDesk&view=Detail&record={str(tid).split('x')[-1]}" if url else ""
 
 
 async def _crm_row(t: dict, uid: str) -> dict:
@@ -447,7 +520,7 @@ async def _tool_crm_detail(user: dict, args: dict, request: Request) -> dict:
 
 
 @app.get("/api/crm/tickets")
-async def crm_tickets_api(stato: str = "aperti", q: str = "", cliente: str = "", miei: int = 1, _: dict = Depends(require_admin)):
+async def crm_tickets_api(stato: str = "aperti", q: str = "", cliente: str = "", miei: int = 1, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
@@ -460,7 +533,7 @@ async def crm_tickets_api(stato: str = "aperti", q: str = "", cliente: str = "",
 
 
 @app.get("/api/crm/ticket/{ref}")
-async def crm_ticket_api(ref: str, _: dict = Depends(require_admin)):
+async def crm_ticket_api(ref: str, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
@@ -470,7 +543,7 @@ async def crm_ticket_api(ref: str, _: dict = Depends(require_admin)):
 
 
 TOOLS.update({
-    "ticket_elenco": {"admin": True, "crm": True, "confirm": False, "run": _tool_crm_list,
+    "ticket_elenco": {"admin": False, "crm": True, "confirm": False, "run": _tool_crm_list,
         "spec": _fn("ticket_elenco", "Elenco dei ticket del CRM di lavoro (di base quelli assegnati all'utente): aperti, chiusi o tutti, "
                     "filtrabili per cliente, parola nel titolo e periodo. L'utente lo vede come scheda.",
                     {"stato": {"type": "string", "enum": ["aperti", "chiusi", "tutti"]},
@@ -480,12 +553,12 @@ TOOLS.update({
                      "al": {"type": "string", "description": "AAAA-MM-GG, data di modifica fino a"},
                      "di_tutti": {"type": "boolean", "description": "true = anche quelli dei colleghi"},
                      "quanti": {"type": "integer"}})},
-    "ticket_cerca": {"admin": True, "crm": True, "confirm": False, "run": _tool_crm_search,
+    "ticket_cerca": {"admin": False, "crm": True, "confirm": False, "run": _tool_crm_search,
         "spec": _fn("ticket_cerca", "Cerca nei ticket CHIUSI del CRM (anche dei colleghi) come era stato risolto un problema simile: "
                     "«come avevo risolto…», «è già successo che…». Usa le parole chiave del problema (programma, errore, dispositivo).",
                     {"problema": {"type": "string", "description": "Il problema in poche parole chiave"},
                      "solo_miei": {"type": "boolean", "description": "true = solo i ticket dell'utente"}}, ["problema"])},
-    "ticket_dettaglio": {"admin": True, "crm": True, "confirm": False, "run": _tool_crm_detail,
+    "ticket_dettaglio": {"admin": False, "crm": True, "confirm": False, "run": _tool_crm_detail,
         "spec": _fn("ticket_dettaglio", "Apre un ticket del CRM per intero: dati, descrizione, soluzione e tutti i commenti. Per le domande "
                     "su un ticket preciso (riassunto, a che punto è, cosa ha chiesto il cliente, bozza di risposta).",
                     {"ticket": {"type": "string", "description": "Numero, es. TK-2026-005819 o 5819"}}, ["ticket"])},
@@ -562,7 +635,7 @@ async def crm_folder_counts() -> dict:
 
 
 @app.get("/api/crm/folders")
-async def crm_folders_api(counts: int = 1, _: dict = Depends(require_admin)):
+async def crm_folders_api(counts: int = 1, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
@@ -573,7 +646,7 @@ async def crm_folders_api(counts: int = 1, _: dict = Depends(require_admin)):
 
 
 @app.get("/api/crm/folder/{fid}")
-async def crm_folder_api(fid: int, q: str = "", _: dict = Depends(require_admin)):
+async def crm_folder_api(fid: int, q: str = "", _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
@@ -601,7 +674,7 @@ async def crm_watch_once():
     rows = await _crm_get("query", query=f"SELECT {fields} FROM HelpDesk WHERE assigned_user_id='{_crm_q(uid)}' "
                                          f"AND modifiedtime>='{since}' ORDER BY modifiedtime LIMIT 100;")
     with db() as c:
-        urow = c.execute("SELECT * FROM users WHERE role = 'admin' ORDER BY id LIMIT 1").fetchone()
+        urow = c.execute("SELECT * FROM users WHERE id = ?", (ACT_UID.get(),)).fetchone()
     if not urow:
         return
     user = dict(urow)
@@ -629,11 +702,12 @@ async def crm_watch_loop():
     await asyncio.sleep(60)
     while True:
         now = local_now()
-        if crm_on() and now.weekday() < 6 and 7 <= now.hour < 21:
-            try:
-                await crm_watch_once()
-            except Exception as e:   # il CRM giù non deve fermare niente
-                print(f"CRM: sorveglianza ticket non riuscita: {e}", flush=True)
+        if now.weekday() < 6 and 7 <= now.hour < 21:
+            for _uid in crm_users():
+                try:
+                    await crm_watch_once()
+                except Exception as e:   # il CRM giù non deve fermare niente
+                    print(f"CRM: sorveglianza ticket non riuscita: {e}", flush=True)
         await asyncio.sleep(300)
 
 
@@ -650,3 +724,50 @@ async def crm_stale(day: str) -> list[dict]:
             r["taken"] = t.get("data_presa_in_carico", "")
             out.append(r)
     return out
+
+
+# ---- collegare il proprio CRM dalle impostazioni (quello del proprietario sta nel .env)
+
+class CrmLinkIn(BaseModel):
+    url: str
+    user: str
+    key: str
+
+
+@app.get("/api/crm/link")
+async def crm_link_get(user: dict = Depends(require_user)):
+    c = crm_cfg()
+    return {"linked": crm_on(), "managed": is_owner(user["id"]), "url": c.get("url", ""), "user": c.get("user", "")}
+
+
+@app.put("/api/crm/link")
+async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
+    if is_owner(user["id"]):
+        raise HTTPException(400, "Il tuo CRM si cambia nel .env del server")
+    url = body.url.strip().rstrip("/")
+    if not url.startswith("https://") or not await _public_host(httpx.URL(url).host):
+        raise HTTPException(400, "L'indirizzo del CRM deve iniziare con https:// ed essere pubblico")
+    f = user_file("crm_login.json")
+    f.touch(mode=0o600)
+    f.write_text(json.dumps({"url": url, "user": body.user.strip(), "key": body.key.strip()}), encoding="utf-8")
+    _CRM_S.update(s="", uid="", at=0.0)
+    _CRM_NAMES.clear()
+    _CRM_ACC.clear()
+    try:
+        await _crm_get("query", query="SELECT ticket_no FROM HelpDesk LIMIT 1;")
+    except ValueError as e:
+        f.unlink(missing_ok=True)
+        raise HTTPException(400, f"Non riesco a entrare nel CRM: {e}")
+    return {"linked": True, "managed": False, "url": url, "user": body.user.strip()}
+
+
+@app.delete("/api/crm/link")
+async def crm_link_delete(user: dict = Depends(require_user)):
+    if is_owner(user["id"]):
+        raise HTTPException(400, "Il tuo CRM si cambia nel .env del server")
+    user_file("crm_login.json").unlink(missing_ok=True)
+    user_file("crm.json").unlink(missing_ok=True)
+    _CRM_S.update(s="", uid="", at=0.0)
+    _CRM_NAMES.clear()
+    _CRM_ACC.clear()
+    return {"linked": False, "managed": False, "url": "", "user": ""}

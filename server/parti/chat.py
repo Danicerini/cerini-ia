@@ -472,11 +472,11 @@ MEMORY_PROMPT = ("\n\nMEMORIA: hai una memoria personale per questo utente (solo
 
 
 def tools_for(user: dict) -> list:
-    gmail = user["role"] == "admin" and bool(_gmail_row(user["id"]))
+    gmail = bool(_gmail_row(user["id"]))
     cal = gmail and has_calendar(user["id"])
     hbase = user["role"] == "admin" and homebase_on()
     wapp = user["role"] == "admin" and wa_linked()
-    crm = user["role"] == "admin" and crm_on()
+    crm = crm_on()
     return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin")
             and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))
             and (wapp or not t.get("whatsapp")) and (crm or not t.get("crm"))]

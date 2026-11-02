@@ -336,7 +336,7 @@ async def gmail_put_message(uid: int, payload: dict, draft: bool = False) -> dic
 
 
 @app.post("/api/mail/compose/send")
-async def compose_send(body: ComposeIn, user: dict = Depends(require_admin)):
+async def compose_send(body: ComposeIn, user: dict = Depends(require_user)):
     to = _compose_check(body, True)
     await gmail_put_message(user["id"], await _compose_message(user["id"], body, to))
     print(f"Mail inviata da {user['username']} a {len(to)} destinatari", flush=True)
@@ -344,14 +344,14 @@ async def compose_send(body: ComposeIn, user: dict = Depends(require_admin)):
 
 
 @app.post("/api/mail/compose/draft")
-async def compose_draft(body: ComposeIn, user: dict = Depends(require_admin)):
+async def compose_draft(body: ComposeIn, user: dict = Depends(require_user)):
     to = _compose_check(body, False)
     await gmail_put_message(user["id"], await _compose_message(user["id"], body, to), draft=True)
     return {"ok": True}
 
 
 TOOLS["mail_prepara"] = {
-    "admin": True, "gmail": True, "confirm": False, "run": _tool_mail_prepare,
+    "admin": False, "gmail": True, "confirm": False, "run": _tool_mail_prepare,
     "spec": _fn("mail_prepara", "Prepara una mail e la mostra all'utente in una scheda modificabile con i pulsanti «Invia» e «Salva in "
                 "bozze» (decide lui). Usala SUBITO per OGNI mail da scrivere, inviare o a cui rispondere, anche se non sai il "
                 "destinatario: lascia «a» vuoto e lo scrive l'utente nella scheda. Mai chiedere l'indirizzo in chat e mai "
