@@ -998,7 +998,7 @@ def crm_is_logo(f: dict) -> bool:
     w_, h_ = f.get("w") or 0, f.get("h") or 0
     if not w_ or not h_ or f["size"] >= 100 * 1024:
         return False
-    return (h_ <= 150 and w_ <= 600 and w_ / h_ >= 1.5) or w_ / h_ >= 5
+    return h_ <= 150 and (w_ / h_ >= 5 or (w_ <= 600 and w_ / h_ >= 1.5))
 
 
 async def crm_file(fid: str) -> dict:
