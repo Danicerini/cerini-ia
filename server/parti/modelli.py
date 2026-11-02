@@ -376,7 +376,7 @@ async def change_password(body: PasswordChange, request: Request, response: Resp
 @app.get("/api/status")
 async def status(user: dict = Depends(require_user)):
     if not is_owner(user["id"]):
-        return {"online": False, "local_off": True, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": False}
+        return {"online": False, "local_off": True, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": is_account()}
     try:
         version = (await ollama("GET", "/api/version", timeout=2.5)).json()["version"]
         ps, tags = await ollama("GET", "/api/ps", timeout=5), await ollama("GET", "/api/tags", timeout=5)

@@ -1500,6 +1500,7 @@ async def admin_delete(uid: int, admin: dict = Depends(require_admin)):
         raise HTTPException(400, "Non puoi eliminare il tuo stesso account")
     with db() as c:
         c.execute("DELETE FROM users WHERE id = ?", (uid,))
+    shutil.rmtree(DATA_DIR / "users" / str(uid) / "account", ignore_errors=True)   # i token del suo abbonamento non restano sul server
     return {"ok": True}
 
 # ------------------------------------------------------------------ inviti ---

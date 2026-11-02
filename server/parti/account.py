@@ -5,13 +5,13 @@
 # Le due CLI scrivono solo il testo: i loro strumenti sono spenti. Gli strumenti restano quelli di Aura: il modello li chiede con un
 # blocco <aura_tool> e li esegue il ciclo di chat.py, con le stesse conferme e le stesse guardie degli altri modelli.
 # Al processo arriva solo l'ambiente scritto qui, mai il .env del server.
+# Ogni utente collega il suo account: token e accessi in corso sono separati (user_file e _acct_key), nessuno usa quello di un altro.
 
 import shutil
 import signal
 import subprocess
 import tempfile
 
-ACCOUNT_DIR = DATA_DIR / "account"
 ACCOUNT_BIN = {"claude-code": "claude", "codex": "codex"}
 _ACCT_PATH = "/usr/local/bin:/usr/bin:/bin"
 _ACCT_SEM = asyncio.Semaphore(2)   # ogni chiamata e' un processo: il container ha poca memoria
@@ -22,8 +22,8 @@ _CLAUDE_TOKEN_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{20,}")
 _CODEX_OFF = ["shell_tool", "unified_exec", "view_image", "image_generation", "browser_use", "browser_use_external", "computer_use", "in_app_browser",
               "multi_agent", "goals", "plugins", "apps", "hooks", "skill_search", "tool_suggest", "sleep_tool", "shell_snapshot"]
 _CODEX_TEXT_ITEMS = {"agent_message", "reasoning", "error", "todo_list"}   # qualunque altra voce vuol dire che sta usando un suo strumento
-_ACCT_LOGIN: dict[str, dict] = {}
-_ACCT_TASK: dict[str, asyncio.Task] = {}
+_ACCT_LOGIN: dict[tuple, dict] = {}
+_ACCT_TASK: dict[tuple, asyncio.Task] = {}
 
 ACCOUNT_TOOLS_PROMPT = ("\n\nCOME USARE GLI STRUMENTI: li esegue Aura, tu li chiedi nel testo. Per usarne uno scrivi, come ultima cosa del messaggio e "
                         "fuori da blocchi di codice, un blocco per ogni chiamata:\n"
@@ -40,9 +40,10 @@ def is_account(provider: str | None = None) -> bool:
 
 
 def _acct_home(p: str) -> Path:
-    ACCOUNT_DIR.mkdir(parents=True, exist_ok=True)
-    os.chmod(ACCOUNT_DIR, 0o700)
-    d = ACCOUNT_DIR / p
+    root = user_file("account")
+    root.mkdir(parents=True, exist_ok=True)
+    os.chmod(root, 0o700)
+    d = root / p
     d.mkdir(exist_ok=True)
     return d
 
@@ -327,6 +328,10 @@ async def account_once(payload: dict, timeout: float) -> str:
 
 # ---- collegamento dell'account dalle impostazioni: il login avviene nel browser dell'utente, Aura mostra solo link e codice.
 
+def _acct_key(p: str) -> tuple:
+    return (ACT_UID.get(), p)
+
+
 def _acct_save_secret(p: str, text: str):
     f = _acct_token_file(p)
     tmp = f.with_suffix(".tmp")
@@ -336,7 +341,7 @@ def _acct_save_secret(p: str, text: str):
 
 
 def _acct_login_end(p: str, state: str, msg: str = ""):
-    _ACCT_LOGIN[p] = {"state": state, "msg": msg, "url": "", "code": ""}
+    _ACCT_LOGIN[_acct_key(p)] = {"state": state, "msg": msg, "url": "", "code": ""}
 
 
 async def _claude_login():
@@ -349,7 +354,7 @@ async def _claude_login():
     proc = subprocess.Popen([_acct_bin(p), "setup-token"], stdin=slave, stdout=slave, stderr=slave, env=env, cwd=str(_acct_home(p)), close_fds=True, start_new_session=True)
     os.close(slave)
     os.set_blocking(master, False)
-    _ACCT_LOGIN[p] = {"state": "running", "url": "", "code": "", "msg": "", "fd": master}
+    lg = _ACCT_LOGIN[_acct_key(p)] = {"state": "running", "url": "", "code": "", "msg": "", "fd": master}
     out, deadline = "", time.monotonic() + 900
     try:
         while time.monotonic() < deadline:
@@ -367,8 +372,8 @@ async def _claude_login():
                 await asyncio.sleep(0.3)
                 continue
             out = (out + _ANSI_RE.sub("", chunk.decode(errors="replace")))[-20000:]
-            if not _ACCT_LOGIN[p]["url"] and (m := re.search(r"https://\S*oauth/authorize\S+", out)):
-                _ACCT_LOGIN[p]["url"] = m.group(0)
+            if not lg["url"] and (m := re.search(r"https://\S*oauth/authorize\S+", out)):
+                lg["url"] = m.group(0)
             if m := _CLAUDE_TOKEN_RE.search(out):
                 _acct_save_secret(p, m.group(0))
                 _acct_login_end(p, "ok")
@@ -384,7 +389,7 @@ async def _codex_login():
     p = "codex"
     proc = await asyncio.create_subprocess_exec(_acct_bin(p), "login", "--device-auth", "-c", 'cli_auth_credentials_store="file"', stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.STDOUT, env=_acct_env(p), cwd=str(_acct_home(p)), start_new_session=True)
-    _ACCT_LOGIN[p] = {"state": "running", "url": "", "code": "", "msg": ""}
+    lg = _ACCT_LOGIN[_acct_key(p)] = {"state": "running", "url": "", "code": "", "msg": ""}
     last = ""
     try:
         async with asyncio.timeout(900):
@@ -393,9 +398,9 @@ async def _codex_login():
                 if s and not s.startswith("WARNING"):
                     last = s
                 if m := re.search(r"https://\S+", s):
-                    _ACCT_LOGIN[p]["url"] = _ACCT_LOGIN[p]["url"] or m.group(0)
+                    lg["url"] = lg["url"] or m.group(0)
                 if m := re.fullmatch(r"[A-Z0-9]{4}-[A-Z0-9]{4,}", s):
-                    _ACCT_LOGIN[p]["code"] = m.group(0)
+                    lg["code"] = m.group(0)
         rc = await proc.wait()
         if rc == 0 and account_ready(p):
             _acct_login_end(p, "ok")
@@ -413,30 +418,31 @@ def _acct_check(p: str):
 
 
 def _acct_public(p: str) -> dict:
-    lg = _ACCT_LOGIN.get(p) or {}
+    lg = _ACCT_LOGIN.get(_acct_key(p)) or {}
     return {"cli": bool(_acct_bin(p)), "linked": account_ready(p), "login": {k: lg.get(k, "") for k in ("state", "url", "code", "msg")}}
 
 
 @app.get("/api/account/{p}")
-async def account_get(p: str, _: dict = Depends(require_owner)):
+async def account_get(p: str, _: dict = Depends(require_user)):
     _acct_check(p)
     return _acct_public(p)
 
 
 @app.post("/api/account/{p}/login")
-async def account_login(p: str, restart: bool = False, _: dict = Depends(require_owner)):
+async def account_login(p: str, restart: bool = False, _: dict = Depends(require_user)):
     _acct_check(p)
-    if restart and p in _ACCT_TASK:
-        _ACCT_TASK.pop(p).cancel()
-        _ACCT_LOGIN.pop(p, None)
+    k = _acct_key(p)
+    if restart and k in _ACCT_TASK:
+        _ACCT_TASK.pop(k).cancel()
+        _ACCT_LOGIN.pop(k, None)
     if not _acct_bin(p):
         raise HTTPException(400, f"Il programma {ACCOUNT_BIN[p]} non è installato sul server")
-    if (_ACCT_LOGIN.get(p) or {}).get("state") != "running":
-        _ACCT_LOGIN[p] = {"state": "running", "url": "", "code": "", "msg": ""}
-        _ACCT_TASK[p] = asyncio.create_task(_claude_login() if p == "claude-code" else _codex_login())
+    if (_ACCT_LOGIN.get(k) or {}).get("state") != "running":
+        _ACCT_LOGIN[k] = {"state": "running", "url": "", "code": "", "msg": ""}
+        _ACCT_TASK[k] = asyncio.create_task(_claude_login() if p == "claude-code" else _codex_login())
         for _i in range(40):   # il link arriva dopo qualche secondo
             await asyncio.sleep(0.5)
-            if _ACCT_LOGIN[p].get("url") or _ACCT_LOGIN[p].get("state") != "running":
+            if _ACCT_LOGIN[k].get("url") or _ACCT_LOGIN[k].get("state") != "running":
                 break
     return _acct_public(p)
 
@@ -446,10 +452,11 @@ class AccountCode(BaseModel):
 
 
 @app.post("/api/account/{p}/code")
-async def account_code(p: str, body: AccountCode, _: dict = Depends(require_owner)):
+async def account_code(p: str, body: AccountCode, _: dict = Depends(require_user)):
     """Il codice che Claude mostra dopo l'accesso, da passare alla CLI che lo sta aspettando."""
     _acct_check(p)
-    lg = _ACCT_LOGIN.get(p) or {}
+    k = _acct_key(p)
+    lg = _ACCT_LOGIN.get(k) or {}
     if lg.get("state") != "running" or not lg.get("fd"):
         raise HTTPException(400, "Nessun accesso in corso: premi di nuovo Collega")
     os.write(lg["fd"], body.code.strip().encode())
@@ -457,13 +464,13 @@ async def account_code(p: str, body: AccountCode, _: dict = Depends(require_owne
     os.write(lg["fd"], b"\r")
     for _i in range(30):
         await asyncio.sleep(0.5)
-        if (_ACCT_LOGIN.get(p) or {}).get("state") != "running":
+        if (_ACCT_LOGIN.get(k) or {}).get("state") != "running":
             break
     return _acct_public(p)
 
 
 @app.put("/api/account/{p}/secret")
-async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_owner)):
+async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_user)):
     """Riserva: il token di «claude setup-token» o il file auth.json di Codex, presi su un altro PC e incollati qui."""
     _acct_check(p)
     text = body.code.strip()
@@ -481,8 +488,8 @@ async def account_secret(p: str, body: AccountCode, _: dict = Depends(require_ow
 
 
 @app.delete("/api/account/{p}")
-async def account_logout(p: str, _: dict = Depends(require_owner)):
+async def account_logout(p: str, _: dict = Depends(require_user)):
     _acct_check(p)
     _acct_token_file(p).unlink(missing_ok=True)
-    _ACCT_LOGIN.pop(p, None)
+    _ACCT_LOGIN.pop(_acct_key(p), None)
     return _acct_public(p)

@@ -440,11 +440,9 @@ class CloudIn(BaseModel):
 def _cloud_public() -> dict:
     c = cloud_cfg()
     k = c.get("api_key") or ""
-    # gli account in abbonamento sono solo del proprietario: gli altri usano una loro chiave API
-    presets = {k: v for k, v in CLOUD_PRESETS.items() if is_owner() or not v.get("account")}
     return {"provider": c.get("provider", "regolo"), "base": c.get("base", ""), "model": c.get("model", ""), "enabled": bool(c.get("enabled")),
             "background": c.get("background", True), "has_key": bool(k), "key_hint": ("…" + k[-4:]) if len(k) > 8 else "",
-            "ready": cloud_ready(), "presets": presets}
+            "ready": cloud_ready(), "presets": CLOUD_PRESETS}
 
 
 @app.get("/api/cloud")
@@ -456,8 +454,6 @@ async def cloud_get(_: dict = Depends(require_user)):
 async def cloud_put(body: CloudIn, _: dict = Depends(require_user)):
     old = cloud_cfg()
     preset = CLOUD_PRESETS.get(body.provider, CLOUD_PRESETS["custom"])
-    if preset.get("account") and not is_owner():
-        raise HTTPException(403, "Questo fornitore è solo per il proprietario: usa una tua chiave API")
     if body.provider == "codex" and body.model.strip() == "gpt-5.5":
         raise HTTPException(400, "gpt-5.5 non è utilizzabile con Codex: scegli un altro modello")
     base = (body.base or preset["base"]).strip().rstrip("/")

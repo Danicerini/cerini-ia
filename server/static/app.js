@@ -183,7 +183,7 @@ function showProviderGate() {
   document.getElementById('providerGate')?.remove();
   document.body.append(h('div', { id: 'providerGate', class: 'provider-gate' }, h('div', { class: 'provider-box' },
     h('h1', { text: 'Scegli il tuo modello' }),
-    h('p', { text: 'Per usare Aura serve un fornitore tuo: scegline uno e incolla la tua chiave API. I consumi li paghi tu direttamente al fornitore.' }),
+    h('p', { text: 'Per usare Aura serve un fornitore tuo: incolla la tua chiave API o collega il tuo account Claude o ChatGPT. I consumi sono tuoi, sul tuo abbonamento o direttamente col fornitore.' }),
     cloudCard({ gate: true }),
     h('button', { class: 'btn', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }))));
 }
@@ -348,7 +348,7 @@ function renderPicker() {
       h('div', { class: 'm-row' + (sel === cl.name ? ' sel' : ''), ...pick(cl.name) },
         h('span', { class: 'check', html: icon('check', 'sm') }),
         h('div', {}, h('div', { class: 'nm' }, h('span', { class: 'nm-ic', html: icon('cloud', 'sm') }), cl.name.slice(6)),
-          h('div', { class: 'meta', text: s.local_off ? 'si paga a token, col tuo fornitore' : `${s.cloud_account ? 'non si paga a token' : 'si paga a token'} · va anche a PC spento` })), h('div')));
+          h('div', { class: 'meta', text: s.cloud_account ? 'non si paga a token · va anche a PC spento' : s.local_off ? 'si paga a token, col tuo fornitore' : 'si paga a token · va anche a PC spento' })), h('div')));
   }
   // quanto ha consumato il modello attivo questo mese (un clic apre i consumi)
   const um = S.usage?.models?.find((x) => x.name === sel);
@@ -3183,7 +3183,7 @@ function whatsappCard() {
 // Modello nel cloud (facoltativo): fornitore, chiave, modello. La chiave resta sul server: qui si vede solo se c'e'.
 function cloudCard({ gate = false } = {}) {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('globe', 'sm') + 'Modello nel cloud' }),
-    h('p', { text: gate ? 'La chiave resta sul server, solo per te.' : isAdmin() ? 'Facoltativo: un modello grande a pagamento, per le cose difficili o quando il PC è spento. Lo scegli nel menu dei modelli in alto (☁).' : 'Il tuo fornitore: la chiave è tua e i consumi li paghi tu. Lo scegli nel menu dei modelli in alto (☁).' })),
+    h('p', { text: gate ? 'Chiave e account restano sul server, solo per te.' : isAdmin() ? 'Facoltativo: un modello grande a pagamento, per le cose difficili o quando il PC è spento. Lo scegli nel menu dei modelli in alto (☁).' : 'Il tuo fornitore: la chiave è tua e i consumi li paghi tu. Lo scegli nel menu dei modelli in alto (☁).' })),
     h('div', { class: 'list-empty', text: 'Carico…' }));
   (async () => {
     let c;
@@ -3235,7 +3235,7 @@ function cloudCard({ gate = false } = {}) {
     const keyF = h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key), adv = h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base);
     const showPicks = () => {
       const p = c.presets[prov.value] || {};
-      note.textContent = p.note || '';
+      note.textContent = (p.note || '') + (p.account && !S.me?.owner ? " Il collegamento resta sul server di Aura, separato dagli altri utenti. Le regole del fornitore potrebbero non ammettere l'uso dell'abbonamento in un'app come questa: la scelta è tua." : '');
       keyF.style.display = adv.style.display = p.account ? 'none' : '';
       picks.replaceChildren(...(p.models || []).map(([m, why]) => h('button', { type: 'button', class: 'cloud-pick' + (model.value === m ? ' on' : ''),
         onclick: () => { model.value = m; showPicks(); } }, h('b', { text: m }), why ? h('span', { text: why }) : '')));

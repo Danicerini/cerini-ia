@@ -267,8 +267,8 @@ def require_user(request: Request) -> dict:
     # session_ver cambia quando si cambia password o si disattiva l'account: le vecchie sessioni decadono
     if not row or not row["active"] or row["session_ver"] != data["v"]:
         raise HTTPException(401, "Non autenticato")
-    if not is_owner(row["id"]) and request.url.path not in SETUP_PATHS and not cloud_ready():
-        raise HTTPException(428, "Prima scegli il tuo fornitore e metti la tua chiave")
+    if not is_owner(row["id"]) and request.url.path not in SETUP_PATHS and not request.url.path.startswith("/api/account/") and not cloud_ready():
+        raise HTTPException(428, "Prima scegli il tuo fornitore e collega la tua chiave o il tuo account")
     return dict(row)
 
 
