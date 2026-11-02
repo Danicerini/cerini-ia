@@ -633,7 +633,7 @@ function stepsEl(steps) {
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', homebase_scratchpad_versioni: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
-const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket'];
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket', 'ticket_photos'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)',
@@ -650,7 +650,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket', 'ticket_photos'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -748,7 +748,8 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
         : m.view?.kind === 'consuntivo' ? consView(m.view)
-        : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket) : null);
+        : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket)
+        : m.view?.kind === 'ticket_photos' ? h('div', { class: 'tk-files' }, ...m.view.files.map((f) => h('a', { class: 'tk-photo', href: `/api/crm/file/${f.id}`, target: '_blank', rel: 'noopener', title: f.name }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' })))) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -1932,6 +1933,7 @@ async function tkpDetail(main, no) {
     h('div', { class: 'tk-asks' }, h('span', { html: icon('bulb', 'sm') + 'Chiedi ad Aura' }),
       q('Riassumilo', `Riassumimi il ticket ${t.no}: cosa chiede il cliente, cosa è stato fatto, a che punto è.`),
       q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
+      (t.comments || []).some((c) => c.files?.length) ? q('Guarda le foto', `Guarda le foto del ticket ${t.no} e dimmi cosa si vede.`) : null,
       q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
       h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeTickets(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
     tkActions(t, () => tkpDetail(main, t.no)),
@@ -3103,6 +3105,7 @@ async function openTicket(ref) {
     h('div', { class: 'tk-asks' }, h('span', { html: icon('bulb', 'sm') + 'Chiedi ad Aura' }),
       q('Riassumilo', `Riassumimi il ticket ${t.no}: cosa chiede il cliente, cosa è stato fatto, a che punto è.`),
       q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
+      (t.comments || []).some((c) => c.files?.length) ? q('Guarda le foto', `Guarda le foto del ticket ${t.no} e dimmi cosa si vede.`) : null,
       q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
       h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeBrainView(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
     tkActions(t, () => openTicket(t.no)),
