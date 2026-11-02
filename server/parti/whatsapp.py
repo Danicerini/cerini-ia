@@ -7,16 +7,26 @@
 # Il collegamento vero lo fa un piccolo servizio a parte (server/whatsapp, Node + Baileys) che si collega al WhatsApp
 # dell'utente come «dispositivo collegato» (QR nelle impostazioni). Aura gli chiede la rubrica e gli fa inviare messaggi
 # e file. Ogni invio passa sempre dalla conferma dell'utente. Dei messaggi il servizio tiene solo gli ultimi 30 per chat:
-# Aura li legge solo quando l'utente glielo chiede (whatsapp_leggi).
+# Aura li legge solo quando l'utente glielo chiede (whatsapp_leggi). Ogni utente collega il suo: una sessione a testa nel servizio.
 
 WA_URL = os.environ.get("WA_URL", "http://127.0.0.1:8091").rstrip("/")
 WA_TOKEN = os.environ.get("WA_TOKEN", "")
-_WA = {"linked": False, "at": 0.0}
+_WA_LINKED: set[str] = set()   # le sessioni collegate, viste da poco
 
 
-async def wa(method: str, path: str, **kw) -> dict:
+def _wa_key(uid: int | None = None) -> str:
+    """Di chi e' la sessione: il proprietario tiene la sua di sempre. Senza un utente non si usa quella di nessuno."""
+    uid = ACT_UID.get() if uid is None else uid
+    if not uid:
+        raise HTTPException(409, "WhatsApp: non so di quale utente")
+    return "main" if is_owner(uid) else str(int(uid))
+
+
+async def wa(method: str, path: str, uid: int | None = None, **kw) -> dict:
     if not WA_TOKEN:
         raise HTTPException(409, "WhatsApp non è installato su questo server")
+    key = _wa_key(uid)
+    kw["params"] = {**(kw.get("params") or {}), "u": key}
     try:
         r = await client.request(method, WA_URL + path, headers={"X-Token": WA_TOKEN}, timeout=kw.pop("timeout", 20), **kw)
     except httpx.HTTPError:
@@ -25,13 +35,13 @@ async def wa(method: str, path: str, **kw) -> dict:
     if r.status_code >= 400:
         raise ValueError(d.get("error") or f"errore {r.status_code}")
     if path == "/status":
-        _WA.update(linked=d.get("status") == "connected", at=time.time())
+        (_WA_LINKED.add if d.get("status") == "connected" else _WA_LINKED.discard)(key)
     return d
 
 
-def wa_linked() -> bool:
+def wa_linked(uid: int) -> bool:
     """Per l'elenco degli strumenti: lo stato visto da poco (si aggiorna da solo ogni mezzo minuto)."""
-    return bool(WA_TOKEN) and _WA["linked"]
+    return bool(WA_TOKEN) and _wa_key(uid) in _WA_LINKED
 
 
 async def wa_status_loop():
@@ -39,14 +49,16 @@ async def wa_status_loop():
     while True:
         if WA_TOKEN:
             try:
-                await wa("GET", "/status")
+                r = await client.get(WA_URL + "/all", headers={"X-Token": WA_TOKEN}, timeout=20)
+                _WA_LINKED.clear()
+                _WA_LINKED.update(r.json().get("connected") or [])
             except Exception:
-                _WA["linked"] = False
+                _WA_LINKED.clear()
         await asyncio.sleep(30)
 
 
 @app.get("/api/whatsapp")
-async def wa_get(_: dict = Depends(require_admin)):
+async def wa_get(_: dict = Depends(require_user)):
     if not WA_TOKEN:
         return {"installed": False}
     try:
@@ -56,14 +68,14 @@ async def wa_get(_: dict = Depends(require_admin)):
 
 
 @app.post("/api/whatsapp/link")
-async def wa_link(_: dict = Depends(require_admin)):
+async def wa_link(_: dict = Depends(require_user)):
     return await wa("POST", "/link", timeout=40)
 
 
 @app.post("/api/whatsapp/logout")
-async def wa_logout(_: dict = Depends(require_admin)):
+async def wa_logout(_: dict = Depends(require_user)):
     d = await wa("POST", "/logout", timeout=30)
-    _WA["linked"] = False
+    _WA_LINKED.discard(_wa_key())
     return d
 
 
@@ -176,7 +188,7 @@ WA_PROMPT = ("\n\nWHATSAPP: «scrivi a X …», «manda a X …», «di' a X che
 
 
 TOOLS.update({
-    "whatsapp_invia": {"admin": True, "whatsapp": True, "confirm": True, "always_confirm": True, "run": _tool_wa_send, "summary": _summary_wa,
+    "whatsapp_invia": {"admin": False, "whatsapp": True, "confirm": True, "always_confirm": True, "run": _tool_wa_send, "summary": _summary_wa,
         "spec": _fn("whatsapp_invia", "Manda un messaggio WhatsApp dal numero dell'utente a una persona della sua rubrica (nome come l'ha "
                     "salvato sul telefono) o a un numero. Può mandare anche i file e le foto allegati in chat («mandalo a…»). "
                     "Prima dell'invio l'utente vede il messaggio e preme Conferma: chiamalo direttamente.",
@@ -184,11 +196,11 @@ TOOLS.update({
                      "testo": {"type": "string", "description": "Il messaggio, scritto come lo scriverebbe l'utente"},
                      "file": {"type": "array", "items": {"type": "integer"}, "description": "Numeri dei file allegati in chat da mandare (vuoto = quelli appena allegati)"}},
                     ["a"])},
-    "whatsapp_leggi": {"admin": True, "whatsapp": True, "confirm": False, "run": _tool_wa_read,
+    "whatsapp_leggi": {"admin": False, "whatsapp": True, "confirm": False, "run": _tool_wa_read,
         "spec": _fn("whatsapp_leggi", "Legge gli ultimi messaggi della chat WhatsApp con una persona. SOLO quando l'utente chiede di leggerli "
                     "(«cosa mi ha scritto Marco?», «leggi gli ultimi messaggi di…»): mai di tua iniziativa.",
                     {"chi": {"type": "string", "description": "Nome come in rubrica o numero"},
                      "quanti": {"type": "integer", "description": "Quanti messaggi (di base 10, massimo 30)"}}, ["chi"])},
-    "whatsapp_rubrica": {"admin": True, "whatsapp": True, "confirm": False, "run": _tool_wa_contacts,
+    "whatsapp_rubrica": {"admin": False, "whatsapp": True, "confirm": False, "run": _tool_wa_contacts,
         "spec": _fn("whatsapp_rubrica", "Cerca nella rubrica di WhatsApp dell'utente (nome e numero).", {"nome": _S}, ["nome"])},
 })

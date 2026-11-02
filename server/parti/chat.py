@@ -475,7 +475,7 @@ def tools_for(user: dict) -> list:
     gmail = bool(_gmail_row(user["id"]))
     cal = gmail and has_calendar(user["id"])
     hbase = user["role"] == "admin" and homebase_on()
-    wapp = user["role"] == "admin" and wa_linked()
+    wapp = wa_linked(user["id"])
     crm = crm_on()
     crm_w = crm and crm_write_on(user)
     return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin") and (crm_w or not t.get("crm_write"))
@@ -1501,6 +1501,10 @@ async def admin_delete(uid: int, admin: dict = Depends(require_admin)):
     with db() as c:
         c.execute("DELETE FROM users WHERE id = ?", (uid,))
     shutil.rmtree(DATA_DIR / "users" / str(uid) / "account", ignore_errors=True)   # i token del suo abbonamento non restano sul server
+    try:
+        await wa("POST", "/logout", uid=uid, timeout=30)   # e nemmeno il suo WhatsApp
+    except (HTTPException, ValueError):
+        pass
     return {"ok": True}
 
 # ------------------------------------------------------------------ inviti ---

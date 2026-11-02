@@ -10,7 +10,7 @@ Environment=WA_DIR=/opt/ollama-web/data/whatsapp
 ExecStart=/usr/bin/node index.mjs
 Restart=always
 RestartSec=5
-MemoryMax=300M
+MemoryMax=600M
 
 [Install]
 WantedBy=multi-user.target

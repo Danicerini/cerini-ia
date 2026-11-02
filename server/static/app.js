@@ -3143,7 +3143,7 @@ setInterval(() => { if (S.me && bpOpen() && !document.hidden) renderBrainPanel()
 // WhatsApp: Aura scrive dal tuo numero. Si collega col QR (come WhatsApp Web) e si scollega con «Dissocia».
 function whatsappCard() {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('phone', 'sm') + 'WhatsApp' }),
-    h('p', { text: 'Aura può mandare messaggi e file dal tuo numero alle persone della tua rubrica. Prima di ogni invio ti mostra il messaggio e aspetta il tuo «Conferma». Non legge le tue chat.' })),
+    h('p', { text: 'Aura può mandare messaggi e file dal tuo numero alle persone della tua rubrica. Prima di ogni invio ti mostra il messaggio e aspetta il tuo «Conferma». Sul server restano la tua rubrica e gli ultimi 30 messaggi di ogni chat personale: Aura li legge solo se glielo chiedi. WhatsApp può bloccare i numeri collegati a programmi non ufficiali.' })),
     h('div', { class: 'wa-box' }, h('div', { class: 'list-empty', text: 'Controllo…' })));
   const box = card.lastChild;
   let timer = null;
@@ -3927,7 +3927,7 @@ function accountTab(body) {
   const content = {
     aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()],
     model: () => [cloudCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
-    links: () => [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null],
+    links: () => [gmailCard(), crmCard(), whatsappCard()],
     usage: () => usageCards(),
     account: () => [hero(), securityCards(), lookCard()],
   }[sec]();
