@@ -734,6 +734,21 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             if SMALLTALK_RE.fullmatch(next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "").strip()):
                 tools = []   # un saluto non ha bisogno di strumenti (e delle loro istruzioni): ~1/3 dei token
             skill = slash_skill(user, body.messages) if tools else None
+            # /consuntivo da solo: si fa direttamente, senza chiedere al modello di chiamare lo strumento e poi di commentarlo
+            direct = re.fullmatch(r"/\S+(?:\s+(ieri|oggi|\d{4}-\d{2}-\d{2}))?", _last_user_text(body.messages).strip(), re.I) if skill and skill["slug"] == "consuntivo" else None
+            if direct:
+                when = (direct.group(1) or "").lower()
+                giorno = (local_now() - timedelta(days=1)).strftime("%Y-%m-%d") if when == "ieri" else "" if when == "oggi" else when
+                yield ev(event="assistant_tool_calls", message={"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "consuntivo", "arguments": {"giorno": giorno}}}]})
+                try:
+                    result = await _tool_consuntivo(user, {"giorno": giorno}, request)
+                except (ValueError, HTTPException, httpx.HTTPError) as e:
+                    yield ev(error=f"Consuntivo non riuscito: {getattr(e, 'detail', e)}")
+                    return
+                yield ev(event="tool_result", message={"role": "tool", "tool_name": "consuntivo", "content": result["content"]}, display=result["display"], view=result.get("view"))
+                yield json.dumps({"message": {"role": "assistant", "content": result["view"]["note"]}, "done": False}, ensure_ascii=False) + "\n"
+                yield json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}) + "\n"
+                return
             if skill and skill["tools"]:   # /homebase: gli strumenti di quella skill (piu' quelli per ricordare)
                 keep = tuple(skill["tools"]) + ("ricorda", "cervello_cerca")
                 tools = [t for t in tools_for(user) if t["function"]["name"].startswith(keep)] or tools

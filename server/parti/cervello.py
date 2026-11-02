@@ -962,7 +962,12 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
         row = c.execute("SELECT * FROM brain_episodes WHERE chat_id = ?", (chat_id,)).fetchone()
     upto = row["upto"] if row else 0
     convo = [m for m in messages if m.get("role") in ("user", "assistant", "tool") and (m.get("content") or m.get("view") or "")]
-    new = convo[upto:]
+    new, skip = [], False
+    for m in convo[upto:]:   # chiedere il consuntivo non e' una cosa da scrivere nel diario (e ogni riassunto costa token)
+        if m["role"] == "user":
+            skip = str(m.get("content") or "").strip().lower().startswith("/consuntivo")
+        if not skip:
+            new.append(m)
     if sum(1 for m in new if m["role"] == "user") < 1 or sum(len(m.get("content") or "") for m in new) < 120:
         return None
     plist_ = projects(user)
@@ -1424,7 +1429,9 @@ def _day_chats_text(user: dict, day: str) -> str:
 
 CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruolo}. Lo copierà nel gestionale dell'azienda, quindi conta "
                "SOLO il lavoro per l'azienda {azienda} e per i suoi clienti ({clienti}). Escludi tutto il resto: progetti personali, l'assistente "
-               "stesso, siti per amici, WhatsApp personali, chiacchiere, e le richieste fatte all'assistente che non sono lavoro per un cliente.\n"
+               "stesso, siti per amici, WhatsApp personali, chiacchiere, e le richieste fatte all'assistente che non sono lavoro per un cliente. "
+               "Non è lavoro nemmeno tutto quello che riguarda questo assistente e la sua app: creare account o inviti per qualcuno, anche per "
+               "un collega, configurarlo, collegargli servizi, cambiargli modello.\n"
                "Regole:\n- una voce per ogni attività distinta: lo stesso ticket nominato più volte, con la sua analisi, la mail al cliente e "
                "la chiusura, è UNA voce sola;\n- anche il lavoro interno per {azienda} entra (ticket interni, risorse umane, aiuto a un "
                "collega, riunioni), con cliente = {azienda};\n"
@@ -1536,10 +1543,16 @@ async def consuntivo(user: dict, day: str) -> dict:
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
     fl = fascicoli()
-    alias = {k: v for k, v in (_fasc_file().get("alias") or {}).items()}
-    pref = _fasc_file().get("predefinito") or {}
+    # al modello solo i fascicoli dei clienti nominati quel giorno (piu' l'azienda): l'elenco intero costa token a ogni consuntivo
+    hay = _flat(f"{diary} {chats} {crm} {main['name']}")
+    alias = {k: v for k, v in (_fasc_file().get("alias") or {}).items() if _flat(k) in hay}
+    codes = {str(v).upper() for v in alias.values()}
+    named = lambda f: any(len(w) >= 4 and _flat(w) in hay for w in re.findall(r"\w+", (re.search(r"\(([^)]+)\)", f["progetto"]) or [""] * 2)[1])[:1])
+    near = [f for f in fl if _fasc_code(f) in codes or named(f)] or fl
+    codes |= {_fasc_code(f) for f in near}
+    pref = {k: v for k, v in (_fasc_file().get("predefinito") or {}).items() if str(k).upper() in codes}
     fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" + (f"  [descrizione nel formato: {f['descrizione']}]" if f.get("descrizione") else "")
-                                              for f in fl), azienda=main["name"])
+                                              for f in near), azienda=main["name"])
             + ("REGOLE DELL'UTENTE (correzioni sue: valgono sopra ogni altra regola):\n" + "\n".join(f"- {r}" for r in rules) + "\n"
                if (rules := _fasc_file().get("regole") or []) else "")
             + ("FASCICOLO DI SOLITO USATO per questi clienti (usalo salvo motivi chiari): "
