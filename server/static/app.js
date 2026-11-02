@@ -3128,11 +3128,37 @@ function tkActions(t, reload) {
 }
 // Foto e allegati del ticket: le foto di una mail nel CRM stanno nel suo commento, con lo stesso nome del «cid:» nel testo.
 const tkSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
-function tkViewer(list, start) {
+// «Questa è una firma» / «questa è una foto»: Aura se lo ricorda, anche per le immagini che le somigliano
+async function tkMark(f, kind, refill) {
+  try {
+    await api(`/api/crm/file/${f.id}/mark`, { kind }, { method: 'PUT' });
+    toast(kind === 'logo' ? 'Segnata come firma: lo ricordo anche per quelle simili' : 'Segnata come immagine: lo ricordo anche per quelle simili');
+    refill?.();
+  } catch (e) { toast(e.message); }
+}
+function tkMenu(x, y, items) {
+  document.querySelector('.tk-menu')?.remove();
+  const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); };
+  const outside = (e) => { if (!menu.contains(e.target)) close(); };
+  const menu = h('div', { class: 'tk-menu', role: 'menu', onkeydown: (e) => {
+    const btns = [...menu.querySelectorAll('button')], at = btns.indexOf(document.activeElement);
+    if (e.key === 'Escape') close();
+    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(at + 1) % btns.length].focus(); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); btns[(at - 1 + btns.length) % btns.length].focus(); }
+  } }, ...items.map(([label, fn]) => h('button', { type: 'button', role: 'menuitem', text: label, onclick: () => { close(); fn(); } })));
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+  document.addEventListener('pointerdown', outside, true);
+  menu.querySelector('button').focus();
+}
+function tkViewer(list, start, refill) {
   let i = start;
   const img = h('img', { alt: '' }), name = h('b'), count = h('small', { class: 'tnum' });
   const dl = h('a', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica' });
-  const paint = () => { const f = list[i]; img.src = `/api/crm/file/${f.id}`; img.alt = f.name; name.textContent = f.name; count.textContent = list.length > 1 ? `${i + 1} di ${list.length}` : ''; dl.href = `/api/crm/file/${f.id}?dl=1`; dl.setAttribute('download', f.name); };
+  const mark = h('button', { class: 'btn sm', onclick: async () => { const f = list[i]; const kind = f.logo ? 'photo' : 'logo'; await tkMark(f, kind, refill); close(); } });
+  const paint = () => { const f = list[i]; mark.textContent = f.logo ? 'Non è una firma' : 'Segna come firma'; img.src = `/api/crm/file/${f.id}`; img.alt = f.name; name.textContent = f.name; count.textContent = list.length > 1 ? `${i + 1} di ${list.length}` : ''; dl.href = `/api/crm/file/${f.id}?dl=1`; dl.setAttribute('download', f.name); };
   const go = (d) => { i = (i + d + list.length) % list.length; paint(); };
   const close = () => { box.remove(); opener?.focus(); };
   const opener = document.activeElement;
@@ -3141,14 +3167,23 @@ function tkViewer(list, start) {
   const box = h('div', { class: 'tkv', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Foto del ticket', tabindex: '-1',
     onclick: (e) => { if (e.target === box || e.target.classList.contains('tkv-body')) close(); },
     onkeydown: (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowLeft' && list.length > 1) go(-1); if (e.key === 'ArrowRight' && list.length > 1) go(1); } },
-    h('div', { class: 'tkv-top' }, h('div', { class: 'tx' }, name, count), dl, closeBtn),
+    h('div', { class: 'tkv-top' }, h('div', { class: 'tx' }, name, count), mark, dl, closeBtn),
     h('div', { class: 'tkv-body' }, nav('prev', 'Foto precedente', -1), img, nav('next', 'Foto successiva', 1)));
   paint();
   document.body.append(box);
   closeBtn.focus();
 }
-function tkPhotoTile(f, list, i) {
-  return h('button', { type: 'button', class: 'tk-photo', title: f.name, 'aria-label': 'Apri ' + f.name, onclick: () => tkViewer(list, i) },
+function tkPhotoTile(f, list, i, refill) {
+  return h('button', { type: 'button', class: 'tk-photo', title: f.name, 'aria-label': 'Apri ' + f.name, onclick: () => tkViewer(list, i, refill),
+    oncontextmenu: (e) => {
+      e.preventDefault();
+      const r = e.currentTarget.getBoundingClientRect();
+      tkMenu(e.clientX || r.left + 12, e.clientY || r.top + 12, [
+        ['Apri', () => tkViewer(list, i, refill)],
+        f.logo ? ['Non è una firma', () => tkMark(f, 'photo', refill)] : ['Segna come firma', () => tkMark(f, 'logo', refill)],
+        ['Scarica', () => { const a = h('a', { href: `/api/crm/file/${f.id}?dl=1`, download: f.name }); a.click(); }],
+      ]);
+    } },
     h('span', { class: 'plate' }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' })),
     h('small', { text: f.name }));
 }
@@ -3159,17 +3194,19 @@ function tkFileChip(f) {
     h('a', { class: 'btn sm', href: `/api/crm/file/${f.id}?dl=1`, download: f.name, html: icon('down', 'sm') + 'Scarica' }));
 }
 // in un riquadro: prima le foto, poi gli allegati. Le icone piccolissime spariscono, le immagini delle firme stanno da parte
-function tkFilesPaint(box, files) {
-  const list = files.filter((f) => f && (!f.image || f.size >= 4096));
+function tkFilesPaint(box, files, refill) {
+  const list = files.filter((f) => f && (!f.image || f.size >= 4096 || f.marked === 'photo'));
   const photos = list.filter((f) => f.image && !f.logo), logos = list.filter((f) => f.image && f.logo), others = list.filter((f) => !f.image);
-  if (photos.length) box.append(h('div', { class: 'tk-photos' }, ...photos.map((f, i) => tkPhotoTile(f, photos, i))));
+  if (photos.length) box.append(h('div', { class: 'tk-photos' }, ...photos.map((f, i) => tkPhotoTile(f, photos, i, refill))));
   if (others.length) box.append(h('div', { class: 'tk-chips' }, ...others.map(tkFileChip)));
-  if (logos.length) box.append(h('details', { class: 'tk-logos' }, h('summary', { text: `Immagini della firma (${logos.length})` }), h('div', { class: 'tk-photos small' }, ...logos.map((f, i) => tkPhotoTile(f, logos, i)))));
+  if (logos.length) box.append(h('details', { class: 'tk-logos' }, h('summary', { text: `Immagini della firma (${logos.length})` }), h('div', { class: 'tk-photos small' }, ...logos.map((f, i) => tkPhotoTile(f, logos, i, refill)))));
 }
 function tkFilesFill(t, descBox, boxes, docBox) {
   const ids = [...new Set([...(t.comments || []).flatMap((c) => c.files || []), ...(t.documents || [])])];
   if (!ids.length) return;
+  const refill = () => tkFilesFill(t, descBox, boxes, docBox);   // dopo un segno: si ridisegna, e le simili si spostano da sole
   api('/api/crm/file-info?' + new URLSearchParams({ ids: ids.join(',') })).then((r) => r.json()).then((d) => {
+    [descBox, docBox, ...boxes].forEach((b) => b?.replaceChildren());
     const info = new Map(d.files.map((f) => [f.id, f]));
     const moved = new Set();
     const wanted = new Set(t.desc_images || []);
@@ -3177,10 +3214,10 @@ function tkFilesFill(t, descBox, boxes, docBox) {
     if (first && descBox) {
       const own = (first.files || []).map((x) => info.get(x)).filter((f) => f && wanted.has(f.name));
       own.forEach((f) => moved.add(f.id));
-      tkFilesPaint(descBox, own);
+      tkFilesPaint(descBox, own, refill);
     }
-    (t.comments || []).forEach((c, i) => { if (boxes[i]) tkFilesPaint(boxes[i], (c.files || []).map((x) => info.get(x)).filter((f) => f && !moved.has(f.id))); });
-    if (docBox) tkFilesPaint(docBox, (t.documents || []).map((x) => info.get(x)));
+    (t.comments || []).forEach((c, i) => { if (boxes[i]) tkFilesPaint(boxes[i], (c.files || []).map((x) => info.get(x)).filter((f) => f && !moved.has(f.id)), refill); });
+    if (docBox) tkFilesPaint(docBox, (t.documents || []).map((x) => info.get(x)), refill);
   }).catch(() => {});
 }
 function tkDetail(t, full) {

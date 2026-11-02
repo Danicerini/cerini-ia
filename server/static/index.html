@@ -1704,6 +1704,9 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tk-file { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; }
 .tk-file .ic { color: var(--text-3); display: flex; } .tk-file .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tk-file b { font-size: 13.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .tk-file small { font-size: 12px; color: var(--text-3); }
+.tk-menu { position: fixed; z-index: 2100; min-width: 180px; padding: 4px; display: flex; flex-direction: column; background: var(--raised); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 8px 28px color-mix(in oklch, black 30%, transparent); }
+.tk-menu button { padding: 7px 10px; border: 0; border-radius: 7px; background: none; color: var(--text); font: inherit; font-size: 13.5px; text-align: left; cursor: pointer; }
+.tk-menu button:hover, .tk-menu button:focus-visible { background: var(--accent-soft); color: var(--accent); outline: none; }
 .tkv { position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column; background: color-mix(in oklch, black 86%, transparent); outline: none; }
 .tkv-top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border); }
 .tkv-top .tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; } .tkv-top b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .tkv-top small { color: var(--text-3); font-size: 12.5px; flex: none; }

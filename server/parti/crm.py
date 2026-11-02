@@ -577,7 +577,7 @@ async def _tool_crm_photos(user: dict, args: dict, request: Request) -> dict:
             return None
     seen, found = set(), []
     for f in await asyncio.gather(*(one(x) for x in ids)):
-        if f and f["mime"].startswith("image/") and f["size"] >= TICKET_PHOTO_MIN and not crm_is_logo(f) and (f["name"], f["size"]) not in seen:
+        if f and f["mime"].startswith("image/") and (f["size"] >= TICKET_PHOTO_MIN or _crm_mark_for(f) == "photo") and not crm_is_logo(f) and (f["name"], f["size"]) not in seen:
             seen.add((f["name"], f["size"]))
             found.append(f)
     if not found:
@@ -993,8 +993,49 @@ def _crm_image_size(data: bytes) -> tuple[int, int]:
         return (0, 0)
 
 
+def _crm_image_prints(data: bytes) -> tuple[str, int]:
+    """L'impronta di un'immagine: esatta, e una «a occhio» (64 bit) che resta quasi uguale se la stessa immagine e' ricompressa o ridimensionata."""
+    import io
+    from PIL import Image
+    exact = hashlib.sha256(data).hexdigest()[:24]
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            px = list(im.convert("L").resize((9, 8)).getdata())
+    except Exception:
+        return exact, 0
+    bits = 0
+    for y in range(8):
+        for x in range(8):
+            bits = (bits << 1) | (px[y * 9 + x] > px[y * 9 + x + 1])
+    return exact, bits
+
+
+_CRM_MARK_NEAR = 6   # bit diversi su 64 perche' due immagini si considerino la stessa
+_CRM_MARKS_MAX = 500
+
+
+def _crm_mark_for(f: dict) -> str:
+    """Quello che l'utente ha detto di questa immagine, o di una che le somiglia: «logo», «photo» o niente."""
+    exact, bits = f.get("exact"), f.get("bits") or 0
+    best, best_d = "", _CRM_MARK_NEAR + 1
+    ratio = (f.get("w") or 0) / (f.get("h") or 1)
+    for m in _crm_file().get("segni") or []:
+        if m.get("exact") == exact:
+            return m["kind"]
+        # un'immagine quasi tutta uguale (bianca, un colore solo) somiglia a tutto: per quelle vale solo l'impronta esatta
+        if not 8 <= bits.bit_count() <= 56 or not m.get("bits") or not m.get("ratio") or not 0.8 <= ratio / m["ratio"] <= 1.25:
+            continue
+        d = (bits ^ int(m["bits"])).bit_count()
+        if d < best_d:
+            best, best_d = m["kind"], d
+    return best
+
+
 def crm_is_logo(f: dict) -> bool:
-    """Le immagini delle firme: piccole e strette, oppure strisce lunghe. Non si buttano, stanno da parte."""
+    """Le immagini delle firme. Prima conta quello che ha detto l'utente; se no le piccole e strette e le strisce lunghe. Non si buttano, stanno da parte."""
+    mark = _crm_mark_for(f)
+    if mark:
+        return mark == "logo"
     w_, h_ = f.get("w") or 0, f.get("h") or 0
     if not w_ or not h_ or f["size"] >= 100 * 1024:
         return False
@@ -1014,6 +1055,7 @@ async def crm_file(fid: str) -> dict:
     f = {"id": fid, "name": str(res[0].get("filename") or "allegato"), "size": len(data), "mime": _crm_file_mime(data), "data": data}
     if f["mime"].startswith("image/"):
         f["w"], f["h"] = _crm_image_size(data)
+        f["exact"], f["bits"] = _crm_image_prints(data)
     cache = _CRM_FILES._d()
     cache[fid] = f
     while sum(len(x["data"]) for x in cache.values()) > _CRM_FILES_MAX and len(cache) > 1:
@@ -1031,12 +1073,39 @@ async def crm_file_info(ids: str, _: dict = Depends(require_user)):
         try:
             f = await crm_file(fid)
             image = f["mime"].startswith("image/")
-            return {k: f[k] for k in ("id", "name", "size")} | {"image": image, "logo": image and crm_is_logo(f), "open": bool(f["mime"]) and not image}
+            return {k: f[k] for k in ("id", "name", "size")} | {"image": image, "logo": image and crm_is_logo(f), "open": bool(f["mime"]) and not image,
+                                                               "marked": _crm_mark_for(f) if image else ""}
         except (ValueError, TypeError) as e:
             print(f"CRM: allegato {fid} non letto: {_clip(str(e), 120)}", flush=True)
             return None
     found = await asyncio.gather(*(one(x) for x in dict.fromkeys(ids.split(",")).keys() if x))
     return {"files": [f for f in found[:80] if f]}
+
+
+class CrmFileMark(BaseModel):
+    kind: str
+
+
+@app.put("/api/crm/file/{fid}/mark")
+async def crm_file_mark(fid: str, body: CrmFileMark, _: dict = Depends(require_user)):
+    """«Questa è una firma» o «questa è una foto»: vale per l'immagine e per quelle che le somigliano, solo per chi lo dice."""
+    if body.kind not in ("logo", "photo"):
+        raise HTTPException(400, "Segno non valido")
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        f = await crm_file(fid)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(404, str(e))
+    if not f["mime"].startswith("image/"):
+        raise HTTPException(400, "Si possono segnare solo le immagini")
+    d = _crm_file()
+    ratio = (f.get("w") or 0) / (f.get("h") or 1)
+    # chi cambia idea su un'immagine la corregge anche per le sue simili: il segno vecchio non resta a fare confusione
+    near = lambda m: m.get("exact") == f["exact"] or (m.get("ratio") and 0.8 <= ratio / m["ratio"] <= 1.25 and 8 <= f["bits"].bit_count() <= 56 and (f["bits"] ^ int(m.get("bits") or 0)).bit_count() <= _CRM_MARK_NEAR)
+    d["segni"] = ([m for m in d.get("segni") or [] if not near(m)] + [{"exact": f["exact"], "bits": str(f["bits"]), "ratio": round(ratio, 3), "kind": body.kind}])[-_CRM_MARKS_MAX:]
+    _crm_save(d)
+    return {"kind": body.kind}
 
 
 @app.get("/api/crm/file/{fid}")
