@@ -373,7 +373,6 @@ async def mail_triage(user: dict = Depends(require_user)):
         data = {"summary": "La posta in arrivo è vuota.", "items": []}
         TRIAGE_CACHE[uid] = {"key": key, "at": time.time(), "data": data}
         return data
-    model = await _chat_model()
     rows = "\n".join(f"{m['n']}. da: {m['from']} <{m['email']}> | oggetto: {m['subject'][:90]} | {m['category'] or 'principale'}"
                      f"{' | non letta' if m['unread'] else ''} | {m['snippet'][:140]}" for m in lst)
     prompt = ("Sei Aura, l'assistente che tiene pulita la posta di " + user["username"] + ". Ecco le ultime mail in arrivo "
@@ -382,14 +381,11 @@ async def mail_triage(user: dict = Depends(require_user)):
               "notifiche che potrebbero servire) oppure \"inutile\" (pubblicità, newsletter mai lette, social, offerte). "
               "Rispondi SOLO con JSON: {\"sintesi\": \"una frase per l'utente su cosa c'è di interessante\", "
               "\"mail\": [{\"n\": numero, \"tipo\": \"importante|normale|inutile\", \"perche\": \"max 8 parole\"}]}\n\n" + rows)
-    r = await ollama("POST", "/api/chat", json={"model": model, "stream": False, "format": "json", "think": False,
-                                                 "keep_alive": KEEP_ALIVE, "options": {"num_ctx": NUM_CTX or 8192, "temperature": 0.2},
-                                                 "messages": [{"role": "user", "content": prompt}]}, timeout=180)
-    usage_ollama(model, r)
+    raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.2, num_ctx=NUM_CTX or 8192, timeout=180)
     try:
-        out = json.loads(r.json()["message"]["content"])
+        out = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip())
     except (ValueError, KeyError):
-        raise HTTPException(502, "Gemma non ha risposto in modo leggibile: riprova")
+        raise HTTPException(502, "Il modello non ha risposto in modo leggibile: riprova")
     by_n = {m["n"]: m for m in lst}
     items = []
     for x in out.get("mail") or []:

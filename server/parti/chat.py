@@ -716,6 +716,8 @@ def ev(**kw) -> str:
 
 @app.post("/api/chat")
 async def chat(body: ChatReq, request: Request, user: dict = Depends(require_user)):
+    if not is_owner(user["id"]):
+        body.model = cloud_name() or "cloud:"   # il PC di casa e' del proprietario: gli altri usano sempre il loro fornitore
     if is_cloud(body.model) and cloud_name() and body.model != cloud_name():
         body.model = cloud_name()   # chat aperta con un modello cloud di prima: si usa (e si dice) quello impostato adesso
 
@@ -1155,7 +1157,7 @@ def _power_log(user: dict, result: str):
 
 
 @app.get("/api/power")
-async def power_status(user: dict = Depends(require_admin)):
+async def power_status(user: dict = Depends(require_owner)):
     try:
         esp = (await client.get(ESP32_URL + "/status", timeout=4)).json()
     except (httpx.HTTPError, ValueError):
@@ -1167,7 +1169,7 @@ async def power_status(user: dict = Depends(require_admin)):
 
 
 @app.post("/api/power/on")
-async def power_on(user: dict = Depends(require_admin)):
+async def power_on(user: dict = Depends(require_owner)):
     return await press_power(user)
 
 
@@ -1254,7 +1256,7 @@ class PowerSchedIn(BaseModel):
 
 
 @app.put("/api/power/schedule")
-async def power_schedule_set(body: PowerSchedIn, user: dict = Depends(require_admin)):
+async def power_schedule_set(body: PowerSchedIn, user: dict = Depends(require_owner)):
     if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", body.at) or not re.fullmatch(r"[1-7]{1,7}", body.days):
         raise HTTPException(400, "Orario o giorni non validi")
     _power_sched(user["id"])
@@ -1264,7 +1266,7 @@ async def power_schedule_set(body: PowerSchedIn, user: dict = Depends(require_ad
 
 
 @app.post("/api/wol")
-async def wake(_: dict = Depends(require_admin)):
+async def wake(_: dict = Depends(require_owner)):
     if not WOL_MAC:
         raise HTTPException(400, "WOL_MAC non configurato")
     mac = bytes.fromhex(WOL_MAC.replace(":", "").replace("-", ""))
@@ -1305,10 +1307,10 @@ async def transcribe(request: Request, lang: str = "it", live: bool = False, clo
         try:
             return await cloud_transcribe(data, ctype, lang)
         except (httpx.HTTPError, ValueError) as e:
-            if not WHISPER_TOKEN:
+            if not WHISPER_TOKEN or not pc_allowed():
                 raise HTTPException(502, f"Dettatura nel cloud non riuscita: {e}")
             print(f"dettatura cloud non riuscita, provo il PC: {e}", flush=True)
-    if not WHISPER_TOKEN:
+    if not WHISPER_TOKEN or not pc_allowed():
         raise HTTPException(503, "La dettatura non è configurata")
     try:
         r = await _whisper(data, ctype, lang, live)
@@ -1518,5 +1520,6 @@ async def invite_accept(token: str, body: InviteAccept, request: Request, respon
                 raise HTTPException(409, "Questo nome utente è già stato usato")
         c.execute("DELETE FROM invites WHERE token = ?", (token,))
         user = dict(c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone())
+    ACT_UID.set(uid)
     set_session(request, response, user)
     return {"ok": True}

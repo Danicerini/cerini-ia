@@ -237,6 +237,12 @@ def is_owner(uid: int | None = None) -> bool:
     return bool(uid) and uid == owner_id()
 
 
+def pc_allowed() -> bool:
+    """Il PC di casa (modelli, memoria, dettatura) e' solo del proprietario: per gli altri e' come se fosse spento."""
+    uid = ACT_UID.get()
+    return not uid or is_owner(uid)
+
+
 def user_file(name: str) -> Path:
     """Un file di configurazione dell'utente in corso: quelli del proprietario in data/, gli altri in data/users/<id>/."""
     uid = ACT_UID.get()

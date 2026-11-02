@@ -800,6 +800,7 @@ def brain_log_soon(uid: int, line: str):
 
 
 async def _flush_log(uid: int):
+    ACT_UID.set(uid)
     lines, _LOG_QUEUE[uid] = _LOG_QUEUE.get(uid, []), []
     if not lines:
         return

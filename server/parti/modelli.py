@@ -56,6 +56,8 @@ async def discover() -> bool:
 
 async def ollama(method: str, path: str, **kw) -> httpx.Response:
     """Richiesta a Ollama; se il PC non risponde all'indirizzo noto, lo cerca e riprova una volta."""
+    if not pc_allowed():
+        raise httpx.ConnectError("Il PC di casa è solo del proprietario")
     try:
         return await client.request(method, ollama_base + path, **kw)
     except (httpx.ConnectError, httpx.ConnectTimeout):
@@ -209,7 +211,7 @@ async def logout_all(response: Response, user: dict = Depends(require_user)):
 async def me(user: dict = Depends(require_user)):
     admin = user["role"] == "admin"
     return {"user": user["username"], "email": user["email"], "role": user["role"], "site_name": SITE_NAME,
-            "wol": admin and bool(WOL_MAC), "power": admin and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool(WHISPER_TOKEN or cloud_stt_model() or eleven_on()), "voice_cloud": bool(cloud_stt_model()),
+            "wol": is_owner(user["id"]) and bool(WOL_MAC), "power": is_owner(user["id"]) and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool((WHISPER_TOKEN and is_owner(user["id"])) or cloud_stt_model() or eleven_usable()), "voice_cloud": bool(cloud_stt_model()),
             "eleven": admin and eleven_on(),
             "gmail": bool(_gmail_row(user["id"])), "calendar": True,
             "homebase": admin and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]),
@@ -373,6 +375,8 @@ async def change_password(body: PasswordChange, request: Request, response: Resp
 
 @app.get("/api/status")
 async def status(user: dict = Depends(require_user)):
+    if not is_owner(user["id"]):
+        return {"online": False, "local_off": True, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": False}
     try:
         version = (await ollama("GET", "/api/version", timeout=2.5)).json()["version"]
         ps, tags = await ollama("GET", "/api/ps"), await ollama("GET", "/api/tags")
@@ -432,11 +436,11 @@ async def _generate(model: str, keep_alive):
 
 
 @app.post("/api/load")
-async def load(body: ModelReq, _: dict = Depends(require_admin)):
+async def load(body: ModelReq, _: dict = Depends(require_owner)):
     # Con OLLAMA_MAX_LOADED_MODELS=1 il modello precedente viene scaricato da Ollama
     return await _generate(body.model, KEEP_ALIVE)
 
 
 @app.post("/api/unload")
-async def unload(body: ModelReq, _: dict = Depends(require_admin)):
+async def unload(body: ModelReq, _: dict = Depends(require_owner)):
     return await _generate(body.model, 0)

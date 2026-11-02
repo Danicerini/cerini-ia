@@ -235,6 +235,9 @@ async def llm_stream(payload: dict):
             first = False
             yield d
         return
+    if not pc_allowed():
+        yield {"error": "I modelli sul PC non sono disponibili per il tuo account: scegli il tuo fornitore"}
+        return
     async with client.stream("POST", ollama_base + "/api/chat", json=payload) as r:
         if r.status_code != 200:
             yield {"error": (await r.aread()).decode(errors="replace") or f"HTTP {r.status_code}"}
@@ -266,6 +269,8 @@ def cloud_error_text(err: str) -> str:
 async def llm_once(messages: list[dict], json_mode: bool = False, temperature: float = 0.2, model: str | None = None,
                    num_ctx: int = 8192, timeout: float = 180) -> str:
     """Una risposta sola (lavori di sottofondo): Gemma sul PC se e' acceso, altrimenti il modello nel cloud se c'e'."""
+    if model and not is_cloud(model) and not pc_allowed():
+        model = None
     use_cloud = is_cloud(model) or (not model and not await _pc_on() and cloud_bg_ready())
     payload = {"messages": messages, "stream": False, "options": {"temperature": temperature}}
     if json_mode:

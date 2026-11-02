@@ -159,7 +159,7 @@ const S = {
 const current = () => S.chats.find((c) => c.id === S.currentId) || null;
 const loadedNames = () => new Set((S.status?.loaded || []).map((m) => m.name));
 // una chat aperta con un modello cloud di prima usa quello impostato adesso (e lo mostra)
-const activeModel = () => { const m = current()?.model || S.model; return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
+const activeModel = () => { const m = current()?.model || S.model; if (S.status?.local_off) return S.status.cloud || null; return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
 const isAdmin = () => S.me?.role === 'admin';
 
 // I campi che iniziano con _ sono stato dell'interfaccia (streaming, ragionamento aperto) e non si salvano.
@@ -180,7 +180,7 @@ function showProviderGate() {
   document.getElementById('providerGate')?.remove();
   document.body.append(h('div', { id: 'providerGate', class: 'provider-gate' }, h('div', { class: 'provider-box' },
     h('h1', { text: 'Scegli il tuo modello' }),
-    h('p', { text: 'Per usare Aura serve un fornitore tuo: scegline uno e incolla la tua chiave API. I consumi li paghi tu direttamente al fornitore. Dopo potrai usare anche i modelli locali.' }),
+    h('p', { text: 'Per usare Aura serve un fornitore tuo: scegline uno e incolla la tua chiave API. I consumi li paghi tu direttamente al fornitore.' }),
     cloudCard({ gate: true }),
     h('button', { class: 'btn', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }))));
 }
@@ -297,7 +297,7 @@ function renderStatus() {
 function renderPicker() {
   const p = $('#picker'), s = S.status || { online: false, models: [], loaded: [] };
   p.replaceChildren();
-  if (!s.online) {
+  if (!s.online && !s.local_off) {
     p.append(h('div', { class: 'picker-empty' },
       h('div', { text: s.unreachable ? 'Il pannello non riesce a contattare il server.' : 'Il PC è spento o Ollama non è in esecuzione.' }),
       S.wol ? h('button', { class: 'btn sm', html: icon('power', 'sm') + 'Accendi PC', onclick: wake }) : null));
@@ -340,7 +340,7 @@ function renderPicker() {
       h('div', { class: 'm-row' + (sel === cl.name ? ' sel' : ''), ...pick(cl.name) },
         h('span', { class: 'check', html: icon('check', 'sm') }),
         h('div', {}, h('div', { class: 'nm' }, h('span', { class: 'nm-ic', html: icon('cloud', 'sm') }), cl.name.slice(6)),
-          h('div', { class: 'meta', text: `${s.cloud_account ? 'non si paga a token' : 'si paga a token'} · va anche a PC spento` })), h('div')));
+          h('div', { class: 'meta', text: s.local_off ? 'si paga a token, col tuo fornitore' : `${s.cloud_account ? 'non si paga a token' : 'si paga a token'} · va anche a PC spento` })), h('div')));
   }
   // quanto ha consumato il modello attivo questo mese (un clic apre i consumi)
   const um = S.usage?.models?.find((x) => x.name === sel);
@@ -679,8 +679,8 @@ function renderHero() {
   const s = S.status, hr = new Date().getHours();
   $('#heroTitle').textContent = hr < 6 ? 'Ancora sveglio?' : hr < 13 ? 'Buongiorno. Di cosa hai bisogno?' : hr < 18 ? 'Di cosa hai bisogno?' : 'Buonasera. Di cosa hai bisogno?';
   const am = activeModel();
-  $('#heroSub').textContent = !s ? '' : isCloudM(am) && canChat() ? `Sono Aura · ${am.slice(6)}, nel cloud: i messaggi escono da casa.`
-    : !s.online ? (isAdmin() ? 'Il PC è spento: accendilo per iniziare.' : 'Il PC è spento: scegli il tuo modello nel cloud.') : am ? `Sono Aura · ${am}, sul PC di casa.` : '';
+  $('#heroSub').textContent = !s ? '' : isCloudM(am) && canChat() ? (s.local_off ? `Sono Aura · ${am.slice(6)}.` : `Sono Aura · ${am.slice(6)}, nel cloud: i messaggi escono da casa.`)
+    : !s.online ? (S.status?.local_off ? 'Scegli il tuo modello nelle impostazioni.' : 'Il PC è spento: accendilo per iniziare.') : am ? `Sono Aura · ${am}, sul PC di casa.` : '';
   $('#heroToday')?.remove();
 
 }
@@ -3899,7 +3899,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.map(([k, t, ic]) =>
     h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), startModelCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null, cloudCard()].filter(Boolean) : lookCard();
+  const content = sec === 'aura' ? [personaCard(), S.me?.owner ? startModelCard() : null, S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null, cloudCard()].filter(Boolean) : lookCard();
   body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 

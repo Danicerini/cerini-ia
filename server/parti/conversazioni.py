@@ -156,6 +156,7 @@ async def conv_backfill():
     with db() as c:
         users = [dict(r) for r in c.execute("SELECT * FROM users WHERE id IN (SELECT DISTINCT user_id FROM chats)")]
     for u in users:
+        ACT_UID.set(u["id"])
         for _ in range(40):   # a gruppi, finche' resta qualcosa
             with db() as c:
                 left = c.execute("""SELECT COUNT(*) FROM chats WHERE user_id = ? AND id NOT IN (SELECT DISTINCT chat_id FROM chat_memory)""", (u["id"],)).fetchone()[0]
