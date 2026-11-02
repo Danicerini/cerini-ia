@@ -748,7 +748,7 @@ def _crm_company(email: str, url: str) -> str:
     """Il nome dell'azienda, dal dominio della mail di lavoro o dall'indirizzo del CRM."""
     for host in (str(email or "").rpartition("@")[2], httpx.URL(url or "http://x").host):
         parts = host.lower().split(".")
-        if len(parts) >= 2 and parts[-2] not in _CRM_GENERIC:
+        if len(parts) >= 2 and parts[-2] not in _CRM_GENERIC and not parts[-1].isdigit():   # un indirizzo IP non e' un'azienda
             return parts[-2].capitalize()
     return "Lavoro"
 
