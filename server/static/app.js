@@ -1881,7 +1881,7 @@ async function renderTickets(reloadFolders) {
     catch (e) { root.replaceChildren(h('div', { class: 'cl-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return; }
   }
   const fl = TKP.folders;
-  if (TKP.fid === null) TKP.fid = (fl.find((f) => /miei aperti/i.test(f.nome)) || fl[0]).id;
+  if (TKP.fid === null) TKP.fid = (fl.find((f) => f.miei && f.stato === 'aperti') || fl[0]).id;
   const cur = fl.find((f) => f.id === TKP.fid) || fl[0];
   const fbtn = (f) => h('button', { class: 'tkp-f' + (f.id === TKP.fid ? ' on' : ''), onclick: () => { TKP.fid = f.id; TKP.sel = null; TKP.q = ''; renderTickets(); } },
     h('span', { class: 'tkp-fn', text: f.nome }), f.count != null ? h('span', { class: 'tkp-fc tnum', text: String(f.count) }) : null);
@@ -2878,7 +2878,7 @@ async function renderTicketPanel(root) {
     onkeydown: (e) => { if (e.key === 'Enter') { TK.q = e.target.value.trim(); renderTicketPanel(root); } },
     onsearch: (e) => { if (!e.target.value && TK.q) { TK.q = ''; renderTicketPanel(root); } } });
   if (!TK.folders) { try { TK.folders = (await (await api('/api/crm/folders?counts=0')).json()).folders; } catch { TK.folders = []; } }
-  if (TK.fid === null && TK.folders.length) TK.fid = (TK.folders.find((f) => /miei aperti/i.test(f.nome)) || TK.folders[0]).id;
+  if (TK.fid === null && TK.folders.length) TK.fid = (TK.folders.find((f) => f.miei && f.stato === 'aperti') || TK.folders[0]).id;
   const folderSel = h('select', { class: 'bp-tab bp-other tk-fsel' + (!TK.all ? ' on' : ''), 'aria-label': 'Cartella del CRM',
     onchange: (e) => { TK.fid = Number(e.target.value); TK.all = false; renderTicketPanel(root); } },
     ...TK.folders.map((f) => h('option', { value: f.id, selected: f.id === TK.fid ? true : null, text: f.nome })));
