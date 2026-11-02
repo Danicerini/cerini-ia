@@ -28,7 +28,7 @@ CLOUD_PRESETS = {
                     "models": [["sonnet", "consigliato"], ["opus", "il più forte"], ["fable", ""], ["haiku", "consuma meno"]]},
     "codex": {"name": "Account ChatGPT (Codex)", "base": "", "model": "gpt-6.1-sol", "account": True,
               "note": "Usa il tuo abbonamento ChatGPT, solo per te. I messaggi vanno a OpenAI, fuori dall'Italia.",
-              "models": [["gpt-6.1-sol", "consigliato"], ["gpt-6.1-terra", ""], ["gpt-6-luna", "consuma meno"], ["gpt-5.6-terra", ""]]},
+              "models": [["gpt-6.1-sol", "consigliato"], ["gpt-6-astra", "il più forte"], ["gpt-6.1-terra", ""], ["gpt-6-luna", "consuma meno"], ["gpt-5.6-terra", ""]]},
 }
 CLOUD_CTX = int(os.environ.get("CLOUD_CTX", "64000"))
 CLOUD_MAX_TOKENS = int(os.environ.get("CLOUD_MAX_TOKENS", "8192"))   # lunghezza massima di una risposta
