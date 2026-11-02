@@ -3960,9 +3960,11 @@ function lookCard() {
 // Il CRM dei ticket: ognuno collega il suo (quello del proprietario sta sul server). La chiave non torna mai al browser.
 function crmCard() {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('ticket', 'sm') + 'CRM dei ticket' }),
-    h('p', { text: 'Aura legge i tuoi ticket, solo in lettura. Funziona con vtiger / OpenCRM.' })), h('div', { class: 'list-empty', text: 'Controllo…' }));
+    h('p', { text: 'Aura legge i tuoi ticket, solo in lettura. Funziona con vtiger / OpenCRM: l\'indirizzo è quello del CRM, la chiave di accesso la trovi nel tuo profilo («Access Key»).' })), h('div', { class: 'list-empty', text: 'Controllo…' }));
   const paint = (s) => {
+    const was = S.me.crm;
     S.me.crm = s.linked; $('#ticketsBtn').classList.toggle('hidden', !s.linked);
+    if (was !== s.linked && $('#brainPanel')?.children.length) { $('#brainPanel').replaceChildren(); renderBrainPanel(); }   // la linguetta Ticket compare o sparisce subito
     if (s.managed) { card.lastChild.replaceWith(h('small', { class: 'cloud-note', text: s.linked ? `Collegato: ${s.url}` : 'Non configurato sul server.' })); return; }
     if (s.linked) {
       card.lastChild.replaceWith(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: `${s.url} · ${s.user}` })),
@@ -3996,7 +3998,7 @@ function gmailCard() {
       p.textContent = s.ok === false ? `${s.email}: ${s.error}` : `Collegato: ${s.email}${s.messages != null ? ` · ${s.messages.toLocaleString('it-IT')} mail` : ''}`;
       if (s.ok === false) actions.append(h('a', { class: 'btn primary', href: '/api/gmail/connect', text: 'Ricollega' }));
       actions.append(confirmIcon('logout', 'Scollega Google', 'Scollegare?', async () => {
-        try { await api('/api/gmail/disconnect', {}); toast('Gmail scollegato'); card.replaceWith(gmailCard()); } catch (e) { toast(e.message); }
+        try { await api('/api/gmail/disconnect', {}); S.me.gmail = false; $('#mailBtn').classList.add('hidden'); toast('Gmail scollegato'); card.replaceWith(gmailCard()); } catch (e) { toast(e.message); }
       }));
     } catch (e) { p.textContent = e.message; }
   })();

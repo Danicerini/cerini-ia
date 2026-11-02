@@ -94,9 +94,29 @@ def crm_users():
             yield uid
 
 
+async def _crm_sql(sql: str, session: str) -> str:
+    """Ogni CRM ha i suoi campi: dalla query si tolgono quelli che in questo CRM non esistono (se no la rifiuta tutta)."""
+    m = re.match(r"\s*SELECT\s+(.+?)\s+FROM\s+(\w+)", sql, re.I | re.S)
+    if not m or m.group(1) == "*" or "(" in m.group(1):
+        return sql
+    module = m.group(2)
+    if module not in _CRM_FIELDS:
+        try:
+            _CRM_FIELDS[module] = {f.get("name") for f in (await _crm("describe", sessionName=session, elementType=module)).get("fields") or []}
+        except ValueError:
+            _CRM_FIELDS[module] = set()   # non si riesce a chiederlo: la query resta com'e'
+    known = _CRM_FIELDS[module]
+    if not known:
+        return sql
+    keep = [f for f in (x.strip() for x in m.group(1).split(",")) if f in known or f == "id"] or ["id"]
+    return sql[:m.start(1)] + ",".join(keep) + sql[m.end(1):]
+
+
 async def _crm(op: str, **p) -> dict | list:
     if op not in CRM_READ_OPS:
         raise ValueError(f"operazione CRM non permessa: {op} (il collegamento è solo in lettura)")
+    if op == "query" and p.get("sessionName"):
+        p["query"] = await _crm_sql(p["query"], p["sessionName"])
     url = crm_cfg().get("url", "") + "/webservice.php"
     try:
         if op == "login":
@@ -200,6 +220,7 @@ _CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-
                        r"\bP\.?\s?IVA\b|\bC\.?F\.?\s*:|\bPEC\b", re.I)
 _CRM_S = _PerUser(lambda: {"s": "", "uid": "", "at": 0.0})
 _CRM_NAMES = _PerUser(dict)
+_CRM_FIELDS = _PerUser(dict)
 # dove finisce il messaggio vero di una mail: firma, avvisi legali, messaggio citato
 _CRM_CUT = re.compile(r"(Codice in materia di protezione|Nota di riservatezza|Rispetta l'ambiente|Questo messaggio e gli eventuali|"
                       r"-{2,}\s*Messaggio originale|-{2,}\s*Original Message|\bDa:\s.{0,120}\bInviato:|\bFrom:\s.{0,120}\bSent:|"
@@ -416,7 +437,7 @@ async def crm_search(problema: str, miei: bool = False, limite: int = 8) -> list
     base = "ticketstatus='Closed'" + (f" AND assigned_user_id='{_crm_q(uid)}'" if miei else "")
     found: dict[str, dict] = {}
     for w in words:
-        for field in ("ticket_title", CRM_SOLUTION):
+        for field in [f for f in ("ticket_title", CRM_SOLUTION) if f == "ticket_title" or not _CRM_FIELDS.get("HelpDesk") or f in _CRM_FIELDS["HelpDesk"]]:
             sql = (f"SELECT {_CRM_LIST_F},{CRM_SOLUTION} FROM HelpDesk WHERE {base} AND {field} LIKE '%{_crm_like(w)}%' "
                    f"ORDER BY modifiedtime DESC LIMIT 40;")
             try:
@@ -753,6 +774,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     _CRM_S.update(s="", uid="", at=0.0)
     _CRM_NAMES.clear()
     _CRM_ACC.clear()
+    _CRM_FIELDS.clear()
     try:
         await _crm_get("query", query="SELECT ticket_no FROM HelpDesk LIMIT 1;")
     except ValueError as e:
@@ -770,4 +792,5 @@ async def crm_link_delete(user: dict = Depends(require_user)):
     _CRM_S.update(s="", uid="", at=0.0)
     _CRM_NAMES.clear()
     _CRM_ACC.clear()
+    _CRM_FIELDS.clear()
     return {"linked": False, "managed": False, "url": "", "user": ""}
