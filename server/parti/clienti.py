@@ -512,7 +512,7 @@ async def lead_mail(user: dict, lead: dict) -> dict:
 # ---- API per la pagina «Clienti»
 
 @app.get("/api/clienti")
-async def clienti_get(kind: str = "", status: str = "", q: str = "", user: dict = Depends(require_admin)):
+async def clienti_get(kind: str = "", status: str = "", q: str = "", user: dict = Depends(require_owner)):
     uid = user["id"]
     with db() as c:
         counts = {r["k"]: r["n"] for r in c.execute("SELECT kind || ':' || status AS k, COUNT(*) AS n FROM leads WHERE user_id = ? GROUP BY kind, status", (uid,))}
@@ -529,7 +529,7 @@ class ClientiSearchIn(BaseModel):
 
 
 @app.post("/api/clienti/cerca")
-async def clienti_start(body: ClientiSearchIn, user: dict = Depends(require_admin)):
+async def clienti_start(body: ClientiSearchIn, user: dict = Depends(require_owner)):
     uid = user["id"]
     if (CLIENTI_JOB.get(uid) or {}).get("running"):
         return {"job": CLIENTI_JOB[uid]}
@@ -547,7 +547,7 @@ class ClientiCfgIn(BaseModel):
 
 
 @app.put("/api/clienti/config")
-async def clienti_cfg_put(body: ClientiCfgIn, user: dict = Depends(require_admin)):
+async def clienti_cfg_put(body: ClientiCfgIn, user: dict = Depends(require_owner)):
     cfg = clienti_cfg()
     if body.places_key.strip():
         cfg["places_key"] = body.places_key.strip()
@@ -569,7 +569,7 @@ class LeadIn(BaseModel):
 
 
 @app.patch("/api/clienti/{lid}")
-async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_admin)):
+async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_owner)):
     lead = _lead(user["id"], lid)
     sets, args = [], []
     if body.status in ("nuovo", "contattato", "risposto", "cliente", "no"):
@@ -589,7 +589,7 @@ async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_adm
 
 
 @app.post("/api/clienti/{lid}/mail")
-async def clienti_mail(lid: int, user: dict = Depends(require_admin)):
+async def clienti_mail(lid: int, user: dict = Depends(require_owner)):
     lead = _lead(user["id"], lid)
     m = await lead_mail(user, lead)
     return {"to": lead["email"], "subject": m["oggetto"], "body": m["testo"]}

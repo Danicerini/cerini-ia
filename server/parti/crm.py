@@ -175,11 +175,12 @@ async def crm_day(day: str) -> list[dict]:
         if t.get("helpdeskid"):
             spent[t["helpdeskid"]] = spent.get(t["helpdeskid"], 0.0) + float(t.get("sum_time") or t.get("working_hours") or 0)
     for tid in (set(said) | set(spent)) - set(tickets):   # ticket commentati o con tempo ma non (più) assegnati a lui
-        if str(tid).startswith("17x"):
-            try:
-                tickets[tid] = await _crm("retrieve", sessionName=s, id=tid)
-            except ValueError:
-                pass
+        try:
+            t = await _crm("retrieve", sessionName=s, id=tid)
+            if t.get("ticket_no"):   # un commento puo' stare anche su altro: conta solo se e' un ticket
+                tickets[tid] = t
+        except ValueError:
+            pass
     keep = {tid: t for tid, t in tickets.items()
             if tid in said or tid in spent or t.get("modifiedby") == uid
             or day in (t.get("data_presa_in_carico"), t.get("data_chiusura_ticket"))}
@@ -305,7 +306,7 @@ def _crm_signer(text: str) -> str:
 
 def _crm_learn(uid: str, name: str):
     """Un utente del CRM (collega) di cui si è letto il nome nella firma: si ricorda (anche su disco)."""
-    if not name or not re.fullmatch(r"19x\d+", str(uid or "")):
+    if not name or not re.fullmatch(r"\d+x\d+", str(uid or "")):
         return
     _CRM_NAMES[uid] = name
     d = _crm_file()
@@ -464,7 +465,7 @@ async def crm_detail(ref: str) -> dict:
     """Un ticket intero: dati, descrizione, soluzione e tutti i commenti in ordine."""
     _, uid = await _crm_sess()
     ref = str(ref or "").strip()
-    if re.fullmatch(r"17x\d+", ref):
+    if re.fullmatch(r"\d+x\d+", ref):
         t = await _crm_get("retrieve", id=ref)
     else:
         m = re.search(r"(?:TK-?)?(\d{4})?-?0*(\d{1,6})\s*$", ref.upper())
@@ -643,10 +644,13 @@ async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
     user_prefix = uid.split("x")[0] + "x"   # i prefissi degli id cambiano da un CRM all'altro; chi non e' una persona e' un gruppo
     if _crm_like(testo):
         where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
-    sql = (f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
-           + f" ORDER BY modifiedtime DESC LIMIT {100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
-    rows = await _crm_get("query", query=sql)
+    sql = f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY modifiedtime DESC LIMIT "
+    rows = await _crm_get("query", query=f"{sql}{100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
     if f.get("non_assegnati"):
+        for off in range(100, 1000, 100):   # il CRM da' al massimo 100 righe per volta
+            if len(rows) < off:
+                break
+            rows += await _crm_get("query", query=f"{sql}{off},100;")
         rows = [t for t in rows if "x" in str(t.get("assigned_user_id", "")) and not str(t["assigned_user_id"]).startswith(user_prefix)]
     out = []
     for t in rows[:limite]:
@@ -662,7 +666,7 @@ async def crm_folder_counts() -> dict:
     for f in await crm_folders():
         try:
             if f.get("non_assegnati"):
-                out[f["id"]] = len(await crm_folder(f["id"], limite=100))
+                out[f["id"]] = len(await crm_folder(f["id"], limite=1000))
             else:
                 where = _crm_where(f, uid)
                 r = await _crm_get("query", query="SELECT count(*) FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + ";")
@@ -737,6 +741,48 @@ async def crm_watch_once():
     _crm_save(d)
 
 
+_CRM_GENERIC = {"crm", "www", "app", "vtiger", "opencrm", "cloud", "portal", "gmail", "googlemail", "outlook", "hotmail", "live", "libero", "yahoo", "icloud", "alice", "tiscali", "virgilio", "proton", "protonmail"}
+
+
+def _crm_company(email: str, url: str) -> str:
+    """Il nome dell'azienda, dal dominio della mail di lavoro o dall'indirizzo del CRM."""
+    for host in (str(email or "").rpartition("@")[2], httpx.URL(url or "http://x").host):
+        parts = host.lower().split(".")
+        if len(parts) >= 2 and parts[-2] not in _CRM_GENERIC:
+            return parts[-2].capitalize()
+    return "Lavoro"
+
+
+async def crm_bootstrap(user: dict):
+    """Una volta sola, per chi non e' il proprietario: dal suo utente del CRM il cervello impara chi e' e per chi lavora."""
+    if is_owner(user["id"]) or not crm_on() or _crm_file().get("avviato"):
+        return
+    brain_ensure(user)
+    _, uid = await _crm_sess()
+    try:
+        me = await _crm_get("retrieve", id=uid)
+    except ValueError:
+        me = {}   # non tutti i CRM fanno leggere la propria scheda
+    title = str(me.get("title") or "").strip()
+    company = _crm_company(me.get("email1") or me.get("email"), crm_cfg().get("url", ""))
+    text = brain_read(user, "boot/user.md")
+    name = " ".join(x for x in (me.get("first_name"), me.get("last_name")) if x).strip()
+    for fact in ([f"Si chiama {name}"] if name else []) + [f"Lavora per {company}" + (f" come {title}" if title else "")]:
+        if fact.lower() not in text.lower():
+            text = _add_fact(text, fact)
+    await brain_write(user, "boot/user.md", text, "Chi è: dal CRM")
+    if not work_projects(user):
+        rx = re.compile(r"\b(ticket\w*|client[ei]|crm|helpdesk|assistenza)\b", re.I)
+        for p in projects(user):   # i progetti che ha gia' e che sono chiaramente lavoro entrano nel consuntivo
+            meta, body = fm_split(brain_read(user, p["path"]))
+            if "lavoro" not in meta and rx.search(f"{p['name']} {body}"):
+                await brain_write(user, p["path"], fm_join({**meta, "lavoro": "true"}, body), f"{p['name']}: è lavoro")
+        await project_create(user, company, f"{title or 'Dipendente'} presso {company}.", lavoro="principale")
+    d = _crm_file()
+    d["avviato"] = local_now().strftime("%Y-%m-%d")
+    _crm_save(d)
+
+
 async def crm_watch_loop():
     await asyncio.sleep(60)
     while True:
@@ -744,6 +790,9 @@ async def crm_watch_loop():
         if now.weekday() < 6 and 7 <= now.hour < 21:
             for _uid in crm_users():
                 try:
+                    with db() as c:
+                        urow = c.execute("SELECT * FROM users WHERE id = ?", (_uid,)).fetchone()
+                    await crm_bootstrap(dict(urow))
                     await crm_watch_once()
                 except Exception as e:   # il CRM giù non deve fermare niente
                     print(f"CRM: sorveglianza ticket non riuscita: {e}", flush=True)
@@ -799,6 +848,10 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     except ValueError as e:
         f.unlink(missing_ok=True)
         raise HTTPException(400, f"Non riesco a entrare nel CRM: {e}")
+    try:
+        await crm_bootstrap(user)
+    except Exception as e:   # il collegamento e' riuscito: il resto lo rifa' il giro di sorveglianza
+        print(f"CRM: primo avvio non riuscito: {e}", flush=True)
     return {"linked": True, "managed": False, "url": url, "user": body.user.strip(), "write": bool(_prefs(user).get("crm_write"))}
 
 

@@ -605,7 +605,7 @@ async def aura_feed(user: dict = Depends(require_user)):
             "parcels": parcels_active(uid), "deadlines": deadlines_next(uid),
             "mail_today": {"total": sum(n for k, n in seen.items() if k != "vecchia"), **seen},
             "unread": sum(r["unread"] for r in rows), "devices": devices,
-            "power": _power_sched(uid) if user["role"] == "admin" and ESP32_URL else None,
+            "power": _power_sched(uid) if is_owner(uid) and ESP32_URL else None,
             "watch": {"gmail": bool(_gmail_row(uid)), "enabled": _watch_on(uid) if _gmail_row(uid) else False,
                       "last": row["last_full"] if row else 0, "error": row["last_error"] if row else None}}
 

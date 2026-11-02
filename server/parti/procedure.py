@@ -204,7 +204,7 @@ class ProcCreateIn(BaseModel):
 
 
 @app.post("/api/homebase/procedure/create")
-async def proc_create(body: ProcCreateIn, user: dict = Depends(require_admin)):
+async def proc_create(body: ProcCreateIn, user: dict = Depends(require_owner)):
     try:
         r, data = file_bytes(user["id"], body.zip_id)
     except ValueError:

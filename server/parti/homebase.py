@@ -154,7 +154,7 @@ async def _tool_hb_proc_read(user: dict, args: dict, request: Request) -> dict:
 
 
 @app.get("/api/homebase/doc")
-async def hb_doc_api(tipo: str, id: int, _: dict = Depends(require_admin)):
+async def hb_doc_api(tipo: str, id: int, _: dict = Depends(require_owner)):
     try:
         return await hb_doc("nota" if tipo == "nota" else "procedura", id)
     except ValueError as e:
@@ -227,7 +227,7 @@ def _sp_view(sheet: dict, sheets: list[dict] | None = None, archived: dict | Non
 
 
 @app.get("/api/homebase/scratchpad")
-async def hb_scratch_sheet(sheet: int | None = None, nome: str = "", user: dict = Depends(require_admin)):
+async def hb_scratch_sheet(sheet: int | None = None, nome: str = "", user: dict = Depends(require_owner)):
     """Un foglio dello scratchpad (per numero, o per nome nelle schede vecchie): i fogli cliccabili nella scheda in chat."""
     if not homebase_on():
         raise HTTPException(409, "La Homebase non è collegata")
