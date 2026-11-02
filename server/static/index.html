@@ -1677,6 +1677,14 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tka-ch { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 13.5px; margin: 0; } .tka-ch dt { color: var(--text-3); } .tka-ch dd { margin: 0; }
 .tka-ch s { color: var(--text-3); margin-right: 6px; }
 .tka-f { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tka-f .grow { flex: 1; }
+.tka-assist { display: flex; flex-direction: column; gap: 8px; }
+.tka-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tka-link { border: 0; background: none; padding: 2px 4px; color: var(--text-2); font: inherit; font-size: 12.5px; text-decoration: underline; cursor: pointer; }
+.tka-explain { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 10px; background: color-mix(in oklch, var(--tka) 6%, transparent); }
+.tka-explain[hidden], .tka-link[hidden] { display: none; }
+.tka-explain textarea { min-height: 64px; }
+.tka-busy { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); } .tka-busy:empty { display: none; } .tka-busy.err { color: var(--err); }
 .tka-hint { flex: 1; min-width: 180px; font-size: 12.5px; color: var(--text-3); }
 .tka-send { background: var(--tka); color: var(--tk-on); border-color: transparent; } .tka-send:hover { background: color-mix(in oklch, var(--tka) 85%, black); color: var(--tk-on); }
 .tka-err { font-size: 13px; color: var(--err); }

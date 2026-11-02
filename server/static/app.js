@@ -3028,14 +3028,52 @@ function tkaHead(v) {
   const c = TKA[v.mode] || TKA.edit;
   return h('div', { class: 'tka-h' }, h('span', { html: icon(c.ic, 'sm') }), c.label, h('span', { class: 'no tnum', text: v.no || '' }));
 }
+// I tasti che chiedono ad Aura di scrivere: non mandano niente al CRM, cambiano solo il testo nella casella.
+// La bozza da zero, la spiegazione a parole proprie e la riscrittura di quello che si è scritto di fretta
+function tkaAssist(v, area) {
+  const url = '/api/crm/ticket/' + encodeURIComponent(v.no) + '/draft';
+  const status = h('div', { class: 'tka-busy', role: 'status' });
+  let before = null, busy = false;
+  const buttons = [];
+  const undo = h('button', { type: 'button', class: 'tka-link', text: 'Torna al testo di prima', hidden: true, onclick: () => { area.value = v.text = before ?? ''; undo.hidden = true; area.focus(); } });
+  const setBusy = (on, msg) => { busy = on; buttons.forEach((b) => { b.disabled = on; }); status.className = 'tka-busy'; status.replaceChildren(...(on ? [h('span', { class: 'spinner' }), h('span', { text: msg })] : [])); };
+  const ask = async (action, msg, extra) => {
+    if (busy) return false;
+    setBusy(true, msg);
+    try {
+      const r = await (await api(url, { mode: v.mode, action, text: area.value, ...extra })).json();
+      before = area.value; area.value = v.text = r.text;
+      undo.hidden = !before.trim();
+      setBusy(false);
+      return true;
+    } catch (e) { setBusy(false); status.className = 'tka-busy err'; status.textContent = e.message; return false; }
+  };
+  const note = h('textarea', { 'aria-label': 'Spiega ad Aura', rows: 3, placeholder: 'Digli con parole tue cosa è successo o cosa vuoi dire: il testo lo scrive lui.' });
+  const explain = h('div', { class: 'tka-explain', hidden: true }, note, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
+    h('button', { type: 'button', class: 'btn sm', text: 'Chiudi', onclick: () => { explain.hidden = true; } }),
+    (() => { const b = h('button', { type: 'button', class: 'btn sm primary', text: 'Scrivi il testo', onclick: async () => {
+      if (note.value.trim().length < 2) { status.className = 'tka-busy err'; status.textContent = 'Spiega prima cosa vuoi scrivere.'; return; }
+      if (await ask('explain', 'Aura sta scrivendo dalla tua spiegazione…', { note: note.value })) explain.hidden = true; } }); buttons.push(b); return b; })()));
+  const tool = (label, ic, title, fn) => { const b = h('button', { type: 'button', class: 'btn sm', html: icon(ic, 'sm') + label, title, onclick: fn }); buttons.push(b); return b; };
+  const row = h('div', { class: 'tka-tools' },
+    tool('Bozza di Aura', 'bulb', 'Aura scrive un testo da zero leggendo il ticket', () => ask('draft', 'Aura sta scrivendo la bozza…')),
+    tool('Spiega ad Aura', 'tool', 'Gli dici cosa è successo e lui scrive il testo', () => { explain.hidden = !explain.hidden; if (!explain.hidden) note.focus(); }),
+    tool(v.mode === 'close' ? 'Riformula chiusura' : v.mode === 'note' ? 'Riformula nota' : 'Riformula risposta', 'retry', 'Sistema errori e sintassi di quello che hai scritto, senza cambiare il senso', () => {
+      if (area.value.trim().length < 2) { status.className = 'tka-busy err'; status.textContent = 'Scrivi prima qualcosa da riformulare.'; return; }
+      ask('rewrite', 'Aura sta riformulando il testo…'); }),
+    undo);
+  return h('div', { class: 'tka-assist' }, row, explain, status);
+}
 // in chat: la conferma di Aura. Il testo si può correggere: nel CRM va quello che c'è qui quando premi
 function ticketActConfirmEl(chat, m) {
   const v = m.view, c = TKA[v.mode] || TKA.edit, pending = m.status === 'pending';
   const card = h('div', { class: 'tka ' + v.mode }, tkaHead(v), tkaBody(v, !pending));
   if (pending) {
-    card.lastChild.append(h('div', { class: 'tka-f' }, h('span', { class: 'tka-hint', text: c.hint }),
+    const area = card.lastChild.querySelector('textarea');
+    if (area) card.lastChild.append(tkaAssist(v, area));
+    card.lastChild.append(h('div', { class: 'tka-f' }, h('span', area ? { class: 'grow' } : { class: 'tka-hint', text: c.hint }),
       h('button', { class: 'btn sm', text: 'Annulla', disabled: !!S.stream, onclick: () => decide(chat, m, false) }),
-      h('button', { class: 'btn sm tka-send', html: icon(c.ic, 'sm') + c.send, disabled: !!S.stream, onclick: () => decide(chat, m, true, { text: v.text || '', units: v.units || '' }) })));
+      h('button', { class: 'btn sm tka-send', title: c.hint, html: icon(c.ic, 'sm') + c.send, disabled: !!S.stream, onclick: () => decide(chat, m, true, { text: v.text || '', units: v.units || '' }) })));
   } else if (m.status === 'working') {
     card.lastChild.append(h('div', { class: 'tka-st' }, h('span', { class: 'spinner' }), h('span', { text: 'Scrivo nel CRM…' })));
   } else {
@@ -3063,26 +3101,19 @@ function tkActions(t, reload) {
     const open = (mode) => {
       const v = { mode, no: t.no, client: t.client, title: t.title, text: '', units: '' }, c = TKA[mode];
       const err = h('div', { class: 'tka-err', role: 'alert' });
-      const draft = h('button', { class: 'btn sm', html: icon('bulb', 'sm') + 'Bozza di Aura', onclick: async () => {
-        draft.disabled = true; err.textContent = 'Aura sta scrivendo la bozza…';
-        try { v.text = (await (await api(url + '/draft', { mode })).json()).text; paint(); }
-        catch (e) { err.textContent = e.message; draft.disabled = false; } } });
-      const paint = () => {
-        const send = h('button', { class: 'btn sm tka-send', html: icon(c.ic, 'sm') + c.send, onclick: async () => {
-          if ((v.text || '').trim().length < 2) { err.textContent = 'Manca il testo.'; return; }
-          send.disabled = true; err.textContent = '';
-          try {
-            if (mode === 'close') await api(url + '/close', { text: v.text, units: v.units });
-            else await api(url + '/comment', { text: v.text, interna: mode === 'note' });
-            await after(mode === 'close' ? `Ticket ${t.no} chiuso` : mode === 'note' ? 'Nota aggiunta' : 'Risposta inserita nel ticket');
-          } catch (e) { err.textContent = e.message; send.disabled = false; } } });
-        const body = tkaBody(v, false);
-        body.append(err, h('div', { class: 'tka-f' }, h('span', { class: 'tka-hint', text: c.hint }), draft,
-          h('button', { class: 'btn sm', text: 'Annulla', onclick: () => form.replaceChildren() }), send));
-        form.replaceChildren(h('div', { class: 'tka ' + mode }, tkaHead(v), body));
-        body.querySelector('textarea')?.focus();
-      };
-      paint();
+      const send = h('button', { class: 'btn sm tka-send', title: c.hint, html: icon(c.ic, 'sm') + c.send, onclick: async () => {
+        if ((v.text || '').trim().length < 2) { err.textContent = 'Manca il testo.'; return; }
+        send.disabled = true; err.textContent = '';
+        try {
+          if (mode === 'close') await api(url + '/close', { text: v.text, units: v.units });
+          else await api(url + '/comment', { text: v.text, interna: mode === 'note' });
+          await after(mode === 'close' ? `Ticket ${t.no} chiuso` : mode === 'note' ? 'Nota aggiunta' : 'Risposta inserita nel ticket');
+        } catch (e) { err.textContent = e.message; send.disabled = false; } } });
+      const body = tkaBody(v, false);
+      body.append(tkaAssist(v, body.querySelector('textarea')), err, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm', text: 'Annulla', onclick: () => form.replaceChildren() }), send));
+      form.replaceChildren(h('div', { class: 'tka ' + mode }, tkaHead(v), body));
+      body.querySelector('textarea')?.focus();
     };
     const btn = (label, cls, onclick) => h('button', { class: 'btn sm tkb-btn ' + cls, text: label, onclick });
     const take = !t.done && (!t.mine || t.status === 'Open') ? btn('Prendi in carico', 'primary', (e) => {
