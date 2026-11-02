@@ -1568,6 +1568,77 @@ function convCard() {
   return card;
 }
 
+// Importare un cervello da uno zip: prima si guarda cosa succederebbe, senza scrivere niente; poi si conferma, e si può annullare
+function brainImport() {
+  const close = () => modal.remove();
+  const body = h('div', { class: 'bi' });
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet bi-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Importa un cervello' },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Importa un cervello' }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x'), onclick: close })), body));
+  const start = async () => {
+    const input = h('input', { type: 'file', accept: '.zip,application/zip', hidden: true, onchange: () => input.files[0] && analyze(input.files[0]) });
+    const undo = h('div');
+    body.replaceChildren(
+      h('p', { class: 'bi-p', text: 'Uno zip con i file markdown di un cervello, per esempio esportato da qui o da un altro cervello col Brain Protocol. Finisce nel cervello del tuo account. Prima ti faccio vedere cosa succede: fino alla conferma non scrivo niente.' }),
+      h('pre', { class: 'bi-tree', text: 'wiki/\n  people/nome.md\n  companies/nome.md\n  places/  services/  things/\n  projects/nome/index.md\ndiary/\n  2026/2026-01-15.md\nskills/nome/SKILL.md   (facoltative)\nboot/user.md          (facoltativo: chi sei)' }),
+      h('ul', { class: 'bi-list' }, h('li', { text: 'Può stare tutto dentro una cartella. Bastano wiki/ o diary/.' }), h('li', { text: 'Vanno bene anche person/, project/, persone/, progetti/.' }),
+        h('li', { text: 'Le schede che hai già non si sovrascrivono: aggiungo quello che manca.' }),
+        h('li', { text: 'Restano fuori: le regole dell\'altro Aura, foto, script, .env. Quello che sembra una password viene tolto.' })),
+      undo,
+      h('div', { class: 'ag-sheet-f' }, h('a', { class: 'btn', href: '/api/brain/import/esempio', download: '', text: 'Zip di esempio' }), h('span', { class: 'grow' }),
+        h('button', { class: 'btn primary', html: icon('up', 'sm') + 'Scegli lo zip', onclick: () => input.click() })), input);
+    try {
+      const last = await (await api('/api/brain/import/last')).json();
+      if (last.at) undo.replaceChildren(undoRow(last));
+    } catch {}
+  };
+  const undoRow = (last) => {
+    const row = h('div', { class: 'bi-undo' }, h('span', { text: `Ultima importazione: ${last.files} file, ${new Date(last.at * 1000).toLocaleDateString('it-IT')}` }),
+      h('button', { class: 'btn sm', text: 'Annullala', onclick: async (e) => {
+        if (!confirm('Tolgo dal cervello tutto quello che ha portato quell\'importazione?')) return;
+        e.currentTarget.disabled = true;
+        try { await api('/api/brain/import/undo', {}); toast('Importazione annullata'); close(); if ($('#main').classList.contains('memory-open')) renderMemory(); }
+        catch (err) { toast(err.message); e.target.disabled = false; } } }));
+    return row;
+  };
+  const analyze = async (file) => {
+    if (file.size > 32 * 1024 * 1024) { toast('Lo zip è troppo grande: al massimo 32 MB'); return; }
+    body.replaceChildren(h('div', { class: 'list-empty', text: 'Guardo lo zip…' }));
+    let d;
+    try { d = await (await api('/api/brain/import/preview', undefined, { method: 'POST', body: file, headers: { 'Content-Type': 'application/zip' } })).json(); }
+    catch (e) { body.replaceChildren(h('div', { class: 'form-msg err', role: 'alert', text: e.message }), h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Indietro', onclick: start }))); return; }
+    showPlan(d);
+  };
+  const showPlan = (d) => {
+    const check = (on, label, hint) => { const c = h('input', { type: 'checkbox', checked: on ? true : null }); return [c, h('label', { class: 'bi-opt' }, c, h('div', {}, h('b', { text: label }), hint ? h('small', { text: hint }) : null))]; };
+    const stat = (n, label) => h('div', { class: 'bi-stat' }, h('b', { class: 'tnum', text: String(n) }), h('small', { text: label }));
+    const [cDiary, oDiary] = check(true, `Diario: ${d.diary_new + d.diary_merge} ${d.diary_new + d.diary_merge === 1 ? 'giorno' : 'giorni'}`, d.todos ? `Contiene ${d.todos} cose da fare aperte: diventano promemoria nel diario.` : '');
+    const [cSkill, oSkill] = check(false, `Skill: ${d.skills.length}`, `Sono istruzioni che Aura segue: attivale solo se ti fidi di chi le ha scritte. ${d.skills.map((s) => s.name).slice(0, 8).join(', ')}`);
+    const [cProf, oProf] = check(false, `Profilo: ${d.profile.length} ${d.profile.length === 1 ? 'riga' : 'righe'} nel tuo boot/user.md`, 'Entrano in ogni chat come fatti su di te: attivalo solo se parlano davvero di te. Leggile qui sotto.');
+    const skipped = Object.entries(d.skipped || {});
+    const out = h('div', { class: 'form-msg', role: 'status' });
+    const go = h('button', { class: 'btn primary', text: 'Importa', onclick: async () => {
+      go.disabled = true; out.className = 'form-msg'; out.textContent = 'Importo…';
+      try {
+        const r = await (await api(`/api/brain/import/${d.id}/apply`, { diary: cDiary.checked, skills: cSkill.checked, profile: cProf.checked })).json();
+        toast(r.written ? `Importati ${r.written} file` : 'Non c\'era niente di nuovo');
+        close(); if ($('#main').classList.contains('memory-open')) renderMemory();
+      } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; go.disabled = false; }
+    } });
+    body.replaceChildren(
+      h('div', { class: 'bi-stats' }, stat(d.wiki_new, 'schede nuove'), stat(d.wiki_merge, 'da unire a quelle che hai'), stat(d.same, 'già uguali')),
+      Object.keys(d.kinds).length ? h('p', { class: 'bi-p', text: Object.entries(d.kinds).map(([k, n]) => `${d.kind_labels[k] || k}: ${n}`).join(' · ') }) : null,
+      d.names.length ? h('details', { class: 'bi-more' }, h('summary', { text: 'Alcune schede' }), h('p', { text: d.names.join(', ') })) : null,
+      d.diary_new + d.diary_merge ? oDiary : null, d.skills.length ? oSkill : null, d.profile.length ? oProf : null,
+      d.profile.length ? h('details', { class: 'bi-more' }, h('summary', { text: 'Le righe del profilo' }), h('ul', { class: 'bi-list' }, ...d.profile.slice(0, 30).map((x) => h('li', { text: x })))) : null,
+      d.secrets ? h('div', { class: 'form-msg err', text: `Ho tolto ${d.secrets} ${d.secrets === 1 ? 'valore che sembra' : 'valori che sembrano'} una password o una chiave. Lo zip originale resta com'è: tienilo al sicuro.` }) : null,
+      skipped.length ? h('details', { class: 'bi-more' }, h('summary', { text: `Restano fuori: ${skipped.reduce((a, [, n]) => a + n, 0)} file` }), h('ul', { class: 'bi-list' }, ...skipped.map(([why, n]) => h('li', { text: `${n}: ${why}` })))) : null,
+      out,
+      h('div', { class: 'ag-sheet-f' }, h('button', { class: 'btn', text: 'Indietro', onclick: start }), h('span', { class: 'grow' }), go));
+  };
+  document.body.append(modal);
+  start();
+}
 async function renderMemory() {
   const root = $('#memoryView');
   root.replaceChildren(h('div', { class: 'set-wrap' }, h('div', { class: 'card list-empty', text: 'Carico la memoria…' })));
@@ -1644,6 +1715,7 @@ async function renderMemory() {
         h('div', { class: 'card-head graph-head' }, h('h2', { text: 'Il grafo del cervello' }),
           h('a', { class: 'btn sm', href: '/api/brain/export', download: '', title: 'Scarica il cervello com’è adesso: estrai lo zip e apri la cartella «cervello» in Obsidian',
             html: icon('unload', 'sm') + 'Esporta per Obsidian' }),
+          h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Importa', title: 'Porta qui un cervello da uno zip', onclick: () => brainImport() }),
           h('p', { text: 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla; trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.' })),
         map.el,
         h('div', { class: 'mem-legend' }, ...kinds.map(([k, [label, col]]) => h('span', {}, h('i', { style: `background:${col}` }), `${label} (${graph.nodes.filter((n) => n.kind === k).length})`)),

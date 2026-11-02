@@ -2472,3 +2472,348 @@ async def _tool_mail_attachments(user: dict, args: dict, request: Request) -> di
 TOOLS["mail_allegati"] = {"admin": False, "gmail": True, "confirm": False, "run": _tool_mail_attachments,
     "spec": _fn("mail_allegati", "Salva gli allegati di una mail (numero n.) come file, per leggerli o controllarli (es. un PDF sospetto).",
                 {"numero": {"type": "integer"}}, ["numero"])}
+
+
+# ---- importare un cervello da uno zip (Brain Protocol: boot/, wiki/, diary/, skills/, anche dentro una cartella)
+# Prima si analizza e non si scrive niente; poi l'utente sceglie e tutto finisce in un commit solo, che si puo' annullare.
+# Il contenuto viene da fuori: non si importano mai le regole di Aura (boot/soul.md, domain.md…), le skill sono spente di
+# partenza perche' sono istruzioni, e quello che sembra una password non entra.
+
+IMPORT_MAX_FILES = 5000
+IMPORT_MAX_TOTAL = 100 * 1024 * 1024
+IMPORT_MAX_FILE = 2 * 1024 * 1024
+_IMPORT_PILLARS = ("boot", "wiki", "diary", "skills")
+_IMPORT_KINDS = {**{k: k for k in WIKI_KINDS}, **OLD_KINDS, "project": "projects", "progetto": "projects", "person": "people", "persona": "people", "contacts": "people", "contatti": "people",
+                 "company": "companies", "azienda": "companies", "aziende": "companies", "clienti": "companies", "cliente": "companies", "place": "places", "luogo": "places",
+                 "service": "services", "servizio": "services", "thing": "things", "cosa": "things"}
+_IMPORT_SECRET = re.compile(r"(?i)(\b(?:password|passwd|pwd|passphrase|token|api[ _-]?key|secret|client[ _-]?secret|chiave(?: api| segreta)?|pin)\b[ \t*_`]*[:=][ \t*_`]*)(\S[^\n]*)"
+                            r"|-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)|\bsk-[A-Za-z0-9_\-]{20,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bAKIA[0-9A-Z]{16}\b|\bxox[bpas]-[A-Za-z0-9\-]{10,}", re.S)
+_IMPORT_LINK = re.compile(r"wiki/([A-Za-z]+)/")
+_IMPORTS: dict[str, dict] = {}
+
+
+def _import_scrub(text: str) -> tuple[str, int]:
+    """Via quello che sembra una password o una chiave: nel cervello non ci va. Si tiene la parola, non il valore."""
+    n = 0
+
+    def rep(m):
+        nonlocal n
+        n += 1
+        return (m.group(1) if m.group(1) else "") + "[tolto all'importazione]"
+    return _IMPORT_SECRET.sub(rep, text), n
+
+
+def _import_links(text: str) -> str:
+    """I collegamenti seguono le schede spostate: wiki/person/x -> wiki/people/x, wiki/projects/x -> wiki/projects/x/index."""
+    text = _IMPORT_LINK.sub(lambda m: f"wiki/{_IMPORT_KINDS.get(m.group(1).lower(), m.group(1))}/", text)
+    return re.sub(r"(wiki/projects/[\w\-]+)(?=\s*(?:\||\]\]))", r"\1/index", text)
+
+
+def _import_read(data: bytes) -> tuple[dict, dict]:
+    """Dallo zip ai testi, con i percorsi a partire dai quattro pilastri. Mai estratto su disco."""
+    import io, stat, zipfile
+    skipped = {}
+
+    def skip(why):
+        skipped[why] = skipped.get(why, 0) + 1
+    try:
+        z = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Questo file non è uno zip valido")
+    with z:
+        infos = [i for i in z.infolist() if not i.is_dir()]
+        if len(infos) > IMPORT_MAX_FILES or sum(i.file_size for i in infos) > IMPORT_MAX_TOTAL:
+            raise HTTPException(400, f"Lo zip è troppo grande: al massimo {IMPORT_MAX_FILES} file e 100 MB estratti")
+        raw = {}
+        for i in infos:
+            name = i.filename.replace("\\", "/")
+            parts = [p for p in name.split("/") if p not in ("", ".")]
+            if not parts or name.startswith("/") or ".." in parts or ":" in parts[0] or stat.S_ISLNK(i.external_attr >> 16) or i.flag_bits & 1:
+                skip("percorsi pericolosi, collegamenti o file cifrati")
+            elif any(p.startswith(".") for p in parts):
+                skip("file nascosti e di configurazione (.git, .env, .obsidian…)")
+            elif not parts[-1].lower().endswith(".md"):
+                skip("file che non sono markdown (foto, script, documenti…)")
+            elif i.file_size > IMPORT_MAX_FILE:
+                skip("file troppo grandi")
+            else:
+                with z.open(i) as f:
+                    body = f.read(IMPORT_MAX_FILE + 1)
+                try:
+                    if len(body) > IMPORT_MAX_FILE:
+                        raise ValueError
+                    raw["/".join(parts)] = body.decode("utf-8-sig")
+                except ValueError:
+                    skip("file troppo grandi o illeggibili")
+    roots = {}
+    for name in raw:
+        parts = name.split("/")
+        k = next((n for n, p in enumerate(parts) if p.lower() in _IMPORT_PILLARS), None)
+        if k is not None and k <= 2 and len(parts) > k + 1:
+            root = "/".join(parts[:k])
+            roots[root] = roots.get(root, 0) + 1
+    if not roots:
+        raise HTTPException(400, "Nello zip non trovo la struttura di un cervello: servono le cartelle wiki/ o diary/ (anche dentro una cartella sola)")
+    root = max(roots, key=roots.get)
+    files = {}
+    for name, text in raw.items():
+        if root and not name.startswith(root + "/"):
+            skip("file fuori dal cervello")
+            continue
+        rel = name[len(root) + 1:] if root else name
+        if rel.split("/")[0].lower() in _IMPORT_PILLARS:
+            files[rel] = text
+        else:
+            skip("file fuori dal cervello")
+    return files, skipped
+
+
+def _import_target(rel: str) -> tuple[str, str]:
+    """Dove va un file: (tipo, percorso nel cervello) oppure ("", motivo per cui resta fuori)."""
+    parts = rel.split("/")
+    top, stem = parts[0].lower(), parts[-1][:-3]
+    if top == "boot":
+        return ("profile", "boot/user.md") if parts[1:] == ["user.md"] else ("", "regole di Aura dell'altro cervello (boot/): non si importano")
+    if top == "wiki":
+        if len(parts) < 3 or (stem.lower() == "index" and len(parts) == 3):
+            return "", "indici generati"
+        kind = _IMPORT_KINDS.get(parts[1].lower(), "things")
+        inner = [p[:-3] if p.lower().endswith(".md") else p for p in parts[2:]]
+        if inner[-1].lower() == "index":
+            inner.pop()
+        if kind == "projects":
+            slug = _slug(inner[0])
+            return "wiki", f"wiki/projects/{slug}/index.md" if len(inner) == 1 else f"wiki/projects/{slug}/{_slug('-'.join(inner[1:]))}.md"
+        return "wiki", f"wiki/{kind}/{_slug('-'.join(inner))}.md"
+    if top == "diary":
+        m = re.search(r"(\d{4}-\d{2}-\d{2})(.*)$", stem)
+        if not m:
+            return "", "voci del diario senza data nel nome"
+        return "diary", day_path(m.group(1))   # un file per giorno, come il resto del diario
+    if top == "skills":
+        if len(parts) == 3 and parts[2].lower() == "skill.md":
+            return "skill", f"skills/{_slug(parts[1])}/SKILL.md"
+        return "", "altri file delle skill"
+    return "", "file fuori dal cervello"
+
+
+def _import_card(rel: str, text: str) -> str:
+    """Una scheda con i dati che servono ad Aura, anche se in origine non li aveva."""
+    meta, body = fm_split(text)
+    kind = rel.split("/")[1]
+    today = local_now().strftime("%Y-%m-%d")
+    if not meta.get("name"):
+        h1 = re.search(r"^# (.+)$", body, re.M)
+        meta["name"] = clean_name(h1.group(1) if h1 else entity_id(rel).replace("-", " ").title())[:80]
+    meta.update(type="project" if kind == "projects" else "wiki", kind=kind, imported=today)
+    meta.setdefault("updated", today)
+    if kind == "projects":
+        meta.setdefault("status", "active")
+        meta.setdefault("project", entity_id(rel))
+    return fm_join({k: v for k, v in meta.items() if isinstance(v, (str, list))}, body)
+
+
+def _import_merge(cur: str, new: str) -> str | None:
+    """Una scheda che c'e' gia': non si sovrascrive mai. Si aggiunge cio' che manca; None se non manca niente."""
+    meta, body = fm_split(cur)
+    have = {x.lower().rstrip(". ") for x in _fact_lines(cur)}
+    new_body = fm_split(new)[1]
+    text, changed = cur, False
+    for fact in _fact_lines(new):
+        if fact.lower().rstrip(". ") not in have:
+            have.add(fact.lower().rstrip(". "))
+            text, changed = _add_fact(text, fact), True
+    rest = "\n".join(x for x in new_body.splitlines() if x.strip() and not x.startswith(("# ", "- ", "---")) and not re.fullmatch(r"#+ .*", x.strip()) and x.strip() not in body)
+    if rest.strip():
+        text, changed = text.rstrip("\n") + f"\n\n## Importato il {local_now().strftime('%Y-%m-%d')}\n{rest.strip()}\n", True
+    return text if changed else None
+
+
+def _import_day_part(rel: str, text: str) -> str:
+    """Il pezzo di un giorno: la voce con un nome nel file (2026-01-16-riunione.md) diventa una sezione."""
+    body = fm_split(text)[1].strip()
+    m = re.search(r"\d{4}-\d{2}-\d{2}[-_ ]*(.+)$", rel.rsplit("/", 1)[-1][:-3])
+    if not m or not body:
+        return body
+    h1 = re.match(r"# (.+)\n?", body)
+    title = h1.group(1).strip() if h1 else m.group(1).replace("-", " ").replace("_", " ").strip().capitalize()
+    return f"## {title}\n{body[h1.end():].strip() if h1 else body}"
+
+
+def _import_plan(user: dict, files: dict, skipped: dict) -> dict:
+    by_name = {_flat(e["name"]): e["path"] for e in brain_entities(user)}
+    items, secrets, todos, days = [], 0, 0, {}
+    for rel, text in sorted(files.items()):
+        kind, target = _import_target(rel)
+        if not kind:
+            skipped[target] = skipped.get(target, 0) + 1
+            continue
+        clean, n = _import_scrub(_import_links(text))
+        secrets += n
+        if kind == "diary":
+            days.setdefault(target, []).append(_import_day_part(rel, clean))
+            todos += len(re.findall(r"^- \[ \]", clean, re.M))
+            continue
+        if kind == "wiki" and target.count("/") == 2 or (kind == "wiki" and target.endswith("/index.md")):
+            clean = _import_card(target, clean)
+            target = by_name.get(_flat(fm_split(clean)[0].get("name")), target) if fm_split(clean)[0].get("name") else target
+        items.append({"kind": kind, "rel": target, "text": clean})
+    items += [{"kind": "diary", "rel": rel, "text": "\n\n".join(x for x in parts if x) + "\n"} for rel, parts in days.items()]
+    return {"items": items, "skipped": skipped, "secrets": secrets, "todos": todos}
+
+
+def _import_action(user: dict, it: dict) -> tuple[str, str]:
+    """Cosa succede a un file adesso: (azione, testo finale). Azioni: new, merge, same."""
+    cur = brain_read(user, it["rel"])
+    if not cur:
+        return "new", it["text"]
+    if cur.strip() == it["text"].strip():
+        return "same", ""
+    if it["kind"] == "skill":
+        return "same", ""   # una skill che c'e' gia' resta quella
+    if it["kind"] == "diary":
+        new = it["text"].strip()
+        if new in cur:
+            return "same", ""
+        return "merge", cur.rstrip("\n") + "\n\n" + (new if new.startswith("## ") else f"## Importato\n{new}") + "\n"
+    merged = _import_merge(cur, it["text"])
+    return ("merge", merged) if merged else ("same", "")
+
+
+def _import_summary(user: dict, plan: dict) -> dict:
+    out = {"wiki_new": 0, "wiki_merge": 0, "diary_new": 0, "diary_merge": 0, "same": 0, "kinds": {}, "skills": [], "profile": [], "names": []}
+    for it in plan["items"]:
+        act, _text = _import_action(user, it)
+        if it["kind"] == "profile":
+            have = {x.lower().rstrip(". ") for x in _fact_lines(brain_read(user, "boot/user.md"))}
+            out["profile"] = [f[:200] for f in _fact_lines(it["text"]) if f.lower().rstrip(". ") not in have][:200]
+        elif act == "same":
+            out["same"] += 1
+        elif it["kind"] == "skill":
+            meta, _b = fm_split(it["text"])
+            out["skills"].append({"slug": it["rel"].split("/")[1], "name": str(meta.get("name") or it["rel"].split("/")[1])[:80]})
+        elif it["kind"] == "wiki":
+            out[f"wiki_{act}"] += 1
+            kind = it["rel"].split("/")[1]
+            out["kinds"][kind] = out["kinds"].get(kind, 0) + 1
+            if len(out["names"]) < 30:
+                out["names"].append(str(fm_split(it["text"])[0].get("name") or entity_id(it["rel"]))[:60])
+        else:
+            out[f"diary_{act}"] += 1
+    return {**out, "skipped": plan["skipped"], "secrets": plan["secrets"], "todos": plan["todos"], "kind_labels": {k: v[0] for k, v in WIKI_KINDS.items()}}
+
+
+class BrainImportIn(BaseModel):
+    diary: bool = True
+    skills: bool = False
+    profile: bool = False
+
+
+def _import_last_file() -> Path:
+    return user_file("brain_import.json")
+
+
+def _import_reindex_soon(user: dict, rels: list[str]):
+    async def run():
+        for rel in rels:
+            if rel.startswith("wiki/") or rel == "boot/user.md":
+                try:
+                    await brain_reindex(user, rel)
+                except Exception as e:
+                    print(f"Importazione: indice di {rel} non aggiornato: {e}", flush=True)
+    asyncio.create_task(run())
+
+
+@app.post("/api/brain/import/preview")
+async def brain_import_preview(request: Request, user: dict = Depends(require_user)):
+    """Guarda lo zip e dice cosa succederebbe. Non scrive niente nel cervello."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "File vuoto")
+    brain_ensure(user)
+    plan = _import_plan(user, *_import_read(data))
+    now = time.time()
+    for k in [k for k, v in _IMPORTS.items() if v["exp"] < now or v["uid"] == user["id"]]:
+        _IMPORTS.pop(k)
+    pid = secrets.token_urlsafe(12)
+    _IMPORTS[pid] = {"uid": user["id"], "exp": now + 1800, "plan": plan}
+    return {"id": pid, **_import_summary(user, plan)}
+
+
+@app.post("/api/brain/import/{pid}/apply")
+async def brain_import_apply(pid: str, body: BrainImportIn, user: dict = Depends(require_user)):
+    p = _IMPORTS.get(pid)
+    if not p or p["uid"] != user["id"] or p["exp"] < time.time():
+        raise HTTPException(404, "Questa analisi è scaduta: ricarica lo zip")
+    want = {"wiki"} | ({"diary"} if body.diary else set()) | ({"skill"} if body.skills else set()) | ({"profile"} if body.profile else set())
+    bdir = brain_dir(user)
+    written, counts = [], {"new": 0, "merge": 0}
+    async with _BRAIN_LOCKS.setdefault(str(bdir), asyncio.Lock()):
+        for it in p["plan"]["items"]:
+            if it["kind"] not in want:
+                continue
+            act, text = _import_action(user, it)
+            if act == "same":
+                continue
+            q = bdir / _safe_rel(it["rel"])
+            q.parent.mkdir(parents=True, exist_ok=True)
+            q.write_text(text.replace("\r\n", "\n"), encoding="utf-8")
+            written.append(it["rel"])
+            counts[act] += 1
+        if not written:
+            _IMPORTS.pop(pid, None)
+            return {"written": 0, **counts}
+        await asyncio.to_thread(_git, bdir, "add", "-A")
+        await asyncio.to_thread(_git, bdir, "commit", "-q", "-m", f"Importazione da zip: {len(written)} file")
+        commit = (await asyncio.to_thread(_git, bdir, "rev-parse", "HEAD")).strip()
+    _import_last_file().write_text(json.dumps({"commit": commit, "at": int(time.time()), "files": written}), encoding="utf-8")
+    _IMPORTS.pop(pid, None)
+    _import_reindex_soon(user, written)
+    brain_log_soon(user["id"], f"📥 Importato un cervello da zip: {len(written)} file")
+    return {"written": len(written), **counts}
+
+
+@app.get("/api/brain/import/last")
+async def brain_import_last(user: dict = Depends(require_user)):
+    try:
+        d = json.loads(_import_last_file().read_text(encoding="utf-8"))
+        return {"at": d["at"], "files": len(d["files"])}
+    except (OSError, ValueError, KeyError):
+        return {}
+
+
+@app.post("/api/brain/import/undo")
+async def brain_import_undo(user: dict = Depends(require_user)):
+    """Toglie l'ultima importazione: quello che e' stato scritto dopo resta."""
+    try:
+        d = json.loads(_import_last_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(404, "Non c'è nessuna importazione da annullare")
+    bdir = brain_dir(user)
+    async with _BRAIN_LOCKS.setdefault(str(bdir), asyncio.Lock()):
+        try:
+            await asyncio.to_thread(_git, bdir, "revert", "--no-edit", d["commit"])
+        except RuntimeError:
+            try:
+                await asyncio.to_thread(_git, bdir, "revert", "--abort")
+            except RuntimeError:
+                pass
+            raise HTTPException(409, "Non riesco ad annullarla da solo: dopo l'importazione alcune di quelle schede sono cambiate")
+    _import_last_file().unlink(missing_ok=True)
+    _import_reindex_soon(user, d["files"])
+    return {"undone": len(d["files"])}
+
+
+@app.get("/api/brain/import/esempio")
+async def brain_import_example(_: dict = Depends(require_user)):
+    """Uno zip di esempio con la struttura giusta: dati inventati."""
+    import io, zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("cervello/boot/user.md", "# Il tuo nome\n\n## Chi è\n- Fa il tecnico informatico.\n")
+        z.writestr("cervello/wiki/people/mario-esempio.md", "---\nname: Mario Esempio\n---\n\n# Mario Esempio\n\n## Fatti\n- È un collega.\n\n## Collegati\n- [[wiki/companies/ditta-esempio|Ditta Esempio]]\n")
+        z.writestr("cervello/wiki/companies/ditta-esempio.md", "---\nname: Ditta Esempio\n---\n\n# Ditta Esempio\n\n## Fatti\n- È un cliente.\n")
+        z.writestr("cervello/wiki/projects/sito-nuovo/index.md", "---\nname: Sito nuovo\n---\n\n# Sito nuovo\n\nIl sito da rifare.\n\n## Stato\n- [2026-01-15] Iniziato.\n")
+        z.writestr("cervello/diary/2026/2026-01-15.md", "## Sito nuovo\n- Fatta la prima bozza.\n\n## Da fare\n- [ ] Mandare la bozza.\n")
+        z.writestr("cervello/skills/controllo-backup/SKILL.md", "---\nname: Controllo backup\ntrigger: [backup]\n---\n\n# Controllo backup\n\n1. Guarda l'ultimo backup.\n2. Di' all'utente se è andato a buon fine.\n")
+    return Response(buf.getvalue(), media_type="application/zip", headers={"Content-Disposition": 'attachment; filename="esempio-cervello.zip"', "Cache-Control": "no-store"})
