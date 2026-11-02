@@ -212,7 +212,7 @@ async def me(user: dict = Depends(require_user)):
     admin = user["role"] == "admin"
     return {"user": user["username"], "email": user["email"], "role": user["role"], "site_name": SITE_NAME,
             "wol": is_owner(user["id"]) and bool(WOL_MAC), "power": is_owner(user["id"]) and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool((WHISPER_TOKEN and is_owner(user["id"])) or cloud_stt_model() or eleven_usable()), "voice_cloud": bool(cloud_stt_model()),
-            "eleven": admin and eleven_on(),
+            "eleven": is_owner(user["id"]) and eleven_on(),
             "gmail": bool(_gmail_row(user["id"])), "calendar": True,
             "homebase": admin and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]),
             "needs_provider": not is_owner(user["id"]) and not cloud_ready(),

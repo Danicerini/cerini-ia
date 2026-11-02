@@ -212,7 +212,7 @@ class ElevenIn(BaseModel):
 
 
 @app.get("/api/voice/eleven")
-async def eleven_get(_: dict = Depends(require_admin)):
+async def eleven_get(_: dict = Depends(require_owner)):
     if not ELEVEN_KEY:
         return {"on": False}
     out = {"on": True, **eleven_cfg(), "models": ELEVEN_MODELS, "credits": await eleven_credits(True), "usable": eleven_usable()}
@@ -224,7 +224,7 @@ async def eleven_get(_: dict = Depends(require_admin)):
 
 
 @app.put("/api/voice/eleven")
-async def eleven_put(body: ElevenIn, _: dict = Depends(require_admin)):
+async def eleven_put(body: ElevenIn, _: dict = Depends(require_owner)):
     d = _voce_file()
     if body.voice_id and re.fullmatch(r"[A-Za-z0-9]{8,40}", body.voice_id):
         d["voice_id"], d["voice_name"] = body.voice_id, _clip(body.voice_name or "", 60)
