@@ -992,7 +992,7 @@ async def write_episode(user: dict, chat_id: str, messages: list[dict]) -> str |
     new, skip = [], False
     for m in convo[upto:]:   # chiedere il consuntivo non e' una cosa da scrivere nel diario (e ogni riassunto costa token)
         if m["role"] == "user":
-            skip = str(m.get("content") or "").strip().lower().startswith("/consuntivo")
+            skip = str(m.get("content") or "").strip().lower().startswith(("/consuntivo", "/auto-consuntivo"))
         if not skip:
             new.append(m)
     if sum(1 for m in new if m["role"] == "user") < 1 or sum(len(m.get("content") or "") for m in new) < 120:
@@ -1176,6 +1176,11 @@ BUILTIN_SKILLS = {
                  "1. Find the project by name (cervello_cerca); if it does not exist and the work lasts, create it (progetto_nuovo).\n"
                  "2. Log what was done with lavoro_fatto, with a one-line status.\n3. People involved go in people/, the client company in companies/: "
                  "save them with ricorda, they get linked to the project."),
+    "auto-consuntivo": ("Auto-consuntivo", "Il consuntivo senza domande: lavoro vero del giorno, solo fascicoli a contratto. Le ore senza tracce restano da confermare.", "auto consuntivo, autoconsuntivo",
+                        "consuntivo,lavoro_fatto,diario_giorno", False,
+                        "1. Call consuntivo with automatico=true and the day (empty = today; «ieri» → the date).\n"
+                        "2. The user already sees the table: answer in one or two sentences, NO table and NO list.\n"
+                        "3. Never add work that is not in the data to reach 8 hours: the missing hours stay visible and the user confirms them."),
     "consuntivo": ("Consuntivo", "Il lavoro di un giorno con i tempi a mezz'ore, da copiare nel gestionale.", "consuntivo, ore lavorate",
                    "consuntivo,lavoro_fatto,diario_giorno", False,
                    "1. Call consuntivo with the day (empty = today; «ieri», «lunedì» → the date). It reads the diary and the chats of that day.\n"
@@ -1554,7 +1559,40 @@ def _fasc_match(title: str, fl: list[dict]) -> dict | None:
     return near[0] if len(near) == 1 else None
 
 
-async def consuntivo(user: dict, day: str) -> dict:
+def _fasc_is_extra(f: dict) -> bool:
+    return "EXTRA" in str(f.get("progetto") or "").split(" - ")[0].upper()
+
+
+CONS_AUTO = ("\nMODALITÀ AUTOMATICA: l'utente non risponde a domande. Usa SOLO i fascicoli dell'elenco, tutti a contratto: niente fuori contratto, così al cliente non arrivano costi extra. "
+             "Il lavoro che sembrerebbe extra va sul fascicolo a contratto dello stesso cliente con dubbio=true. Conta anche gli appuntamenti di lavoro. Dai a ogni voce vera un tempo realistico. "
+             "NON aggiungere attività che non stanno nei dati, nemmeno per arrivare alle 8 ore: quello che manca resta mancante.\n")
+
+
+def cons_suggestions(user: dict, skip: list[str]) -> list[str]:
+    """Le attività che l'utente ha già avuto a consuntivo più volte nell'ultimo mese: domande da spuntare, non voci. Senza ticket: quelli sono di un giorno solo."""
+    since = int((time.time() - 30 * 86400) * 1000)
+    with db() as c:
+        rows = c.execute("SELECT messages FROM chats WHERE user_id = ? AND updated >= ? AND messages LIKE '%\"consuntivo\"%'", (user["id"], since)).fetchall()
+    seen, shown = {}, {}
+    for r in rows:
+        try:
+            msgs = json.loads(r["messages"] or "[]")
+        except ValueError:
+            continue
+        for m in msgs:
+            view = m.get("view") if isinstance(m, dict) else None
+            if not isinstance(view, dict) or view.get("kind") != "consuntivo":
+                continue
+            for what in {str(x.get("what") or "").strip() for x in view.get("rows") or []}:
+                if what and not re.search(r"\bTK[-\s#]?\d*", what):
+                    k = _flat(what)
+                    seen[k] = seen.get(k, 0) + 1
+                    shown.setdefault(k, what)
+    today = {_flat(x) for x in skip}
+    return [shown[k] for k, n in sorted(seen.items(), key=lambda x: -x[1]) if n >= 2 and k not in today][:8]
+
+
+async def consuntivo(user: dict, day: str, auto: bool = False) -> dict:
     wp = work_projects(user)
     # chi non ha segnato nessun progetto come lavoro (un cervello nuovo) non resta senza consuntivo: tra lavoro e resto sceglie il modello
     main = next((p for p in wp if p["main"]), wp[0]) if wp else {"name": "Lavoro", "summary": "", "main": True}
@@ -1567,6 +1605,14 @@ async def consuntivo(user: dict, day: str) -> dict:
     secs = [(t, b) for t, b in secs if t.lower() not in other]   # i progetti che non sono lavoro non entrano neanche
     diary = "\n".join(f"## {t}\n{_clip_block(b, 2500)}" for t, b in secs) or "(vuoto)"
     chats = _day_chats_text(user, day) or "(nessuna)"
+    if auto:   # le tracce che non stanno nel diario: gli appuntamenti del giorno
+        try:
+            from datetime import date
+            events = [f"- {e.get('hm') or ''} {e.get('title') or ''}".strip() for e in await cal_events(user["id"], 1, "", date.fromisoformat(day)) if e.get("title")]
+            if events:
+                chats += "\n\nAPPUNTAMENTI DI QUEL GIORNO (quelli di lavoro contano):\n" + "\n".join(events)
+        except Exception as e:
+            print(f"Auto-consuntivo: agenda non letta: {e}", flush=True)
     crm, crm_rows, stale = "", [], []
     if crm_on():
         try:
@@ -1581,7 +1627,7 @@ async def consuntivo(user: dict, day: str) -> dict:
         return {"day": day, "rows": [], "total": 0, "excluded": [], "ask": ask}
     comp = work_clients(user, main) or [e for e in brain_entities(user) if e["kind"] == "companies" and _flat(e["name"]) != _flat(main["name"])]
     comp += [p for p in wp if p is not main and all(_flat(p["name"]) != _flat(c["name"]) for c in comp)]
-    fl = fascicoli()
+    fl = [f for f in fascicoli() if not (auto and _fasc_is_extra(f))]
     # al modello solo i fascicoli dei clienti nominati quel giorno (piu' l'azienda): l'elenco intero costa token a ogni consuntivo
     hay = _flat(f"{diary} {chats} {crm} {main['name']}")
     alias = {k: v for k, v in (_fasc_file().get("alias") or {}).items() if _flat(k) in hay}
@@ -1589,7 +1635,7 @@ async def consuntivo(user: dict, day: str) -> dict:
     named = lambda f: any(len(w) >= 4 and _flat(w) in hay for w in re.findall(r"\w+", (re.search(r"\(([^)]+)\)", f["progetto"]) or [""] * 2)[1])[:1])
     near = [f for f in fl if _fasc_code(f) in codes or named(f)] or fl
     codes |= {_fasc_code(f) for f in near}
-    pref = {k: v for k, v in (_fasc_file().get("predefinito") or {}).items() if str(k).upper() in codes}
+    pref = {k: v for k, v in (_fasc_file().get("predefinito") or {}).items() if str(k).upper() in codes and not (auto and "EXTRA" in str(v).upper())}
     fasc = (CONS_FASC.format(elenco="\n".join(f"- {f['progetto']}" + (f"  [descrizione nel formato: {f['descrizione']}]" if f.get("descrizione") else "")
                                               for f in near), azienda=main["name"])
             + ("REGOLE DELL'UTENTE (correzioni sue: valgono sopra ogni altra regola):\n" + "\n".join(f"- {r}" for r in rules) + "\n"
@@ -1600,7 +1646,7 @@ async def consuntivo(user: dict, day: str) -> dict:
                if alias else "")) if fl else ""
     prompt = CONS_PROMPT.format(nome=_user_display(user).split()[0], ruolo=_clip(main.get("summary") or "tecnico", 160), azienda=main["name"],
                                 clienti="; ".join(f"{e['name']} ({_clip(e.get('summary') or '', 90)})" for e in comp) or "quelli nominati",
-                                fascicoli=fasc, giorno=day, diario=diary, chat=chats, crm=CONS_CRM.format(ticket=crm) if crm else "")
+                                fascicoli=fasc + (CONS_AUTO if auto else ""), giorno=day, diario=diary, chat=chats, crm=CONS_CRM.format(ticket=crm) if crm else "")
     d = {}
     for _ in range(2):   # a volte il modello risponde vuoto o non in JSON: si riprova una volta
         raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, timeout=150)
@@ -1638,16 +1684,22 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
     day = str(args.get("giorno") or "").strip() or local_now().strftime("%Y-%m-%d")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("giorno nel formato AAAA-MM-GG")
-    c = await consuntivo(user, day)
+    auto = _truthy(args.get("automatico"))
+    c = await consuntivo(user, day, auto=auto)
     tot, rows = c["total"], c["rows"]
     gap = WORK_DAY_MIN - tot
-    note = ("Nel diario di quel giorno non c'è lavoro da mettere a consuntivo." if not rows else
+    note = (("Nel diario di quel giorno non c'è lavoro da mettere a consuntivo." if not rows else
+             f"Ho messo il lavoro di cui ho trovato traccia, solo su fascicoli a contratto. Mancano {_hm(gap)} alle 8 ore: non le invento, spunta qui sotto quello che hai fatto davvero." if gap > 0 else
+             f"Superi le 8 ore di {_hm(-gap)}: dimmi cosa accorciare." if gap < 0 else "Fanno 8 ore giuste, solo su fascicoli a contratto.") if auto else
+            "Nel diario di quel giorno non c'è lavoro da mettere a consuntivo." if not rows else
             f"Mancano {_hm(gap)} alle 8 ore: nel diario non c'è altro lavoro, dimmi cos'altro hai fatto." if gap > 0 else
             f"Superi le 8 ore di {_hm(-gap)}: dimmi cosa accorciare." if gap < 0 else "Fanno 8 ore giuste.")
     lines = [f"- [{r['project'] or 'fascicolo da scegliere'}] {r['what']} ({r['client']}): {_hm(r['min'])}" + (" (da controllare)" if r["doubt"] else "")
              for r in rows]
     ask = c.get("ask") or []
     view = {"kind": "consuntivo", "day": day, "rows": rows, "total": tot, "target": WORK_DAY_MIN, "note": note, "excluded": c["excluded"], "ask": ask}
+    if auto:
+        view.update(auto=True, suggest=cons_suggestions(user, [r["what"] for r in rows]) if gap > 0 else [])
     return {"content": "L'UTENTE VEDE GIÀ IL CONSUNTIVO in una tabella sopra la tua risposta (fascicoli, descrizioni, ore, totale). "
                        "Rispondi con UNA o DUE frasi al massimo, senza tabelle né elenchi e senza ripetere le voci: solo quanto manca alle 8 ore "
                        f"e cosa gli chiedi, oppure le voci «da controllare». Stato: {note}\n"
@@ -1659,7 +1711,27 @@ async def _tool_consuntivo(user: dict, args: dict, request: Request) -> dict:
                        "Dati, solo per quando l'utente aggiunge lavori o cambia un tempo (allora rifai il consuntivo con le stesse regole: "
                        "mezz'ore, minimo 30 minuti, fascicolo esatto, descrizione di una frase):\n" + "\n".join(lines)
                        + f"\nTotale {_hm(tot)} su 8h." + (f"\nLasciati fuori: {'; '.join(c['excluded'])}" if c["excluded"] else ""),
-            "display": f"Consuntivo del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
+            "display": f"{'Auto-consuntivo' if auto else 'Consuntivo'} del {day[8:]}/{day[5:7]}: {_hm(tot)}", "view": view}
+
+
+class ConsAddIn(BaseModel):
+    day: str
+    items: list[str]
+
+
+@app.post("/api/brain/consuntivo/aggiungi")
+async def cons_add(body: ConsAddIn, user: dict = Depends(require_user)):
+    """Quello che l'utente dice di aver fatto davvero quel giorno: va nel diario, cosi' il consuntivo lo trova. Lo conferma lui, voce per voce."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", body.day):
+        raise HTTPException(400, "Giorno non valido")
+    items = [re.sub(r"\s+", " ", str(x)).strip()[:300] for x in body.items if str(x).strip()][:20]
+    if not items:
+        raise HTTPException(400, "Niente da aggiungere")
+    wp = work_projects(user)
+    pid = next((p["id"] for p in wp if p["main"]), wp[0]["id"] if wp else "")
+    for x in items:
+        await diary_add(user, "Lavoro", f"{x} (confermato dall'utente).", day=body.day, project=pid)
+    return {"added": len(items)}
 
 
 async def _tool_cons_rule(user: dict, args: dict, request: Request) -> dict:
@@ -1689,7 +1761,7 @@ TOOLS.update({
         "admin": False, "confirm": False, "run": _tool_consuntivo,
         "spec": _fn("consuntivo", "Il consuntivo di una giornata di lavoro: l'elenco di quello che l'utente ha fatto per l'azienda e i suoi "
                     "clienti, con un tempo a mezz'ore per ciascuna cosa, verso le 8 ore. Usalo quando chiede il consuntivo o il riepilogo "
-                    "delle ore di un giorno.", {"giorno": {"type": "string", "description": "AAAA-MM-GG; vuoto = oggi"}})},
+                    "delle ore di un giorno.", {"automatico": {"type": "boolean", "description": "true = senza domande: solo fascicoli a contratto, mai voci inventate"}, "giorno": {"type": "string", "description": "AAAA-MM-GG; vuoto = oggi"}})},
 })
 
 

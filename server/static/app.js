@@ -2646,6 +2646,24 @@ function hbCard(it) {
 }
 // Risposta di homebase_admin in chat: un pannello con le righe (utenti, richieste, strumenti, accessi…)
 // Consuntivo di un giorno: voci con i tempi a mezz'ore, barra verso le 8 ore, testo da copiare nel gestionale
+// Le ore che mancano: si riempiono solo con quello che l'utente conferma di aver fatto. Finisce nel diario e il consuntivo si rifà
+function consFill(v, missing) {
+  const checks = (v.suggest || []).map((x) => { const c = h('input', { type: 'checkbox', value: x }); return [c, h('label', { class: 'cons-fill-opt' }, c, h('span', { text: x }))]; });
+  const other = h('textarea', { class: 'ag-in', rows: 2, 'aria-label': 'Altro lavoro fatto quel giorno', placeholder: 'Altro che hai fatto quel giorno, una cosa per riga' });
+  const out = h('div', { class: 'form-msg', role: 'status' });
+  const go = h('button', { class: 'btn sm primary', text: 'Aggiungi e rifai', onclick: async () => {
+    const items = [...checks.filter(([c]) => c.checked).map(([c]) => c.value), ...other.value.split('\n').map((x) => x.trim()).filter(Boolean)];
+    if (!items.length) { out.className = 'form-msg err'; out.textContent = 'Spunta o scrivi almeno una cosa.'; return; }
+    go.disabled = true;
+    try {
+      await api('/api/brain/consuntivo/aggiungi', { day: v.day, items });
+      input.value = `/auto-consuntivo ${v.day}`; autosize(); renderComposer(); $('#composer').requestSubmit();
+    } catch (e) { out.className = 'form-msg err'; out.textContent = e.message; go.disabled = false; }
+  } });
+  return h('div', { class: 'cons-fill' }, h('b', { text: `Mancano ${missing}: cos'altro hai fatto?` }),
+    h('small', { text: checks.length ? 'Le cose che fai spesso: spunta solo quelle fatte davvero quel giorno.' : 'Scrivi solo quello che hai fatto davvero quel giorno.' }),
+    ...checks.map(([, l]) => l), other, out, h('div', { class: 'cons-fill-f' }, go));
+}
 function consView(v) {
   const hm = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
   const day = `${v.day.slice(8)}/${v.day.slice(5, 7)}/${v.day.slice(0, 4)}`;
@@ -2667,13 +2685,14 @@ function consView(v) {
   };
   return h('div', { class: 'cs-card cons' },
     h('div', { class: 'cons-head' },
-      h('div', {}, h('b', { text: 'Consuntivo' }), h('small', { text: longDay })),
+      h('div', {}, h('b', { text: v.auto ? 'Auto-consuntivo' : 'Consuntivo' }), h('small', { text: longDay })),
       rows.length ? h('button', { class: 'cs-copy', 'data-label': '1', title: 'Copia tutto per il gestionale', html: icon('copy', 'sm') + 'Copia tutto', onclick: (e) => copyText(text, e.currentTarget) }) : null),
     h('div', { class: 'cons-sum' },
       h('div', { class: 'cons-tot' }, h('b', { text: hm(v.total) }), h('span', { text: `su ${hm(target)}` })),
       h('span', { class: 'cons-gap' + (gap === 0 ? ' full' : gap < 0 ? ' over' : ''), text: gap > 0 ? `mancano ${hm(gap)}` : gap < 0 ? `${hm(-gap)} in più` : 'giornata completa' })),
     h('div', { class: 'cs-bar' + (gap < 0 ? ' over' : gap === 0 ? ' full' : ''), role: 'progressbar', 'aria-valuenow': v.total, 'aria-valuemax': target, 'aria-label': 'Ore segnate' }, h('i', { style: `width:${pct}%` })),
     rows.length ? h('div', { class: 'cons-rows' }, ...rows.map(row)) : h('div', { class: 'cs-note', text: v.note || '' }),
+    v.auto && gap > 0 ? consFill(v, hm(gap)) : null,
     (v.ask || []).length ? h('div', { class: 'cons-ask' }, h('b', { text: 'Ci hai lavorato?' }), h('small', { text: 'Ticket tuoi ancora aperti, senza niente fatto quel giorno nel CRM.' }),
       ...v.ask.map((a) => { const el = h('div', { class: 'cons-ask-row' },
         h('div', { class: 'tx' }, h('span', { class: 'cons-tk', text: tkNum(a.no) }), h('span', { text: a.title }), a.client ? h('small', { text: a.client }) : null),
