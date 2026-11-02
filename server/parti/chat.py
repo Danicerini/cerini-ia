@@ -955,6 +955,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         continue
                     if name in ("dimentica", "aggiorna_ricordo", "ricorda", "promemoria", "whatsapp_invia") or name.startswith(("mail_", "calendario_")):
                         args = {**args, "_uid": user["id"]}
+                    if name == "mail_prepara":
+                        args = {**args, "_last_user": _last_user_text(body.messages), "_chat": body.chat_id or ""}
                     if name == "ticket_foto":
                         args = {**args, "_last_user": _last_user_text(body.messages), "_model": body.model}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):

@@ -810,7 +810,7 @@ function paintAssistant(el, m, chat, isLastAssist) {
 
 // Mail preparata da Aura: scheda modificabile, poi l'utente sceglie Invia o Salva in bozze (Gmail)
 function emailView(chat, m) {
-  const v = m.view, done = ['sent', 'saved', 'cancelled'].includes(v.status);
+  const v = m.view, done = ['sent', 'saved', 'cancelled', 'sent_elsewhere'].includes(v.status);
   const save = () => saveChat(chat);
   const field = (cls, ph, key) => {
     const el = h('input', { class: cls, placeholder: ph, 'aria-label': ph, value: v[key] || '', disabled: done ? true : null,
@@ -823,7 +823,7 @@ function emailView(chat, m) {
   const grow = () => { body.style.height = 'auto'; body.style.height = body.scrollHeight + 'px'; };
   requestAnimationFrame(grow);
   const copyB = h('button', { class: 'icon-btn sm', title: 'Copia il testo', 'aria-label': 'Copia il testo', html: icon('copy', 'sm'),
-    onclick: () => copyText(`${v.subject ? 'Oggetto: ' + v.subject + '\\n\\n' : ''}${v.body}`, copyB) });
+    onclick: () => copyText(`${v.subject ? 'Oggetto: ' + v.subject + '\n\n' : ''}${v.body}`, copyB) });
   const act = async (kind, btn) => {
     btn.disabled = true;
     try {
@@ -841,7 +841,30 @@ function emailView(chat, m) {
     m.content = (m.content || '') + " [L'utente ha ANNULLATO: la mail non è stata né inviata né salvata.]";
     saveChat(chat); renderThread();
   };
-  const foot = v.status === 'cancelled'
+  // mail di lavoro: la manda l'utente dalla sua casella, qui si copia il testo e si segna se è partita. Aura non può saperlo
+  const mark = async (sent, btn) => {
+    btn.disabled = true;
+    try {
+      await api('/api/mail/external/mark', { sent, to: v.to || '', subject: v.subject || '', chat: chat.id || '' });
+      v.status = sent ? 'sent_elsewhere' : 'not_sent';
+      m.content = (m.content || '') + (sent ? " [L'utente ha segnato che la mail è PARTITA dalla sua casella di lavoro.]" : " [L'utente ha segnato che la mail NON è ancora partita.]");
+      saveChat(chat); renderThread(); toast(sent ? 'Segnata come inviata: la trovi nel diario' : 'Segnata come non inviata');
+    } catch (e) { btn.disabled = false; toast(e.message); }
+  };
+  const switchTo = (external) => { v.external = external; saveChat(chat); renderThread(); };
+  const open = !v.status || v.status === 'draft';
+  const foot = v.external && v.status !== 'cancelled'
+    ? h('div', { class: 'em-ext' },
+        v.status === 'sent_elsewhere' ? h('div', { class: 'em-done' }, h('span', { html: icon('check', 'sm') }), h('span', { text: 'Segnata come inviata dalla tua casella' })) : null,
+        v.status === 'not_sent' ? h('div', { class: 'em-done off' }, h('span', { html: icon('x', 'sm') }), h('span', { text: 'Segnata come non ancora inviata' })) : null,
+        h('div', { class: 'em-actions' },
+          open ? h('span', { class: 'em-ext-hint', text: 'La mandi tu dalla tua casella di lavoro: qui non parte niente.' }) : null,
+          open ? h('button', { class: 'btn sm em-cancel', html: icon('x', 'sm') + 'Annulla', onclick: cancel }) : null,
+          open && S.me?.gmail ? h('button', { class: 'btn sm', html: icon('mail', 'sm') + 'Usa Gmail', onclick: () => switchTo(false) }) : null,
+          h('button', { class: 'btn sm', html: icon('copy', 'sm') + 'Copia', onclick: (e) => copyText(`${v.subject ? 'Oggetto: ' + v.subject + '\n\n' : ''}${v.body}`, e.currentTarget) }),
+          v.status === 'not_sent' ? null : h('button', { class: 'btn sm', text: v.status === 'sent_elsewhere' ? 'In realtà non è partita' : 'Non inviata', onclick: (e) => mark(false, e.currentTarget) }),
+          v.status === 'sent_elsewhere' ? null : h('button', { class: 'btn sm primary', html: icon('check', 'sm') + "L'ho inviata", onclick: (e) => mark(true, e.currentTarget) })))
+    : v.status === 'cancelled'
     ? h('div', { class: 'em-done off' }, h('span', { html: icon('x', 'sm') }), h('span', { text: 'Annullata: non inviata né salvata' }))
     : done
     ? h('div', { class: 'em-done' }, h('span', { html: icon('check', 'sm') }),
@@ -851,7 +874,7 @@ function emailView(chat, m) {
         const send = h('button', { class: 'btn sm primary', html: icon('up', 'sm') + 'Invia', onclick: () => act('send', send) });
         const draft = h('button', { class: 'btn sm', html: icon('mail', 'sm') + 'Salva in bozze', onclick: () => act('draft', draft) });
         const no = h('button', { class: 'btn sm em-cancel', html: icon('x', 'sm') + 'Annulla', onclick: cancel });
-        return h('div', { class: 'em-actions' }, no, draft, send);
+        return h('div', { class: 'em-actions' }, no, h('button', { class: 'btn sm', text: "La mando da un'altra casella", onclick: () => switchTo(true) }), draft, send);
       })();
   // allegati: quelli scelti da Aura (o il file che hai appena mandato in chat); si tolgono con la x, se ne aggiungono con «Allega»
   v.attachments = v.attachments || [];
@@ -871,7 +894,7 @@ function emailView(chat, m) {
         onclick: () => { v.attachments.splice(i, 1); save(); renderThread(); } }))),
     done ? null : h('button', { class: 'em-att-add', html: icon('clip', 'sm') + 'Allega', onclick: () => pick.click() }), pick) : null;
   return h('div', { class: 'email-card' + (done ? ' done' : '') },
-    h('div', { class: 'em-head' }, h('b', { text: v.reply_to ? 'Risposta' : 'Email' }), h('span', { class: 'em-tools' }, copyB)),
+    h('div', { class: 'em-head' }, h('b', { text: v.external ? 'Email di lavoro' : v.reply_to ? 'Risposta' : 'Email' }), h('span', { class: 'em-tools' }, copyB)),
     field('em-to', 'Destinatari', 'to'), field('em-subj', 'Oggetto', 'subject'), body, atts, foot);
 }
 
@@ -2600,8 +2623,10 @@ function consView(v) {
         h('button', { text: 'Sì', title: 'Scrivi cosa hai fatto: lo aggiunge al consuntivo', onclick: () => { input.value = `Il ${day} sul ticket ${a.no} ho fatto: `; autosize(); renderComposer(); input.focus(); } }),
         h('button', { text: 'No', onclick: () => el.remove() }));
         return el; })) : null,
-    (v.excluded || []).length ? h('details', { class: 'cons-ex' }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): non sono lavoro` }),
-      h('ul', {}, ...v.excluded.map((x) => h('li', { text: x })))) : null);
+    (v.excluded || []).length ? h('details', { class: 'cons-ex', open: true }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): controlla, se uno è lavoro premi il tasto` }),
+      h('ul', {}, ...v.excluded.map((x) => h('li', {}, h('span', { text: x + ' ' }), h('button', { class: 'cons-ex-add', text: 'Era lavoro', onclick: () => {
+        input.value = `Nel consuntivo del ${v.day} questo era lavoro: «${x}». Mettilo nel consuntivo, senza fascicolo se non lo conosci, e rifallo.`;
+        autosize(); renderComposer(); $('#composer').requestSubmit(); } }))))) : null);
 }
 function hbView(v) {
   return h('div', { class: 'hb-card hb-view' }, hbHead(v.title || 'Amministrazione'),

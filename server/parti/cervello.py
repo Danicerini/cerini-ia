@@ -1474,6 +1474,10 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "- entra tutto il lavoro FATTO quel giorno, anche le cose da fare spuntate come fatte ([x]); restano fuori solo le cose "
                "ancora da fare ([ ]), quelle annullate o tolte dalla lista, quelle solo nominate e mai fatte, e quelle che non sono lavoro "
                "(togliere un promemoria, sistemare la lista delle cose da fare, chiedere riepiloghi all'assistente NON sono lavoro);\n"
+               "- scrivere o preparare una mail per un cliente o per conto dell'azienda È lavoro fatto anche se qui non risulta inviata: spesso parte da un'altra casella che non vedi. "
+               "Mettila come voce, con dubbio=true se non sai se è partita;\n"
+               "- nel DUBBIO se una cosa sia lavoro, mettila come voce con dubbio=true: la controlla l'utente. In «esclusi» vanno solo le cose chiaramente non di lavoro. "
+               "Non conoscere il fascicolo non è mai un motivo per lasciare fuori una voce: fascicolo vuoto e dubbio=true;\n"
                "- NON gonfiare i tempi per arrivare a 8 ore: se il lavoro è poco, il totale resta basso;\n"
                "- «descrizione» = la Descrizione attività da scrivere nel gestionale: UNA frase professionale e concreta (max 120 caratteri) "
                "che dice cosa è stato fatto e per quale utente o reparto, niente di inventato (es. «Reset password VPN utente amministrazione», "
@@ -1485,7 +1489,7 @@ CONS_PROMPT = ("Prepara il CONSUNTIVO di una giornata di lavoro di {nome}, {ruol
                "Prima di rispondere ricontrolla: se due voci parlano dello stesso ticket, della stessa mail o dello stesso utente, "
                "uniscile in una (sommando i tempi, senza superare il realistico).\n"
                "Rispondi SOLO JSON: {{\"voci\": [{{\"fascicolo\": \"Titolo progetto esatto o vuoto\", \"descrizione\": \"…\", \"cliente\": \"…\", "
-               "\"minuti\": 30, \"dubbio\": false}}], \"esclusi\": [\"cose del giorno lasciate fuori perché non sono lavoro, brevi\"]}}")
+               "\"minuti\": 30, \"dubbio\": false}}], \"esclusi\": [\"cose del giorno chiaramente non di lavoro, brevi\"]}}")
 
 CONS_FASC = ("\nFASCICOLI DEL GESTIONALE: per ogni voce scegline uno e copia ESATTO il suo Titolo progetto.\n{elenco}\n"
              "Come scegliere: NOC = assistenza inclusa nel contratto (ticket ordinari, problemi degli utenti, reset, posta, account, VPN che "

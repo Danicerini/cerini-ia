@@ -206,11 +206,35 @@ async def _known_address(uid: int, to: str, last_user: str) -> bool:
     return bool((await gmail_api(uid, "GET", "/messages", params={"q": f"from:{t} OR to:{t}", "maxResults": 1})).get("messages"))
 
 
+_WORK_MAIL_RE = re.compile(r"\b(outlook|altra casella|mail (?:di|del) lavoro|ticket|tk[-\s]?\d+|client[ei]|commercial[ei]|fornitor[ei])\b", re.I)
+
+
+def _mail_is_work(user: dict, args: dict) -> bool:
+    """Una mail di lavoro non parte dalla Gmail dell'utente: lo dice il modello, le parole dell'utente o il progetto della chat. Se dice Gmail, Gmail."""
+    said = str(args.get("_last_user") or "")
+    if args.get("rispondi_a") or re.search(r"\bgmail\b", said, re.I):
+        return False
+    if _truthy(args.get("fuori_gmail")) or _WORK_MAIL_RE.search(said):
+        return True
+    try:
+        wp = work_projects(user)
+        active = active_project(user, str(args.get("_chat") or ""))
+        if active and any(p["id"] == active["id"] for p in wp):
+            return True
+        main = next((p for p in wp if p["main"]), None)
+        names = ([main["name"]] + [c["name"] for c in work_clients(user, main)]) if main else []
+        return any(len(n) > 2 and re.search(rf"\b{re.escape(n)}\b", said, re.I) for n in names)
+    except Exception as e:
+        print(f"Mail di lavoro: non capito: {e}", flush=True)
+        return False
+
+
 async def _tool_mail_prepare(user: dict, args: dict, request: Request) -> dict:
     uid = user["id"]
     to, subj, body = (str(args.get(k) or "").strip() for k in ("a", "oggetto", "testo"))
     if not body:
         raise ValueError("serve il testo della mail")
+    external = _mail_is_work(user, args)
     reply_id = thread = None
     if args.get("rispondi_a"):
         reply_id = mail_unref(uid, args["rispondi_a"])
@@ -223,13 +247,19 @@ async def _tool_mail_prepare(user: dict, args: dict, request: Request) -> dict:
         thread = orig.get("threadId")
     note = ""
     if to and not reply_id:
-        keep = [a for a in EMAIL_RE.findall(to) if await _known_address(uid, a, args.get("_last_user", ""))]
+        # la posta di lavoro non sta in Gmail: li' un indirizzo vale se l'ha scritto l'utente o se e' nei ricordi
+        keep = [a for a in EMAIL_RE.findall(to) if (a.lower() in str(args.get("_last_user") or "").lower() or any(a.lower() in r["text"].lower() for r in memory_rows(uid, "ricordo")))] if external \
+            else [a for a in EMAIL_RE.findall(to) if await _known_address(uid, a, args.get("_last_user", ""))]
         if len(keep) < len(EMAIL_RE.findall(to)):
             note = " Un indirizzo non era tra quelli conosciuti e l'ho lasciato vuoto: l'utente lo scrive nella scheda."
         to = ", ".join(keep)
     atts = _mail_attachments(uid, args)
-    view = {"kind": "email", "to": to, "subject": subj, "body": body, "reply_to": reply_id, "status": "draft", "attachments": atts}
+    view = {"kind": "email", "to": to, "subject": subj, "body": body, "reply_to": reply_id, "status": "draft", "attachments": atts, "external": external}
     att_txt = f" Allegati: {', '.join(a['name'] for a in atts)}." if atts else ""
+    if external:
+        return {"content": f"Testo della mail mostrato all'utente in una scheda che può modificare e copiare: la manda lui dalla sua casella di lavoro, tu non puoi inviarla né saperne l'esito.{att_txt}{note} "
+                           "Quando l'ha mandata lo segna col pulsante «L'ho inviata». Rispondi solo con una frase breve tipo «Ecco il testo: copialo, mandalo e segna qui se è partita». NON dire che è inviata.",
+                "display": "", "view": view}
     return {"content": "Mail preparata e mostrata all'utente in una scheda che può modificare, con i pulsanti «Invia» e «Salva "
                        f"in bozze»: NON è ancora inviata né salvata, decide lui con un clic.{att_txt}{note} Rispondi solo con una frase "
                        "breve tipo «Ecco la mail: controllala e premi Invia». NON dire che la stai inviando.",
@@ -357,13 +387,34 @@ TOOLS["mail_prepara"] = {
                 "bozze» (decide lui). Usala SUBITO per OGNI mail da scrivere, inviare o a cui rispondere, anche se non sai il "
                 "destinatario: lascia «a» vuoto e lo scrive l'utente nella scheda. Mai chiedere l'indirizzo in chat e mai "
                 "rispondere solo «posso prepararla». Per rispondere a una persona: prima mail_cerca (from:nome), poi mail_prepara "
-                "con rispondi_a = numero n. della sua mail. Se l'indirizzo è tra le cose che sai, mettilo.",
+                "con rispondi_a = numero n. della sua mail. Se l'indirizzo è tra le cose che sai, mettilo. Le mail di LAVORO (clienti, colleghi, ticket, per conto dell'azienda) le manda lui "
+                "da un'altra casella: fuori_gmail=true, senza cercarle in Gmail.",
                 {"a": {"type": "string", "description": "Destinatario/i, separati da virgola (facoltativo)"}, "oggetto": _S,
                  "testo": {"type": "string", "description": "Il testo completo della mail, con saluto e firma"},
                  "rispondi_a": {"type": "integer", "description": "SOLO per rispondere a una mail trovata con mail_cerca (il suo n.)"},
+                 "fuori_gmail": {"type": "boolean", "description": "true = mail di lavoro: la scheda ha il testo da copiare e il segno «L'ho inviata», non si manda da Gmail"},
                  "allegati": {"type": "array", "items": {"type": "integer"},
                               "description": "Numeri dei file da allegare (quelli scritti negli allegati della chat). Se l'utente ha appena allegato un file, va da sé"}},
                 ["testo"])}
+class MailExternalMark(BaseModel):
+    sent: bool
+    to: str = ""
+    subject: str = ""
+    chat: str = ""
+
+
+@app.post("/api/mail/external/mark")
+async def mail_external_mark(body: MailExternalMark, user: dict = Depends(require_user)):
+    """L'utente dice se la mail di lavoro e' partita dalla sua casella: Aura non puo' saperlo. Finisce nel diario, cosi' il consuntivo lo sa."""
+    what = " · ".join(x for x in (str(body.to).strip()[:120], str(body.subject).strip()[:120]) if x) or "senza destinatario"
+    wp = work_projects(user)
+    active = active_project(user, body.chat.strip()[:80])
+    pid = active["id"] if active and any(p["id"] == active["id"] for p in wp) else next((p["id"] for p in wp if p["main"]), wp[0]["id"] if wp else "")
+    text = f"Mail mandata dalla casella di lavoro: {what} (lo ha segnato l'utente)." if body.sent else f"Mail preparata, NON ancora mandata: {what} (lo ha segnato l'utente)."
+    await diary_add(user, "Mail di lavoro", text, project=pid)
+    return {"sent": body.sent}
+
+
 # inviare o salvare lo decide l'utente dalla scheda: questi due non si offrono piu' al modello
 TOOLS["mail_bozza"]["hidden"] = True
 TOOLS["mail_invia"]["hidden"] = True
