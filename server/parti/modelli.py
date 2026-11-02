@@ -379,7 +379,7 @@ async def status(user: dict = Depends(require_user)):
         return {"online": False, "local_off": True, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": False}
     try:
         version = (await ollama("GET", "/api/version", timeout=2.5)).json()["version"]
-        ps, tags = await ollama("GET", "/api/ps"), await ollama("GET", "/api/tags")
+        ps, tags = await ollama("GET", "/api/ps", timeout=5), await ollama("GET", "/api/tags", timeout=5)
     except Exception:
         return {"online": False, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": is_account()}
     loaded = [

@@ -159,7 +159,10 @@ const S = {
 const current = () => S.chats.find((c) => c.id === S.currentId) || null;
 const loadedNames = () => new Set((S.status?.loaded || []).map((m) => m.name));
 // una chat aperta con un modello cloud di prima usa quello impostato adesso (e lo mostra)
-const activeModel = () => { const m = current()?.model || S.model; if (S.status?.local_off) return S.status.cloud || null; return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
+const activeModel = () => { const m = current()?.model || S.model; if (S.status?.local_off) return S.status.cloud || null;
+  // PC spento e modello locale scelto: finche' non si riaccende risponde il cloud, se c'e'
+  if (S.status && !S.status.online && S.status.cloud && !isCloudM(m)) return S.status.cloud;
+  return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
 const isAdmin = () => S.me?.role === 'admin';
 
 // I campi che iniziano con _ sono stato dell'interfaccia (streaming, ragionamento aperto) e non si salvano.
@@ -253,8 +256,13 @@ applyTheme();
 const isCloudM = (n) => String(n || '').startsWith('cloud:');
 const canChat = () => !!S.status?.online || (isCloudM(activeModel()) && S.status?.cloud === activeModel());
 async function refresh() {
-  try { S.status = await (await api('/api/status')).json(); }
-  catch (e) { if (!$('#app').classList.contains('hidden')) S.status = { online: false, loaded: [], models: [], unreachable: true }; }
+  try { S.status = await (await api('/api/status')).json(); S.statusFails = 0; }
+  catch (e) {
+    // una richiesta persa (telefono in pausa, rete, riavvio) non vuol dire niente: si dice solo dopo circa 30 secondi di fila
+    S.statusFails = (S.statusFails || 0) + 1;
+    if (S.statusFails < 6) return;
+    if (!$('#app').classList.contains('hidden')) S.status = { online: false, loaded: [], models: [], unreachable: true, cloud: S.status?.cloud, cloud_account: S.status?.cloud_account, local_off: S.status?.local_off };
+  }
   if (S.status?.cloud && !S.status.models.some((m) => m.name === S.status.cloud)) S.status.models.push({ name: S.status.cloud, cloud: true });
   // all'avvio: il modello scelto nelle impostazioni (Gemma di casa o il cloud, se e' configurato)
   if (!S.startSet && S.me && S.status) { S.startSet = true; if (S.me.start_model === 'cloud' && S.status.cloud) S.model = S.status.cloud; }
@@ -286,7 +294,7 @@ function renderStatus() {
   if (s.online) S.powering = null;   // acceso: fine dell'attesa
   const inCloud = canChat() && isCloudM(m);
   $('#modelName').replaceChildren(...[inCloud ? h('span', { class: 'mn-ic', html: icon('cloud', 'sm') }) : null,
-    h('span', { class: 'mn-tx', text: inCloud ? m.slice(6) : !s.online ? (s.unreachable ? 'Server non raggiungibile' : S.powering ? 'Accensione…' : 'PC spento') : (m || 'Nessun modello') })].filter(Boolean));
+    h('span', { class: 'mn-tx', text: !S.status ? 'Carico…' : inCloud ? m.slice(6) : !s.online ? (s.unreachable ? 'Server non raggiungibile' : S.powering ? 'Accensione…' : 'PC spento') : (m || 'Nessun modello') })].filter(Boolean));
   $('#modelDot').className = 'dot ' + (canChat() && isCloudM(m) ? 'ok' : !s.online ? 'err' : S.busyModel === m ? 'warn' : loaded.has(m) ? 'ok' : '');
   $('#modelDot').title = loaded.has(m) ? 'Acceso' : 'Spento';
   if (!$('#picker').classList.contains('hidden')) renderPicker();
@@ -299,8 +307,8 @@ function renderPicker() {
   p.replaceChildren();
   if (!s.online && !s.local_off) {
     p.append(h('div', { class: 'picker-empty' },
-      h('div', { text: s.unreachable ? 'Il pannello non riesce a contattare il server.' : 'Il PC è spento o Ollama non è in esecuzione.' }),
-      S.wol ? h('button', { class: 'btn sm', html: icon('power', 'sm') + 'Accendi PC', onclick: wake }) : null));
+      h('div', { text: s.unreachable ? 'Non riesco a contattare il server: riprovo da solo.' : 'Il PC è spento.' }),
+      S.wol && !s.unreachable ? h('button', { class: 'btn sm', html: icon('power', 'sm') + 'Accendi PC', onclick: wake }) : null));
     if (!s.cloud) return;
   }
   if (!s.models.length) { p.append(h('div', { class: 'picker-empty', text: 'Nessun modello scaricato sul PC. Usa “ollama pull” per aggiungerne uno.' })); return; }
@@ -3735,7 +3743,8 @@ async function run(chat) {
     if (m.tool_name) o.tool_name = m.tool_name;
     return o;
   });
-  const model = chat.model || activeModel();
+  // chat nata con un modello locale e PC spento: risponde il cloud
+  const model = !S.status?.online && S.status?.cloud && !isCloudM(chat.model) ? S.status.cloud : chat.model || activeModel();
   let frame = 0, t0 = performance.now(), thinkStart = 0;
   const paint = () => {
     frame = 0;
