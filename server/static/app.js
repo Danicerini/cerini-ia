@@ -5,6 +5,7 @@ const ICONS = {
   panel: '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 3v18"/>',
   edit: '<path d="M12 3H6a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3v-6"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
+  cloud: '<path d="M17.5 19H8a5 5 0 1 1 1.2-9.86A6 6 0 0 1 20.8 11.5 3.75 3.75 0 0 1 17.5 19Z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   up: '<path d="M12 19V5M5 12l7-7 7 7"/>',
@@ -283,7 +284,9 @@ function renderStatus() {
   const s = S.status || { online: false, loaded: [], models: [] };
   const loaded = loadedNames(), m = activeModel();
   if (s.online) S.powering = null;   // acceso: fine dell'attesa
-  $('#modelName').textContent = canChat() && isCloudM(m) ? '☁ ' + m.slice(6) : !s.online ? (s.unreachable ? 'Server non raggiungibile' : S.powering ? 'Accensione…' : 'PC spento') : (m || 'Nessun modello');
+  const inCloud = canChat() && isCloudM(m);
+  $('#modelName').replaceChildren(...[inCloud ? h('span', { class: 'mn-ic', html: icon('cloud', 'sm') }) : null,
+    h('span', { class: 'mn-tx', text: inCloud ? m.slice(6) : !s.online ? (s.unreachable ? 'Server non raggiungibile' : S.powering ? 'Accensione…' : 'PC spento') : (m || 'Nessun modello') })].filter(Boolean));
   $('#modelDot').className = 'dot ' + (canChat() && isCloudM(m) ? 'ok' : !s.online ? 'err' : S.busyModel === m ? 'warn' : loaded.has(m) ? 'ok' : '');
   $('#modelDot').title = loaded.has(m) ? 'Acceso' : 'Spento';
   if (!$('#picker').classList.contains('hidden')) renderPicker();
@@ -301,16 +304,12 @@ function renderPicker() {
     if (!s.cloud) return;
   }
   if (!s.models.length) { p.append(h('div', { class: 'picker-empty', text: 'Nessun modello scaricato sul PC. Usa “ollama pull” per aggiungerne uno.' })); return; }
-  p.append(h('div', { class: 'picker-head' }, h('span', { text: 'Modelli sul PC' }), h('span', { text: 'per la chat' })));
   const sel = activeModel();
+  if (s.online && s.models.some((m) => !m.cloud)) p.append(h('div', { class: 'picker-head', text: 'Sul PC' }));
+  const pick = (name) => ({ tabindex: 0, role: 'option', 'aria-selected': name === sel, onclick: () => selectModel(name),
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectModel(name); } } });
   for (const m of s.models) {
-    if (m.cloud) {
-      p.append(h('div', { class: 'm-row' + (sel === m.name ? ' sel' : ''), role: 'option', tabindex: 0, onclick: () => selectModel(m.name) },
-        h('span', { class: 'check', html: icon('check', 'sm') }),
-        h('div', {}, h('div', { class: 'nm', text: '☁ ' + m.name.slice(6) }), h('div', { class: 'meta', text: 'nel cloud · a pagamento · funziona anche a PC spento' })), h('div')));
-      continue;
-    }
-    if (!s.online) continue;
+    if (m.cloud || !s.online) continue;
     const ld = s.loaded.find((l) => l.name === m.name);
     const busy = S.busyModel === m.name;
     const meta = [m.params, m.quant, gb(m.size)].filter(Boolean).join(' · ');
@@ -329,17 +328,24 @@ function renderPicker() {
           h('span', { html: `<b>${gpu}%</b> in GPU` }), gpu < 100 ? h('span', { html: `<b>${100 - gpu}%</b> in RAM` }) : null,
           h('span', { text: gb(m.size) }), mins !== null && mins < 100000 ? h('span', { text: `libera tra ${mins} min` }) : null));
     }
-    const row = h('div', { class: 'm-row' + (m.name === sel ? ' sel' : ''), role: 'option', 'aria-selected': m.name === sel, tabindex: 0,
-      onclick: () => selectModel(m.name), onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectModel(m.name); } } },
+    const row = h('div', { class: 'm-row' + (m.name === sel ? ' sel' : ''), ...pick(m.name) },
       h('span', { class: 'check', html: icon('check', 'sm') }),
       h('div', {}, h('div', { class: 'nm' }, m.name, ld ? h('span', { class: 'chip', style: 'margin-left:8px;vertical-align:1px', text: 'acceso' }) : null), h('div', { class: 'meta tnum', text: meta })),
       h('div', { class: 'side-act' }, act), mem);
     p.append(row);
   }
+  const cl = s.models.find((m) => m.cloud);
+  if (cl) {
+    p.append(h('div', { class: 'picker-head', text: s.cloud_account ? 'Col tuo abbonamento' : 'Nel cloud' }),
+      h('div', { class: 'm-row' + (sel === cl.name ? ' sel' : ''), ...pick(cl.name) },
+        h('span', { class: 'check', html: icon('check', 'sm') }),
+        h('div', {}, h('div', { class: 'nm' }, h('span', { class: 'nm-ic', html: icon('cloud', 'sm') }), cl.name.slice(6)),
+          h('div', { class: 'meta', text: `${s.cloud_account ? 'non si paga a token' : 'si paga a token'} · va anche a PC spento` })), h('div')));
+  }
   // quanto ha consumato il modello attivo questo mese (un clic apre i consumi)
   const um = S.usage?.models?.find((x) => x.name === sel);
   p.append(h('button', { class: 'picker-foot u-foot', onclick: () => { S.accSec = 'usage'; openSettings('account'); } }, h('span', { html: icon('chart', 'sm') }),
-    h('span', { text: 'Questo mese' }), h('span', { class: 'pf-state tnum', text: um ? `${fmtTok(um.month[1] + um.month[2])} token · ${um.cloud ? (um.month_cost == null ? 'prezzo da impostare' : fmtMoney(um.month_cost)) : 'gratis'}` : 'ancora niente' })));
+    h('span', { text: 'Questo mese' }), h('span', { class: 'pf-state tnum', text: um ? `${fmtTok(um.month[1] + um.month[2])} token · ${um.cloud ? (s.cloud_account ? 'nell\'abbonamento' : um.month_cost == null ? 'prezzo da impostare' : fmtMoney(um.month_cost)) : 'gratis'}` : 'ancora niente' })));
   // Modelli di servizio (memoria): informativi, non si scelgono per chattare
   (s.helpers || []).forEach((x) => p.append(h('div', { class: 'picker-foot' }, h('span', { html: icon('brain', 'sm') }),
     h('span', { text: `Memoria: ${x.name.replace(':latest', '')}` }), h('span', { class: 'pf-state', text: x.loaded ? `in GPU · ${gb(x.size_vram)}` : 'si accende quando serve' }))));
@@ -1133,8 +1139,8 @@ function renderComposer() {
     if (booting) hint.append(h('span', { class: 'spinner' }), h('span', { text: ` Accensione in corso… (${Math.round((Date.now() - S.powering) / 1000)} s)` }));
     else if (S.wol && !s.unreachable) hint.append(h('button', { class: 'btn sm', html: icon('power', 'sm') + 'Accendi il PC', onclick: wake }));
   } else if (S.busyModel) hint.append(h('span', { class: 'spinner' }), h('span', { text: `Accendo ${S.busyModel}…` }));
-  else if (m && !loadedNames().has(m)) hint.textContent = `${m} è spento: il primo messaggio lo accende, ci vorrà qualche secondo in più.`;
-  else { hint.textContent = isCloudM(m) ? `Le risposte arrivano da ${m.slice(6)}, nel cloud (fuori casa), e possono contenere errori.` : 'Le risposte sono generate sul PC di casa e possono contenere errori.'; hint.classList.add('quiet'); }
+  else if (m && !isCloudM(m) && !loadedNames().has(m)) hint.textContent = `${m} è spento: il primo messaggio lo accende, ci vorrà qualche secondo in più.`;
+  else { hint.textContent = isCloudM(m) ? `Le risposte arrivano da ${m.slice(6)}, nel cloud, e possono contenere errori.` : 'Le risposte sono generate sul PC di casa e possono contenere errori.'; hint.classList.add('quiet'); }
   if ($('#main').classList.contains('empty')) renderHero();
 }
 $('#thinkBtn').onclick = () => { S.think = !S.think; pref.set('think', S.think); renderComposer(); };
@@ -3195,6 +3201,8 @@ function cloudCard({ gate = false } = {}) {
           h('button', { class: 'btn', text: 'Copia', onclick: (e) => copyText(lg.code, e.currentTarget) })));
         if (p === 'claude-code' && lg.url) kids.push(h('label', { class: 'ag-f' }, h('span', { text: '2. Dopo l\'accesso, incolla il codice' }), code),
           h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Completa', onclick: (e) => { e.currentTarget.disabled = true; act(() => api(`/api/account/${p}/code`, { code: code.value })); } })));
+        if (p === 'codex' && lg.code) kids.push(h('small', { class: 'cloud-note', html: 'Se ChatGPT chiede di abilitare il codice dispositivo: attivalo nelle <a href="https://chatgpt.com/#settings/Security" target="_blank" rel="noopener">impostazioni di sicurezza di ChatGPT</a>, poi premi «Ricomincia» e usa il codice nuovo.' }));
+        if (lg.url) kids.push(h('div', { class: 'form-actions' }, h('button', { class: 'btn', text: 'Ricomincia', onclick: (e) => { e.currentTarget.disabled = true; act(() => api(`/api/account/${p}/login?restart=true`, {})); } })));
         // con Claude l'utente sta incollando il codice: il modulo non si ridisegna sotto le sue mani
         if (p === 'codex' || !lg.url) acctPoll = setTimeout(showAccount, 3000);
       }

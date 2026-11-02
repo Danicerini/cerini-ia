@@ -377,7 +377,7 @@ async def status(user: dict = Depends(require_user)):
         version = (await ollama("GET", "/api/version", timeout=2.5)).json()["version"]
         ps, tags = await ollama("GET", "/api/ps"), await ollama("GET", "/api/tags")
     except Exception:
-        return {"online": False, "loaded": [], "models": [], "cloud": cloud_name()}
+        return {"online": False, "loaded": [], "models": [], "cloud": cloud_name(), "cloud_account": is_account()}
     loaded = [
         {
             "name": m["name"],
@@ -403,7 +403,7 @@ async def status(user: dict = Depends(require_user)):
     helper = {n for n, c in caps.items() if "embedding" in c and "completion" not in c}
     helpers = [{"name": n, "loaded": any(l["name"] == n for l in loaded),
                 "size_vram": next((l["size_vram"] for l in loaded if l["name"] == n), 0)} for n in sorted(helper)]
-    return {"online": True, "version": version, "host": host if is_owner(user["id"]) else "", "helpers": helpers, "cloud": cloud_name(), "default_model": DEFAULT_MODEL,
+    return {"online": True, "version": version, "host": host if is_owner(user["id"]) else "", "helpers": helpers, "cloud": cloud_name(), "cloud_account": is_account(), "default_model": DEFAULT_MODEL,
             "loaded": [l for l in loaded if l["name"] not in helper], "models": [m for m in models if m["name"] not in helper]}
 
 

@@ -22,6 +22,7 @@ _CODEX_OFF = ["shell_tool", "unified_exec", "view_image", "image_generation", "b
               "multi_agent", "goals", "plugins", "apps", "hooks", "skill_search", "tool_suggest", "sleep_tool", "shell_snapshot"]
 _CODEX_TEXT_ITEMS = {"agent_message", "reasoning", "error", "todo_list"}   # qualunque altra voce vuol dire che sta usando un suo strumento
 _ACCT_LOGIN: dict[str, dict] = {}
+_ACCT_TASK: dict[str, asyncio.Task] = {}
 
 ACCOUNT_TOOLS_PROMPT = ("\n\nCOME USARE GLI STRUMENTI: li esegue Aura, tu li chiedi nel testo. Per usarne uno scrivi, come ultima cosa del messaggio e "
                         "fuori da blocchi di codice, un blocco per ogni chiamata:\n"
@@ -416,13 +417,16 @@ async def account_get(p: str, _: dict = Depends(require_owner)):
 
 
 @app.post("/api/account/{p}/login")
-async def account_login(p: str, _: dict = Depends(require_owner)):
+async def account_login(p: str, restart: bool = False, _: dict = Depends(require_owner)):
     _acct_check(p)
+    if restart and p in _ACCT_TASK:
+        _ACCT_TASK.pop(p).cancel()
+        _ACCT_LOGIN.pop(p, None)
     if not _acct_bin(p):
         raise HTTPException(400, f"Il programma {ACCOUNT_BIN[p]} non è installato sul server")
     if (_ACCT_LOGIN.get(p) or {}).get("state") != "running":
         _ACCT_LOGIN[p] = {"state": "running", "url": "", "code": "", "msg": ""}
-        _ACCT_LOGIN[p]["task"] = asyncio.create_task(_claude_login() if p == "claude-code" else _codex_login())
+        _ACCT_TASK[p] = asyncio.create_task(_claude_login() if p == "claude-code" else _codex_login())
         for _i in range(40):   # il link arriva dopo qualche secondo
             await asyncio.sleep(0.5)
             if _ACCT_LOGIN[p].get("url") or _ACCT_LOGIN[p].get("state") != "running":
