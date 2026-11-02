@@ -617,13 +617,6 @@ async def crm_folders() -> list[dict]:
     return [{**f, "id": i} for i, f in enumerate(_crm_file().get("cartelle") or await _crm_folders_live())]
 
 
-async def _crm_group_prefix() -> str:
-    """Il prefisso degli id dei gruppi cambia da un CRM all'altro."""
-    if "group" not in _CRM_LISTS:
-        _CRM_LISTS["group"] = str((await _crm_get("describe", elementType="Groups")).get("idPrefix") or "20") + "x"
-    return _CRM_LISTS["group"]
-
-
 def _crm_where(f: dict, uid: str) -> list[str]:
     w = []
     if f.get("miei"):
@@ -645,14 +638,14 @@ async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
         raise ValueError("cartella sconosciuta")
     _, uid = await _crm_sess()
     where = _crm_where(f, uid)
+    user_prefix = uid.split("x")[0] + "x"   # i prefissi degli id cambiano da un CRM all'altro; chi non e' una persona e' un gruppo
     if _crm_like(testo):
         where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
     sql = (f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
            + f" ORDER BY modifiedtime DESC LIMIT {100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
     rows = await _crm_get("query", query=sql)
     if f.get("non_assegnati"):
-        group = await _crm_group_prefix()
-        rows = [t for t in rows if str(t.get("assigned_user_id", "")).startswith(group)]
+        rows = [t for t in rows if "x" in str(t.get("assigned_user_id", "")) and not str(t["assigned_user_id"]).startswith(user_prefix)]
     out = []
     for t in rows[:limite]:
         r = await _crm_row(t, uid)
@@ -672,7 +665,8 @@ async def crm_folder_counts() -> dict:
                 where = _crm_where(f, uid)
                 r = await _crm_get("query", query="SELECT count(*) FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + ";")
                 out[f["id"]] = int(r[0]["count"]) if r else 0
-        except ValueError:
+        except ValueError as e:
+            print(f"CRM: conteggio non riuscito, utente {ACT_UID.get()}, lista {f['id']}: {_crm_clean(str(e), 200)}", flush=True)
             out[f["id"]] = None
     return out
 
