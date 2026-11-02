@@ -483,11 +483,12 @@ def tools_for(user: dict) -> list:
     cal = gmail and has_calendar(user["id"])
     hbase = is_owner(user["id"]) and homebase_on()
     wapp = wa_linked(user["id"])
+    img = image_ready()
     crm = crm_on()
     crm_w = crm and crm_write_on(user)
     return [t["spec"] for n, t in TOOLS.items() if not t.get("hidden") and tool_allowed(n, t, user) and (crm_w or not t.get("crm_write"))
             and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))
-            and (wapp or not t.get("whatsapp")) and (crm or not t.get("crm"))]
+            and (wapp or not t.get("whatsapp")) and (crm or not t.get("crm")) and (img or not t.get("image"))]
 
 
 
@@ -616,7 +617,8 @@ def system_prompt(user: dict, with_tools: bool, site: bool = True, model: str = 
             txt += SITE_PROMPT
         if is_owner(user["id"]) and "homebase_procedura" in TOOLS and homebase_on():
             txt += PROC_HINT
-    return txt
+    return txt + ("\nIMMAGINI: puoi crearle solo con lo strumento immagine_crea. Se non lo vedi tra i tuoi strumenti non puoi farlo: dillo subito, non rispondere mai di sì."
+                  " Non dire mai che un'immagine è pronta se lo strumento non l'ha creata.")
 
 
 # Da problema risolto a procedura: quello che avete sistemato insieme non va perso

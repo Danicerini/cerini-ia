@@ -646,11 +646,12 @@ function stepsEl(steps) {
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', homebase_scratchpad_versioni: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
-const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket', 'ticket_photos'];
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)',
-  consuntivo: 'Sto preparando il consuntivo: leggo CRM, diario e chat… (può volerci un minuto)' };
+  consuntivo: 'Sto preparando il consuntivo: leggo CRM, diario e chat… (può volerci un minuto)',
+  immagine_crea: 'Sto creando l\'immagine… (può volerci un minuto)' };
 const READING_LABEL = { cerca_memoria: 'Sto leggendo la memoria…', mail_cerca: 'Sto leggendo la posta…', mail_leggi: 'Sto leggendo la mail…', calendario_vedi: 'Sto guardando il calendario…', web_cerca: 'Sto cercando sul web…', web_leggi: 'Sto leggendo una pagina…', homebase_note: 'Sto guardando le note…', homebase_nota: 'Sto leggendo la nota…', homebase_cerca: 'Sto cercando nella Homebase…', homebase_servizi: 'Sto guardando i servizi…', homebase_rete: 'Sto guardando la rete…', homebase_scratchpad: 'Sto leggendo lo scratchpad…', homebase_scratchpad_archivio: 'Cerco negli scratchpad archiviati…', homebase_scratchpad_versioni: 'Cerco nelle versioni dei fogli…', file_leggi: 'Sto leggendo il file…' };
 function groupMemoryNotes(msgs) {
   let start = 0;
@@ -663,7 +664,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket', 'ticket_photos'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -762,6 +763,9 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
         : m.view?.kind === 'consuntivo' ? consView(m.view)
         : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket)
+        : m.view?.kind === 'image' ? h('figure', { class: 'gen-img' },
+            h('a', { href: `/api/files/${m.view.id}`, target: '_blank', rel: 'noopener', title: 'Apri a grandezza piena' }, h('img', { src: `/api/files/${m.view.id}`, alt: m.view.prompt || 'Immagine creata da Aura', loading: 'lazy' })),
+            h('figcaption', {}, h('span', { text: m.view.prompt || '' }), h('a', { class: 'btn sm', href: `/api/files/${m.view.id}?download=1`, download: m.view.name || 'immagine.png', html: icon('down', 'sm') + 'Scarica' })))
         : m.view?.kind === 'ticket_photos' ? h('div', { class: 'tk-photos' }, ...m.view.files.map((f, i) => tkPhotoTile(f, m.view.files, i))) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }

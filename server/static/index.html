@@ -1685,6 +1685,9 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .cons-fill { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-top: 1px solid var(--border); } .cons-fill b { font-size: 14px; } .cons-fill > small { font-size: 12.5px; color: var(--text-3); }
 .cons-fill-opt { display: flex; gap: 8px; align-items: flex-start; font-size: 13.5px; cursor: pointer; } .cons-fill-opt input { margin-top: 3px; flex: none; }
 .cons-fill-f { display: flex; justify-content: flex-end; } .cons-fill textarea { width: 100%; box-sizing: border-box; }
+.gen-img { margin: 8px 0 0; max-width: min(520px, 100%); border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--raised); }
+.gen-img img { display: block; width: 100%; height: auto; }
+.gen-img figcaption { display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 12.5px; color: var(--text-2); } .gen-img figcaption span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .gen-img figcaption a { flex: none; }
 .tka { --tka: var(--tk-take); border: 1px solid color-mix(in oklch, var(--tka) 50%, var(--border)); border-radius: 14px; overflow: hidden; background: var(--bg); max-width: 720px; }
 .tka.close { --tka: var(--tk-close); } .tka.reply { --tka: var(--tk-reply); } .tka.note { --tka: var(--tk-note); }
 .tka-h { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--tka); color: var(--tk-on); font-weight: 650; font-size: 14px; }
