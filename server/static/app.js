@@ -619,7 +619,7 @@ function stepsEl(steps) {
 }
 
 // Strumenti della memoria: i loro esiti non compaiono uno per uno nella chat, ma raccolti sotto la risposta del turno
-const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
+const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', homebase_scratchpad_versioni: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
 const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket'];
@@ -627,7 +627,7 @@ const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.k
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)',
   consuntivo: 'Sto preparando il consuntivo: leggo CRM, diario e chat… (può volerci un minuto)' };
-const READING_LABEL = { cerca_memoria: 'Sto leggendo la memoria…', mail_cerca: 'Sto leggendo la posta…', mail_leggi: 'Sto leggendo la mail…', calendario_vedi: 'Sto guardando il calendario…', web_cerca: 'Sto cercando sul web…', web_leggi: 'Sto leggendo una pagina…', homebase_note: 'Sto guardando le note…', homebase_nota: 'Sto leggendo la nota…', homebase_cerca: 'Sto cercando nella Homebase…', homebase_servizi: 'Sto guardando i servizi…', homebase_rete: 'Sto guardando la rete…', homebase_scratchpad: 'Sto leggendo lo scratchpad…', homebase_scratchpad_archivio: 'Cerco negli scratchpad archiviati…', file_leggi: 'Sto leggendo il file…' };
+const READING_LABEL = { cerca_memoria: 'Sto leggendo la memoria…', mail_cerca: 'Sto leggendo la posta…', mail_leggi: 'Sto leggendo la mail…', calendario_vedi: 'Sto guardando il calendario…', web_cerca: 'Sto cercando sul web…', web_leggi: 'Sto leggendo una pagina…', homebase_note: 'Sto guardando le note…', homebase_nota: 'Sto leggendo la nota…', homebase_cerca: 'Sto cercando nella Homebase…', homebase_servizi: 'Sto guardando i servizi…', homebase_rete: 'Sto guardando la rete…', homebase_scratchpad: 'Sto leggendo lo scratchpad…', homebase_scratchpad_archivio: 'Cerco negli scratchpad archiviati…', homebase_scratchpad_versioni: 'Cerco nelle versioni dei fogli…', file_leggi: 'Sto leggendo il file…' };
 function groupMemoryNotes(msgs) {
   let start = 0;
   const flush = (end) => {
