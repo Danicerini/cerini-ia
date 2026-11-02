@@ -1109,10 +1109,19 @@ def _merge_views(views: list) -> dict | None:
 async def tool_confirm(pid: str, request: Request, user: dict = Depends(require_user)):
     p = _take_pending(pid, user)
     messages, displays, views = [], [], []
+    try:
+        edits = await request.json()
+    except ValueError:
+        edits = {}
     for call in p["calls"]:
         tool = TOOLS[call["name"]]
         if not tool_allowed(call["name"], tool, user):
             raise HTTPException(403, "Solo l'amministratore può farlo")
+        # il testo corretto nella scheda: va nel CRM quello che l'utente ha davanti quando conferma
+        if tool.get("edit_field") and isinstance(edits, dict) and str(edits.get("text") or "").strip():
+            call["args"][tool["edit_field"]] = str(edits["text"]).strip()
+            if call["name"] == "ticket_chiudi":
+                call["args"]["unita"] = str(edits.get("units") or "")
         try:
             result = tool["run"](user, call["args"], request)
             if asyncio.iscoroutine(result):

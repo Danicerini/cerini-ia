@@ -1934,6 +1934,7 @@ async function tkpDetail(main, no) {
       q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
       q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
       h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeTickets(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
+    tkActions(t, () => tkpDetail(main, t.no)),
     tkDetail(t, true));
 }
 
@@ -2928,6 +2929,129 @@ function tkAsk(text) {
   closeBrainView(); if (isMobile()) toggleBrain(false);
   input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit();
 }
+// La scheda di un'azione sul ticket, uguale nei tasti e nelle conferme di Aura: rossa la chiusura, azzurra la risposta, come nel CRM
+const TKA = {
+  close: { label: 'Chiudi ticket', send: 'Chiudi ticket', ic: 'check', field: 'Il messaggio di chiusura per il cliente', hint: 'Il ticket si chiude con questo testo. Non so se il CRM lo manda anche per mail al cliente.' },
+  reply: { label: 'Risposta al cliente', send: 'Invia risposta', ic: 'up', field: 'La risposta', hint: 'Va nei commenti del ticket. Non so se il CRM la manda anche per mail al cliente.' },
+  note: { label: 'Nota interna', send: 'Aggiungi nota', ic: 'shield', field: 'La nota', hint: 'Il cliente non dovrebbe vederla.' },
+  take: { label: 'Prendi in carico', send: 'Prendi in carico', ic: 'ticket', hint: 'Lo assegna a te e lo mette in lavorazione.' },
+  edit: { label: 'Modifica ticket', send: 'Applica', ic: 'ticket', hint: 'Cambia questi dati nel CRM.' },
+};
+function tkaBody(v, locked) {
+  const c = TKA[v.mode] || TKA.edit;
+  const body = h('div', { class: 'tka-b' }, h('div', { class: 'tka-who', text: [v.client, v.title].filter(Boolean).join(' · ') }));
+  const hasText = ['close', 'reply', 'note'].includes(v.mode);
+  if (hasText && locked) body.append(h('div', { class: 'tka-read', text: v.text || '' }));
+  if (hasText && !locked) body.append(h('textarea', { 'aria-label': c.field, placeholder: c.field, text: v.text || '', oninput: (e) => { v.text = e.target.value; } }));
+  if (v.mode === 'close') {
+    body.append(locked ? (v.units ? h('div', { class: 'tka-units', text: `Unità impiegate: ${v.units}` }) : '')
+      : h('label', { class: 'tka-units' }, 'Unità impiegate', h('input', { class: 'ag-in', inputmode: 'decimal', value: v.units || '', placeholder: 'facoltativo', oninput: (e) => { v.units = e.target.value; } })));
+  }
+  if ((v.changes || []).length) body.append(h('dl', { class: 'tka-ch' }, ...v.changes.flatMap(([l, a, b]) => [h('dt', { text: l }), h('dd', {}, a ? h('s', { text: a }) : null, b)])));
+  return body;
+}
+function tkaHead(v) {
+  const c = TKA[v.mode] || TKA.edit;
+  return h('div', { class: 'tka-h' }, h('span', { html: icon(c.ic, 'sm') }), c.label, h('span', { class: 'no tnum', text: v.no || '' }));
+}
+// in chat: la conferma di Aura. Il testo si può correggere: nel CRM va quello che c'è qui quando premi
+function ticketActConfirmEl(chat, m) {
+  const v = m.view, c = TKA[v.mode] || TKA.edit, pending = m.status === 'pending';
+  const card = h('div', { class: 'tka ' + v.mode }, tkaHead(v), tkaBody(v, !pending));
+  if (pending) {
+    card.lastChild.append(h('div', { class: 'tka-f' }, h('span', { class: 'tka-hint', text: c.hint }),
+      h('button', { class: 'btn sm', text: 'Annulla', disabled: !!S.stream, onclick: () => decide(chat, m, false) }),
+      h('button', { class: 'btn sm tka-send', html: icon(c.ic, 'sm') + c.send, disabled: !!S.stream, onclick: () => decide(chat, m, true, { text: v.text || '', units: v.units || '' }) })));
+  } else if (m.status === 'working') {
+    card.lastChild.append(h('div', { class: 'tka-st' }, h('span', { class: 'spinner' }), h('span', { text: 'Scrivo nel CRM…' })));
+  } else {
+    const ok = m.status === 'done';
+    card.lastChild.append(h('div', { class: 'tka-st ' + (ok ? 'ok' : 'no') }, h('span', { html: icon(ok ? 'check' : 'x', 'sm') }), h('span', { text: m.result || (ok ? 'Fatto' : m.status === 'failed' ? 'Non riuscito' : 'Annullato') })));
+  }
+  return h('div', { class: 'msg' }, card);
+}
+// nella sezione Ticket: i tasti. Quelli piccoli agiscono subito, risposta e chiusura aprono la scheda
+function tkActions(t, reload) {
+  const box = h('div', { class: 'tkb' }, h('div', { class: 'tkb-off', text: 'Carico le azioni…' }));
+  const url = '/api/crm/ticket/' + encodeURIComponent(t.no);
+  const after = async (msg) => { TKP.folders = null; TK.folders = null; if (msg) toast(msg); await reload(); };
+  (async () => {
+    let o;
+    try { o = await (await api('/api/crm/options')).json(); } catch (e) { box.replaceChildren(h('div', { class: 'tkb-off', text: e.message })); return; }
+    if (!o.write) { box.replaceChildren(h('div', { class: 'tkb-off', text: 'Per usare i tasti di questo ticket attiva la scrittura in Impostazioni → Collegamenti → CRM.' })); return; }
+    const form = h('div');
+    const act = async (btn, fn, msg) => {
+      box.querySelectorAll('button, select, input').forEach((x) => { x.disabled = true; });
+      try { await fn(); await after(msg); }
+      catch (e) { toast(e.message); box.querySelectorAll('button, select, input').forEach((x) => { x.disabled = false; }); }
+    };
+    const patch = (fields, msg) => api(url, { fields }, { method: 'PATCH' }).then(() => msg);
+    const open = (mode) => {
+      const v = { mode, no: t.no, client: t.client, title: t.title, text: '', units: '' }, c = TKA[mode];
+      const err = h('div', { class: 'tka-err', role: 'alert' });
+      const draft = h('button', { class: 'btn sm', html: icon('bulb', 'sm') + 'Bozza di Aura', onclick: async () => {
+        draft.disabled = true; err.textContent = 'Aura sta scrivendo la bozza…';
+        try { v.text = (await (await api(url + '/draft', { mode })).json()).text; paint(); }
+        catch (e) { err.textContent = e.message; draft.disabled = false; } } });
+      const paint = () => {
+        const send = h('button', { class: 'btn sm tka-send', html: icon(c.ic, 'sm') + c.send, onclick: async () => {
+          if ((v.text || '').trim().length < 2) { err.textContent = 'Manca il testo.'; return; }
+          send.disabled = true; err.textContent = '';
+          try {
+            if (mode === 'close') await api(url + '/close', { text: v.text, units: v.units });
+            else await api(url + '/comment', { text: v.text, interna: mode === 'note' });
+            await after(mode === 'close' ? `Ticket ${t.no} chiuso` : mode === 'note' ? 'Nota aggiunta' : 'Risposta inserita nel ticket');
+          } catch (e) { err.textContent = e.message; send.disabled = false; } } });
+        const body = tkaBody(v, false);
+        body.append(err, h('div', { class: 'tka-f' }, h('span', { class: 'tka-hint', text: c.hint }), draft,
+          h('button', { class: 'btn sm', text: 'Annulla', onclick: () => form.replaceChildren() }), send));
+        form.replaceChildren(h('div', { class: 'tka ' + mode }, tkaHead(v), body));
+        body.querySelector('textarea')?.focus();
+      };
+      paint();
+    };
+    const btn = (label, cls, onclick) => h('button', { class: 'btn sm tkb-btn ' + cls, text: label, onclick });
+    const take = !t.done && (!t.mine || t.status === 'Open') ? btn('Prendi in carico', 'primary', (e) => {
+      if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo prendi tu?`)) return;
+      act(e.currentTarget, () => api(url + '/take', {}), 'Ticket preso in carico'); }) : null;
+    const starred = ['1', 'true'].includes(String(t.fields?.starred));
+    const row = h('div', { class: 'tkb-row' }, take,
+      t.done ? null : btn('Rispondi', 'reply', () => open('reply')),
+      btn('Nota interna', '', () => open('note')),
+      t.done ? null : btn('Chiudi ticket', 'close', () => open('close')),
+      o.known.includes('starred') ? h('button', { class: 'btn sm tkb-star', title: starred ? 'Togli dai preferiti' : 'Metti nei preferiti', 'aria-label': 'Preferito', 'aria-pressed': String(starred), text: starred ? '★' : '☆',
+        onclick: (e) => act(e.currentTarget, () => patch({ starred: starred ? 0 : 1 }), starred ? 'Tolto dai preferiti' : 'Messo nei preferiti') }) : null);
+    const field = (label, control) => h('label', {}, label, control);
+    const pick = (label, name, value) => {
+      const list = o.picks[name];
+      if (!list?.length || !o.known.includes(name)) return null;
+      const sel = h('select', { class: 'ag-in', 'aria-label': label, onchange: (e) => {
+        const val = e.target.value;
+        if (name === 'ticketstatus' && val === 'Closed') { e.target.value = value; open('close'); return; }
+        if (name === 'ticketstatus' && val === 'Annullato' && !confirm(`Annullo il ticket ${t.no}?`)) { e.target.value = value; return; }
+        act(sel, () => patch({ [name]: val }), `${label}: ${list.find((x) => x.value === val)?.label || val}`);
+      } }, ...(list.some((x) => x.value === value) ? [] : [h('option', { value: value || '', text: value || '—' })]),
+        ...list.map((x) => h('option', { value: x.value, text: x.label, selected: x.value === value ? true : null })));
+      return field(label, sel);
+    };
+    const assign = o.groups.length ? field('Assegnato a', h('select', { class: 'ag-in', 'aria-label': 'Assegnato a', onchange: (e) => {
+      const val = e.target.value;
+      if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo sposti?`)) { e.target.value = t.assigned; return; }
+      act(e.target, () => patch({ assigned_user_id: val }), 'Assegnazione cambiata'); } },
+      ...(t.assigned !== o.me && !o.groups.some((g) => g.id === t.assigned) ? [h('option', { value: t.assigned, text: t.owner || '—' })] : []),
+      h('option', { value: o.me, text: 'A me', selected: t.assigned === o.me ? true : null }),
+      ...o.groups.map((g) => h('option', { value: g.id, text: g.name, selected: g.id === t.assigned ? true : null })))) : null;
+    const edit = (label, name, value, type) => !name || !o.known.includes(name) ? null : field(label, h('input', { class: 'ag-in', type: type || 'text', value: value || '', 'aria-label': label,
+      onchange: (e) => act(e.target, () => patch({ [name]: e.target.value }), `${label} salvata`) }));
+    const fields = h('div', { class: 'tkb-fields' },
+      pick('Stato', 'ticketstatus', t.status), pick('Priorità', 'ticketpriorities', t.fields?.ticketpriorities), pick('Categoria', 'ticketcategories', t.fields?.ticketcategories),
+      pick('Tipo intervento', 'tipo_intervento', t.fields?.tipo_intervento), pick('Gruppo di supporto', 'gruppo_di_supporto', t.fields?.gruppo_di_supporto), assign,
+      edit('Data intervento', 'data_intervento', t.fields?.data_intervento, 'date'), edit('Scadenza', 'data_scadenza_ricezione', t.fields?.data_scadenza_ricezione, 'date'),
+      edit('Nota', o.note_field, t.fields?.[o.note_field]), edit('Titolo', 'ticket_title', t.title));
+    box.replaceChildren(row, form, fields);
+  })();
+  return box;
+}
 function tkDetail(t, full) {
   const meta = (label, val) => val ? h('div', { class: 'tk-m' }, h('small', { text: label }), h('span', { text: val })) : null;
   const sec = (label, txt, cls) => txt ? h('div', { class: 'tk-sec ' + (cls || '') }, h('div', { class: 'tk-sec-h', text: label }), h('div', { class: 'tk-txt', text: txt })) : null;
@@ -2941,7 +3065,7 @@ function tkDetail(t, full) {
     sec('Soluzione', full ? t.solution : _clipTxt(t.solution, 420), 'sol'),
     (t.comments || []).length ? h('div', { class: 'tk-sec' }, h('div', { class: 'tk-sec-h', text: `Commenti (${t.comments.length})` }),
       h('div', { class: 'tk-coms' }, ...(full ? t.comments : t.comments.slice(-3)).map((c) => h('div', { class: 'tk-com' + (c.client ? ' client' : '') + (c.me ? ' me' : '') },
-        h('div', { class: 'tk-com-h' }, h('b', { text: c.me ? 'Tu' : c.who }), h('small', { class: 'tnum', text: `${tkDay(c.at)} ${c.at.slice(11, 16)}` })),
+        h('div', { class: 'tk-com-h' }, h('b', { text: c.me ? 'Tu' : c.who }), c.private ? h('span', { class: 'tk-com-priv', text: 'interna' }) : null, h('small', { class: 'tnum', text: `${tkDay(c.at)} ${c.at.slice(11, 16)}` })),
         h('div', { class: 'tk-txt', text: c.text }))))) : null);
 }
 const _clipTxt = (s, n) => !s || s.length <= n ? s : s.slice(0, n).replace(/\s\S*$/, '') + '…';
@@ -2955,6 +3079,7 @@ async function openTicket(ref) {
       q('Prepara la risposta', `Prepara una risposta per il cliente sul ticket ${t.no}.`),
       q('Già successo?', `Cerca nei ticket chiusi se un problema come quello del ticket ${t.no} («${t.title}») è già stato risolto e come.`),
       h('button', { class: 'tk-q free', text: 'Altra domanda…', onclick: () => { closeBrainView(); input.value = `Sul ticket ${t.no}: `; autosize(); renderComposer(); input.focus(); } })),
+    tkActions(t, () => openTicket(t.no)),
     tkDetail(t, true));
 }
 // in chat: elenco di ticket (ticket_elenco, ticket_cerca) e un ticket aperto (ticket_dettaglio)
@@ -3680,6 +3805,7 @@ function waView(v, status) {
 }
 function confirmEl(chat, m) {
   if (m.view?.kind === 'wa') return waConfirmEl(chat, m);
+  if (m.view?.kind === 'ticket_act') return ticketActConfirmEl(chat, m);
   const card = h('div', { class: 'confirm-card' },
     h('div', { class: 'ct', html: icon('shield', 'sm') + 'Serve la tua conferma' }),
     h('div', { class: 'md', html: renderMarkdown(m.summary || m.name) }),
@@ -3713,11 +3839,11 @@ function waConfirmEl(chat, m) {
   }
   return h('div', { class: 'msg' }, card);
 }
-async function decide(chat, m, ok) {
+async function decide(chat, m, ok, edits) {
   if (S.stream || m.status !== 'pending') return;
   m.status = 'working'; renderThread();
   try {
-    const res = await (await api(`/api/tools/${m.id}/${ok ? 'confirm' : 'cancel'}`, {})).json();
+    const res = await (await api(`/api/tools/${m.id}/${ok ? 'confirm' : 'cancel'}`, edits || {})).json();
     m.status = !ok ? 'cancelled' : res.failed ? 'failed' : 'done'; m.result = res.display;
     // Un risultato per ogni azione confermata (possono essere piu' piatti insieme)
     (res.messages || [res.message]).forEach((msg, i) => chat.messages.push({ ...msg, display: i ? undefined : res.display, fromConfirm: true, view: i ? undefined : res.view || undefined }));
@@ -3982,10 +4108,10 @@ function crmCard() {
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('ticket', 'sm') + 'CRM dei ticket' }),
     h('p', { text: 'Aura legge i tuoi ticket. Funziona con vtiger / OpenCRM.' })), box);
   // chiudere e rispondere: spento di partenza; acceso, Aura prepara il testo e parte solo con la tua conferma
-  const writeRow = (s) => { const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!s.write), 'aria-label': 'Chiudere i ticket e rispondere ai clienti', onclick: async () => {
+  const writeRow = (s) => { const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!s.write), 'aria-label': 'Scrivere nel CRM dai tasti e da Aura', onclick: async () => {
     try { paint({ ...s, write: (await (await api('/api/crm/write', { enabled: !s.write }, { method: 'PUT' })).json()).write }); toast(s.write ? 'Scrittura sul CRM spenta' : 'Scrittura sul CRM accesa'); } catch (e) { toast(e.message); } } }, h('span'));
     return h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Chiudere i ticket e rispondere ai clienti' }),
-      h('small', { text: s.write ? 'Acceso: Aura prepara il testo e te lo mostra. Nel CRM va solo quando premi Conferma, ogni volta.' : 'Spento: Aura legge soltanto, nel CRM non scrive niente.' })), sw); };
+      h('small', { text: s.write ? 'Acceso: i tasti nella sezione Ticket scrivono nel CRM. Aura prepara e ti mostra l\'anteprima: scrive solo quando premi il tasto sulla scheda, ogni volta.' : 'Spento: Aura legge soltanto, nel CRM non scrive niente.' })), sw); };
   const paint = (s) => {
     const was = S.me.crm;
     S.me.crm = s.linked; $('#ticketsBtn').classList.toggle('hidden', !s.linked);
