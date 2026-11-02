@@ -14,7 +14,7 @@ import html as _html
 
 OWNER_CRM = {"url": os.environ.get("CRM_URL", "").rstrip("/"), "user": os.environ.get("CRM_USER", ""), "key": os.environ.get("CRM_KEY", "")}
 CRM_WRITE_OPS = {"create", "revise"}
-CRM_READ_OPS = {"getchallenge", "login", "query", "retrieve", "describe", "listtypes"}
+CRM_READ_OPS = {"getchallenge", "login", "query", "retrieve", "describe", "listtypes", "retrieve_related", "files_retrieve"}
 # campi del modulo ticket (personalizzati nel CRM dell'azienda): soluzione, tempo, cliente
 CRM_SOLUTION = os.environ.get("CRM_SOLUTION_FIELD", "cf_acf_rtf_soluzione_ticket")
 
@@ -114,7 +114,7 @@ async def _crm_sql(sql: str, session: str) -> str:
     return sql[:m.start(1)] + ",".join(keep) + sql[m.end(1):]
 
 
-async def _crm(op: str, _write: bool = False, **p) -> dict | list:
+async def _crm(op: str, _write: bool = False, _timeout: float = 20, **p) -> dict | list:
     if op not in CRM_READ_OPS and not (_write and op in CRM_WRITE_OPS):
         raise ValueError(f"operazione CRM non permessa: {op} (il collegamento è solo in lettura)")
     if op == "query" and p.get("sessionName"):
@@ -122,9 +122,9 @@ async def _crm(op: str, _write: bool = False, **p) -> dict | list:
     url = crm_cfg().get("url", "") + "/webservice.php"
     try:
         if op == "login" or _write:
-            r = await client.post(url, data={"operation": op, **p}, timeout=20)
+            r = await client.post(url, data={"operation": op, **p}, timeout=_timeout)
         else:
-            r = await client.get(url, params={"operation": op, **p}, timeout=20)
+            r = await client.get(url, params={"operation": op, **p}, timeout=_timeout)
         d = r.json()
     except (httpx.HTTPError, ValueError):
         raise ValueError("il CRM non risponde")
@@ -478,7 +478,12 @@ async def crm_detail(ref: str) -> dict:
             raise ValueError(f"ticket {ref} non trovato nel CRM")
         t = res[0]
     r = await _crm_row(t, uid)
-    coms = await _crm_get("query", query=f"SELECT commentcontent,creator,assigned_user_id,customer,createdtime,is_private FROM ModComments "
+    try:   # le foto stanno nei commenti: la query non da' questo campo, il «related» si'
+        rel = await _crm_get("retrieve_related", id=t["id"], relatedType="ModComments", relatedLabel="ModComments")
+        files_of = {c.get("id"): [x.strip() for x in str(c.get("imageattachmentids") or "").split(",") if re.fullmatch(r"\d+x\d+", x.strip())] for c in rel}
+    except ValueError:
+        files_of = {}   # non tutti i CRM ce l'hanno
+    coms = await _crm_get("query", query=f"SELECT id,commentcontent,creator,assigned_user_id,customer,createdtime,is_private FROM ModComments "
                                           f"WHERE related_to='{_crm_q(t['id'])}' ORDER BY createdtime LIMIT 100;")
     comments = []
     for c in coms:
@@ -488,11 +493,12 @@ async def crm_detail(ref: str) -> dict:
             _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
         who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
-                         "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false")})
+                         "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
     r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
              taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 2500),
-             solution=_crm_clean(t.get(CRM_SOLUTION), 2000), comments=comments, assigned=t.get("assigned_user_id", ""),
+             solution=_crm_clean(t.get(CRM_SOLUTION), 2000), comments=comments,
+             desc_images=[re.sub(r"@.*", "", x) for x in re.findall(r"""src=["']cid:([^"']+)""", t.get(CRM_DESC) or "", re.I)], assigned=t.get("assigned_user_id", ""),
              other_person=not r["mine"] and str(t.get("assigned_user_id", "")).startswith(uid.split("x")[0] + "x"),
              fields={k: t.get(k, "") for k in ("ticketpriorities", "ticketcategories", "tipo_intervento", "gruppo_di_supporto", "data_intervento", "data_scadenza_ricezione", "starred", await _crm_note_field())})
     return r
@@ -845,6 +851,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     _CRM_ACC.clear()
     _CRM_FIELDS.clear()
     _CRM_LISTS.clear()
+    _CRM_FILES.clear()
     try:
         await _crm_get("query", query="SELECT ticket_no FROM HelpDesk LIMIT 1;")
     except ValueError as e:
@@ -868,6 +875,7 @@ async def crm_link_delete(user: dict = Depends(require_user)):
     _CRM_ACC.clear()
     _CRM_FIELDS.clear()
     _CRM_LISTS.clear()
+    _CRM_FILES.clear()
     return {"linked": False, "managed": False, "url": "", "user": "", "write": False}
 
 
@@ -891,6 +899,68 @@ def _crm_html(text: str) -> str:
 
 def _quote(text: str) -> str:
     return "\n".join("> " + x for x in text.strip().splitlines())
+
+
+# ---- foto e allegati: arrivano dal CRM con la sessione di chi guarda, quindi vede solo quello che il CRM gli fa vedere
+_CRM_FILES = _PerUser(dict)
+_CRM_FILES_MAX = 32 * 1024 * 1024   # in memoria per ogni utente: le piu' vecchie escono
+_CRM_FILE_SEM = asyncio.Semaphore(4)
+_CRM_IMAGES = ((b"\x89PNG\r\n\x1a\n", "image/png"), (b"\xff\xd8\xff", "image/jpeg"), (b"GIF8", "image/gif"), (b"BM", "image/bmp"))
+
+
+def _crm_image_mime(data: bytes) -> str:
+    """Il tipo lo dicono i byte, non il nome: quello che non e' un'immagine vera si scarica e basta."""
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return next((m for sig, m in _CRM_IMAGES if data.startswith(sig)), "")
+
+
+async def crm_file(fid: str) -> dict:
+    if not re.fullmatch(r"\d+x\d+", fid or ""):
+        raise ValueError("allegato non valido")
+    if fid in _CRM_FILES:
+        return _CRM_FILES[fid]
+    async with _CRM_FILE_SEM:
+        res = await _crm_get("files_retrieve", id=fid, _timeout=60)
+    if not res:
+        raise ValueError("allegato non trovato")
+    data = base64.b64decode(res[0].get("filecontents") or "")
+    f = {"id": fid, "name": str(res[0].get("filename") or "allegato"), "size": len(data), "mime": _crm_image_mime(data), "data": data}
+    cache = _CRM_FILES._d()
+    cache[fid] = f
+    while sum(len(x["data"]) for x in cache.values()) > _CRM_FILES_MAX and len(cache) > 1:
+        cache.pop(next(iter(cache)))
+    return f
+
+
+@app.get("/api/crm/file-info")
+async def crm_file_info(ids: str, _: dict = Depends(require_user)):
+    """Nome, peso e tipo degli allegati di un ticket: quello che non si riesce a leggere resta fuori."""
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+
+    async def one(fid):
+        try:
+            f = await crm_file(fid)
+            return {k: f[k] for k in ("id", "name", "size")} | {"image": bool(f["mime"])}
+        except (ValueError, TypeError) as e:
+            print(f"CRM: allegato {fid} non letto: {_clip(str(e), 120)}", flush=True)
+            return None
+    found = await asyncio.gather(*(one(x) for x in dict.fromkeys(ids.split(",")).keys() if x))
+    return {"files": [f for f in found[:80] if f]}
+
+
+@app.get("/api/crm/file/{fid}")
+async def crm_file_get(fid: str, _: dict = Depends(require_user)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        f = await crm_file(fid)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(404, str(e))
+    name = re.sub(r"[^\w.\-]+", "_", f["name"])[:120] or "allegato"
+    return Response(f["data"], media_type=f["mime"] or "application/octet-stream", headers={
+        "Content-Disposition": f'{"inline" if f["mime"] else "attachment"}; filename="{name}"', "Cache-Control": "no-store"})   # non resta nel browser per chi entra dopo
 
 
 async def _crm_note_field() -> str:

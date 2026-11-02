@@ -3052,21 +3052,47 @@ function tkActions(t, reload) {
   })();
   return box;
 }
+// Foto e allegati del ticket: le foto di una mail nel CRM stanno nel suo commento, con lo stesso nome del «cid:» nel testo.
+// Sotto i 4 KB sono icone di firme e di avvisi automatici: non si mostrano
+function tkFilesFill(t, descBox, boxes) {
+  const ids = [...new Set((t.comments || []).flatMap((c) => c.files || []))];
+  if (!ids.length) return;
+  api('/api/crm/file-info?' + new URLSearchParams({ ids: ids.join(',') })).then((r) => r.json()).then((d) => {
+    const info = new Map(d.files.map((f) => [f.id, f]));
+    const moved = new Set();
+    const wanted = new Set(t.desc_images || []);
+    const first = (t.comments || []).find((c) => (c.files || []).some((x) => wanted.has(info.get(x)?.name)));
+    const show = (list) => list.map((f) => f.image
+      ? h('a', { class: 'tk-photo', href: `/api/crm/file/${f.id}`, target: '_blank', rel: 'noopener', title: f.name }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' }))
+      : h('a', { class: 'tk-file', href: `/api/crm/file/${f.id}`, download: f.name }, h('span', { html: icon('clip', 'sm') }), h('span', { text: f.name })));
+    const useful = (f) => f && (!f.image || f.size >= 4096);
+    if (first && descBox) {
+      const own = (first.files || []).map((x) => info.get(x)).filter((f) => f && wanted.has(f.name) && useful(f));
+      own.forEach((f) => moved.add(f.id));
+      descBox.append(...show(own));
+    }
+    (t.comments || []).forEach((c, i) => boxes[i]?.append(...show((c.files || []).map((x) => info.get(x)).filter((f) => useful(f) && !moved.has(f.id)))));
+  }).catch(() => {});
+}
 function tkDetail(t, full) {
   const meta = (label, val) => val ? h('div', { class: 'tk-m' }, h('small', { text: label }), h('span', { text: val })) : null;
-  const sec = (label, txt, cls) => txt ? h('div', { class: 'tk-sec ' + (cls || '') }, h('div', { class: 'tk-sec-h', text: label }), h('div', { class: 'tk-txt', text: txt })) : null;
+  const sec = (label, txt, cls, extra) => txt ? h('div', { class: 'tk-sec ' + (cls || '') }, h('div', { class: 'tk-sec-h', text: label }), h('div', { class: 'tk-txt', text: txt }), extra || null) : null;
+  const descBox = full ? h('div', { class: 'tk-files' }) : null;
+  const shown = full ? (t.comments || []) : (t.comments || []).slice(-3);
+  const boxes = shown.map(() => (full ? h('div', { class: 'tk-files' }) : null));
+  if (full) setTimeout(() => tkFilesFill(t, descBox, boxes), 0);
   return h('div', { class: 'tk-detail' },
     h('div', { class: 'tk-head' },
       h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
       h('b', { class: 'tnum', text: t.no }), t.mine ? null : h('span', { class: 'tk-other', text: 'di un collega' })),
     h('div', { class: 'tk-meta' }, meta('Cliente', t.client), meta('Contatto', t.contact), meta('Assegnato a', t.owner),
       meta('Aperto', tkDay(t.created)), meta('Preso in carico', tkDay(t.taken)), meta('Chiuso', tkDay(t.closed)), meta('Tipo', [t.category, t.kind].filter(Boolean).join(' · '))),
-    sec('Richiesta', full ? t.description : _clipTxt(t.description, 420)),
+    sec('Richiesta', full ? (t.description || (t.desc_images?.some((x) => /^image/i.test(x)) ? 'Solo immagini:' : '')) : _clipTxt(t.description, 420), '', descBox),
     sec('Soluzione', full ? t.solution : _clipTxt(t.solution, 420), 'sol'),
     (t.comments || []).length ? h('div', { class: 'tk-sec' }, h('div', { class: 'tk-sec-h', text: `Commenti (${t.comments.length})` }),
-      h('div', { class: 'tk-coms' }, ...(full ? t.comments : t.comments.slice(-3)).map((c) => h('div', { class: 'tk-com' + (c.client ? ' client' : '') + (c.me ? ' me' : '') },
+      h('div', { class: 'tk-coms' }, ...shown.map((c, ci) => h('div', { class: 'tk-com' + (c.client ? ' client' : '') + (c.me ? ' me' : '') },
         h('div', { class: 'tk-com-h' }, h('b', { text: c.me ? 'Tu' : c.who }), c.private ? h('span', { class: 'tk-com-priv', text: 'interna' }) : null, h('small', { class: 'tnum', text: `${tkDay(c.at)} ${c.at.slice(11, 16)}` })),
-        h('div', { class: 'tk-txt', text: c.text }))))) : null);
+        h('div', { class: 'tk-txt', text: c.text }), boxes[ci]))) ) : null);
 }
 const _clipTxt = (s, n) => !s || s.length <= n ? s : s.slice(0, n).replace(/\s\S*$/, '') + '…';
 async function openTicket(ref) {
