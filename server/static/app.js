@@ -495,14 +495,24 @@ const isMobile = () => matchMedia('(max-width: 820px)').matches;
 function closeSide() { $('#app').classList.remove('side-open'); }
 $('#sideOpen').onclick = () => {
   if (isMobile()) $('#app').classList.add('side-open');
-  else { $('#app').classList.remove('side-collapsed'); pref.set('sideCollapsed', false); }
+  else { $('#app').classList.remove('side-collapsed'); pref.set('sideCollapsed', false); sideLabel(); }
+};
+// sul computer la barra chiusa resta come striscia di simboli, e lo stesso tasto la riapre
+const sideLabel = () => {
+  const closed = !isMobile() && $('#app').classList.contains('side-collapsed');
+  $('#sideClose').title = closed ? 'Apri barra laterale' : 'Chiudi barra laterale';
+  $('#sideClose').setAttribute('aria-label', $('#sideClose').title);
+  $('#sideClose').setAttribute('aria-expanded', String(!closed));
 };
 $('#sideClose').onclick = () => {
-  if (isMobile()) closeSide();
-  else { $('#app').classList.add('side-collapsed'); pref.set('sideCollapsed', true); }
+  if (isMobile()) { closeSide(); return; }
+  const closed = !$('#app').classList.contains('side-collapsed');
+  $('#app').classList.toggle('side-collapsed', closed); pref.set('sideCollapsed', closed);
+  sideLabel();
 };
 $('#scrim').onclick = closeSide;
 if (pref.get('sideCollapsed', false)) $('#app').classList.add('side-collapsed');
+sideLabel();
 
 // Telefono: trascinando dal bordo sinistro si apre la barra laterale, verso sinistra si chiude
 (() => {
