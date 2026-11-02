@@ -7,6 +7,7 @@
 # Al processo arriva solo l'ambiente scritto qui, mai il .env del server.
 
 import shutil
+import signal
 import subprocess
 import tempfile
 
@@ -67,6 +68,14 @@ def _acct_env(p: str, term: str = "dumb") -> dict:
         if account_ready(p):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = _acct_token_file(p).read_text(encoding="utf-8").strip()
     return env
+
+
+def _acct_kill(proc):
+    """Le CLI sono un lanciatore con un processo figlio: si chiude tutto il gruppo, o il figlio resta vivo."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 def _acct_bin(p: str) -> str | None:
@@ -159,7 +168,7 @@ async def _acct_run(p: str, model: str, system: str, text: str, images: list, ti
                 stdin = (json.dumps({"type": "user", "message": {"role": "user", "content": blocks}}, ensure_ascii=False) + "\n").encode()
             proc = await asyncio.create_subprocess_exec(*_acct_cmd(p, model, run, system_file, image_files), stdin=asyncio.subprocess.PIPE,
                                                         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=_acct_env(p),
-                                                        cwd=str(run), limit=32 * 1024 * 1024)
+                                                        cwd=str(run), limit=32 * 1024 * 1024, start_new_session=True)
             err_tail = bytearray()
 
             async def read_err():
@@ -203,9 +212,8 @@ async def _acct_run(p: str, model: str, system: str, text: str, images: list, ti
                 yield ("error", "Account: il modello non ha risposto in tempo")
             finally:
                 err_task.cancel()
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.wait()
+                _acct_kill(proc)
+                await proc.wait()
 
 
 def _claude_event(d: dict) -> list:
@@ -367,15 +375,15 @@ async def _claude_login():
                 return
         _acct_login_end(p, "error", "Accesso non completato: riprova, oppure incolla il token a mano.")
     finally:
-        if proc.poll() is None:
-            proc.kill()
+        _acct_kill(proc)
+        proc.wait()
         os.close(master)
 
 
 async def _codex_login():
     p = "codex"
     proc = await asyncio.create_subprocess_exec(_acct_bin(p), "login", "--device-auth", "-c", 'cli_auth_credentials_store="file"', stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.STDOUT, env=_acct_env(p), cwd=str(_acct_home(p)))
+                                                stderr=asyncio.subprocess.STDOUT, env=_acct_env(p), cwd=str(_acct_home(p)), start_new_session=True)
     _ACCT_LOGIN[p] = {"state": "running", "url": "", "code": "", "msg": ""}
     last = ""
     try:
@@ -396,8 +404,7 @@ async def _codex_login():
     except TimeoutError:
         _acct_login_end(p, "error", "Il codice è scaduto: riprova.")
     finally:
-        if proc.returncode is None:
-            proc.kill()
+        _acct_kill(proc)
 
 
 def _acct_check(p: str):
