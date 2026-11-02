@@ -728,6 +728,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
         body.model = cloud_name() or "cloud:"   # il PC di casa e' del proprietario: gli altri usano sempre il loro fornitore
     if is_cloud(body.model) and cloud_name() and body.model != cloud_name():
         body.model = cloud_name()   # chat aperta con un modello cloud di prima: si usa (e si dice) quello impostato adesso
+    active_model_save(user, body.model)
 
     async def stream():
         try:

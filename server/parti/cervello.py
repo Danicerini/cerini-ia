@@ -1599,7 +1599,7 @@ async def consuntivo(user: dict, day: str) -> dict:
                                 fascicoli=fasc, giorno=day, diario=diary, chat=chats, crm=CONS_CRM.format(ticket=crm) if crm else "")
     d = {}
     for _ in range(2):   # a volte il modello risponde vuoto o non in JSON: si riprova una volta
-        raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, model=cloud_name() or None, timeout=150)
+        raw = await llm_once([{"role": "user", "content": prompt}], json_mode=True, temperature=0.1, timeout=150)
         try:
             d = json.loads(re.sub(r"^```(?:json)?|```$", "", raw.strip()).strip() or "{}")
         except ValueError:

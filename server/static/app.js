@@ -277,6 +277,7 @@ async function refresh() {
       pref.set('model', S.model);
     }
   }
+  sendActiveModel();
   renderStatus(); loadCaps(activeModel());
 }
 setInterval(() => { if (!document.hidden && !$('#app').classList.contains('hidden')) refresh(); }, 5000);
@@ -372,13 +373,20 @@ function togglePicker(force) {
 $('#modelBtn').onclick = (e) => { e.stopPropagation(); togglePicker(); };
 document.addEventListener('click', (e) => { if (!$('#picker').contains(e.target)) togglePicker(false); });
 
+// il server deve sapere il modello selezionato: lo stesso fa anche i lavori di sottofondo
+function sendActiveModel() {
+  if (!S.model || S.sentModel === S.model) return;
+  S.sentModel = S.model;
+  api('/api/me/model', { model: S.model }, { method: 'PUT' }).catch(() => { S.sentModel = null; });
+}
 function selectModel(name) {
   S.model = name; if (!isCloudM(name)) pref.set('model', name);   // il cloud vale per questa chat, non diventa il predefinito
+  sendActiveModel();
   const c = current(); if (c) { c.model = name; saveChat(c); }
   togglePicker(false); renderStatus(); loadCaps(name); focusInput();
 }
 async function loadModel(name) {
-  S.model = name; pref.set('model', name);
+  S.model = name; pref.set('model', name); sendActiveModel();
   const c = current(); if (c) { c.model = name; saveChat(c); }
   S.busyModel = name; S.busySince = Date.now(); renderStatus();
   try { await api('/api/load', { model: name }); toast(`${name} è acceso e pronto`); }
@@ -3232,7 +3240,7 @@ function cloudCard({ gate = false } = {}) {
     const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', placeholder: c.has_key ? `Chiave salvata (${c.key_hint}): lascia vuoto per tenerla` : 'Incolla qui la chiave API', 'aria-label': 'Chiave API' });
     const sw = (on, label) => { const b = h('button', { type: 'button', class: 'switch', role: 'switch', 'aria-checked': String(!!on), 'aria-label': label,
       onclick: () => b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true')) }, h('span')); return b; };
-    const en = sw(gate || c.enabled, 'Attivo'), bg = sw(c.background, 'Lavori in sottofondo');
+    const en = sw(gate || c.enabled, 'Attivo');
     // i modelli consigliati del fornitore: un clic e il campo si riempie
     const note = h('small', { class: 'cloud-note' }), picks = h('div', { class: 'cloud-picks' });
     const keyF = h('label', { class: 'ag-f' }, h('span', { text: 'Chiave API' }), key), adv = h('details', { class: 'cloud-adv' }, h('summary', { text: 'Indirizzo dell\'API' }), base);
@@ -3244,15 +3252,14 @@ function cloudCard({ gate = false } = {}) {
         onclick: () => { model.value = m; showPicks(); } }, h('b', { text: m }), why ? h('span', { text: why }) : '')));
     };
     const fill = () => { const p = c.presets[prov.value]; if (prov.value !== 'custom') { base.value = p.base; if (!model.value || Object.values(c.presets).some((x) => x.model === model.value || (x.models || []).some(([m]) => m === model.value))) model.value = p.model; } showPicks(); };
-    // l'abbonamento non si consuma coi lavori di sottofondo, se non lo chiedi
-    prov.onchange = () => { fill(); if (c.presets[prov.value]?.account) bg.setAttribute('aria-checked', 'false'); showAccount(); };
+    prov.onchange = () => { fill(); showAccount(); };
     model.oninput = showPicks;
     showPicks();
     if (!c.model) fill();
     const out = h('div', { class: 'form-msg', role: 'status' });
     const save = async () => {
       const body = { provider: prov.value, base: base.value.trim(), model: model.value.trim(), api_key: key.value.trim(),
-        enabled: en.getAttribute('aria-checked') === 'true', background: bg.getAttribute('aria-checked') === 'true' };
+        enabled: en.getAttribute('aria-checked') === 'true' };
       c = await (await api('/api/cloud', body, { method: 'PUT' })).json();
       key.value = ''; key.placeholder = c.has_key ? `Chiave salvata (${c.key_hint}): lascia vuoto per tenerla` : 'Incolla qui la chiave API';
       refresh();
@@ -3274,8 +3281,6 @@ function cloudCard({ gate = false } = {}) {
       h('label', { class: 'ag-f' }, h('span', { text: 'Modello' }), model, models), picks,
       adv,
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Attivo' }), h('small', { text: 'Compare nel menu dei modelli.' })), en),
-      h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Lavora anche in sottofondo' }),
-        h('small', { text: 'Smista la posta, scrive il diario e i messaggi di Aura con questo modello, anche a PC acceso: così Gemma non si carica da sola (consuma un po\' di credito o di abbonamento).' })), bg),
       h('div', { class: 'form-actions' }, gate ? null : saveBtn, testBtn), out));
     showAccount();
   })();

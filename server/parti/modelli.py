@@ -256,6 +256,26 @@ class AutonomyIn(BaseModel):
     start_model: str | None = None   # "local" = Gemma sul PC di casa, "cloud" = il modello nel cloud
 
 
+class ActiveModelIn(BaseModel):
+    model: str
+
+
+@app.put("/api/me/model")
+async def active_model_put(body: ActiveModelIn, user: dict = Depends(require_user)):
+    """Il modello selezionato nel menu: da qui in poi lo usano anche i lavori di sottofondo."""
+    active_model_save(user, body.model)
+    return {"active_model": selected_model()}
+
+
+def active_model_save(user: dict, model: str):
+    model = str(model or "").strip()[:100]
+    prefs = _prefs(user)
+    if model and prefs.get("active_model") != model:
+        prefs["active_model"] = model
+        with db() as c:
+            c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
+
+
 @app.put("/api/me/autonomy")
 async def set_autonomy(body: AutonomyIn, user: dict = Depends(require_user)):
     cur = autonomy(user)

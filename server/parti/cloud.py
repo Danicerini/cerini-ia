@@ -54,8 +54,24 @@ def cloud_ready() -> bool:
     return bool(c.get("enabled") and c.get("api_key") and c.get("base") and c.get("model"))
 
 
+def selected_model() -> str:
+    """Il modello selezionato dall'utente in corso: lo stesso fa la chat e tutti i lavori di sottofondo."""
+    uid = ACT_UID.get()
+    if not uid:
+        return ""
+    if not is_owner(uid):
+        return "cloud:"   # il PC di casa e' solo del proprietario
+    with db() as c:
+        row = c.execute("SELECT prefs FROM users WHERE id = ?", (uid,)).fetchone()
+    try:
+        prefs = json.loads((row and row["prefs"]) or "{}")
+    except ValueError:
+        prefs = {}
+    return prefs.get("active_model") or ("cloud:" if prefs.get("start_model") == "cloud" else "")
+
+
 def cloud_bg_ready() -> bool:
-    return cloud_ready() and cloud_cfg().get("background", True)
+    return cloud_ready() and is_cloud(selected_model())
 
 
 def is_cloud(model: str | None) -> bool:
@@ -220,20 +236,9 @@ async def llm_stream(payload: dict):
         if not cloud_ready():
             yield {"error": "Il modello nel cloud non è configurato: inserisci la chiave in Impostazioni → Collegamenti"}
             return
-        first = True
+        # se il modello selezionato non risponde lo si dice: non si passa di nascosto a un altro
         async for d in (account_stream(payload) if is_account() else cloud_stream(payload)):
-            if first and d.get("error") and await _pc_on():
-                why = cloud_error_text(d["error"])
-                local = {**payload, "model": await _chat_model(), "options": {**(payload.get("options") or {}), "num_ctx": NUM_CTX or 8192}}
-                local["messages"] = list(payload.get("messages") or []) + [{"role": "system", "content":
-                    f"Il modello nel cloud adesso non risponde ({why}): stai rispondendo tu, {local['model']} sul PC di casa. "
-                    "Se l'utente chiede che modello sei, di' questo."}]
-                yield {"message": {"role": "assistant", "content": f"⚠️ {why}: per ora rispondo io con {local['model']} sul PC.\n\n"}, "done": False}
-                async for x in llm_stream(local):
-                    yield x
-                return
-            first = False
-            yield d
+            yield {"error": cloud_error_text(d["error"])} if d.get("error") else d
         return
     if not pc_allowed():
         yield {"error": "I modelli sul PC non sono disponibili per il tuo account: scegli il tuo fornitore"}
@@ -268,10 +273,11 @@ def cloud_error_text(err: str) -> str:
 
 async def llm_once(messages: list[dict], json_mode: bool = False, temperature: float = 0.2, model: str | None = None,
                    num_ctx: int = 8192, timeout: float = 180) -> str:
-    """Una risposta sola (lavori di sottofondo): il modello nel cloud se ha i lavori di sottofondo accesi, cosi' Gemma non si carica da sola;
-    altrimenti Gemma sul PC."""
+    """Una risposta sola (lavori di sottofondo): con il modello selezionato dall'utente, anche per chi chiama senza dirne uno."""
     if model and not is_cloud(model) and not pc_allowed():
         model = None
+    if not model and not is_cloud(selected_model()):
+        model = selected_model() or None
     use_cloud = is_cloud(model) or (not model and cloud_bg_ready())
     payload = {"messages": messages, "stream": False, "options": {"temperature": temperature}}
     if json_mode:
@@ -435,14 +441,13 @@ class CloudIn(BaseModel):
     model: str = ""
     api_key: str = ""           # vuota = tieni quella gia' salvata
     enabled: bool = True
-    background: bool = True
 
 
 def _cloud_public() -> dict:
     c = cloud_cfg()
     k = c.get("api_key") or ""
     return {"provider": c.get("provider", "regolo"), "base": c.get("base", ""), "model": c.get("model", ""), "enabled": bool(c.get("enabled")),
-            "background": c.get("background", True), "has_key": bool(k), "key_hint": ("…" + k[-4:]) if len(k) > 8 else "",
+            "has_key": bool(k), "key_hint": ("…" + k[-4:]) if len(k) > 8 else "",
             "ready": cloud_ready(), "presets": CLOUD_PRESETS}
 
 
@@ -463,7 +468,7 @@ async def cloud_put(body: CloudIn, _: dict = Depends(require_user)):
     if base and not is_owner() and not await _public_host(httpx.URL(base).host):
         raise HTTPException(400, "L'indirizzo dell'API deve essere pubblico")
     cfg = {"provider": body.provider, "base": base, "model": (body.model or preset["model"]).strip(),
-           "api_key": body.api_key.strip() or old.get("api_key", ""), "enabled": body.enabled, "background": body.background,
+           "api_key": body.api_key.strip() or old.get("api_key", ""), "enabled": body.enabled,
            **{k: old[k] for k in ("prices", "credit", "credit_since") if k in old}}
     _cloud_file().write_text(json.dumps(cfg), encoding="utf-8")
     os.chmod(_cloud_file(), 0o600)

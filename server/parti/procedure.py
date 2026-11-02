@@ -161,7 +161,6 @@ async def _tool_hb_procedure(user: dict, args: dict, request: Request) -> dict:
     tpl = await proc_template()
     document = "\n\n".join(x for x in parts if x.strip())[:30000]
     prompt = proc_prompt(tpl, list(images), document)
-    model = await _chat_model()
     ask = (f"Crea UN {tipo} (tipo=\"{tipo}\") in italiano dalla documentazione qui sopra. Riporta TUTTO quello che c'è nel testo, "
            "nell'ordine: ogni passaggio diventa uno step (se il testo è numerato, uno step per numero), ogni comando un blocco "
            "command, ogni avviso un warning, ogni errore comune con la sua soluzione error + fix, ogni controllo finale verify o "
@@ -169,11 +168,9 @@ async def _tool_hb_procedure(user: dict, args: dict, request: Request) -> dict:
     pkg, err = None, ""
     for attempt in range(2):
         msgs = [{"role": "system", "content": prompt}, {"role": "user", "content": ask + (f"\nIl tentativo precedente non andava: {err}. Correggi." if err else "")}]
-        r = await ollama("POST", "/api/chat", json={"model": model, "stream": False, "format": "json", "think": False, "keep_alive": KEEP_ALIVE,
-                                                     "options": {"num_ctx": NUM_CTX or 8192, "temperature": 0.2}, "messages": msgs}, timeout=600)
-        usage_ollama(model, r)
+        raw = await llm_once(msgs, json_mode=True, temperature=0.2, num_ctx=NUM_CTX or 8192, timeout=600)
         try:
-            pkg = _proc_normalize(json.loads(r.json()["message"]["content"]), tipo, set(images))
+            pkg = _proc_normalize(json.loads(raw), tipo, set(images))
             break
         except (ValueError, KeyError, TypeError) as e:
             err = str(e)
