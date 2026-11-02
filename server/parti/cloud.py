@@ -26,9 +26,9 @@ CLOUD_PRESETS = {
     "claude-code": {"name": "Account Claude (Claude Code)", "base": "", "model": "sonnet", "account": True,
                     "note": "Usa il tuo abbonamento Claude, solo per te. I messaggi vanno ad Anthropic, fuori dall'Italia.",
                     "models": [["sonnet", "consigliato"], ["opus", "il più forte"], ["fable", ""], ["haiku", "consuma meno"]]},
-    "codex": {"name": "Account ChatGPT (Codex)", "base": "", "model": "gpt-5.5", "account": True,
+    "codex": {"name": "Account ChatGPT (Codex)", "base": "", "model": "gpt-6.1-sol", "account": True,
               "note": "Usa il tuo abbonamento ChatGPT, solo per te. I messaggi vanno a OpenAI, fuori dall'Italia.",
-              "models": [["gpt-5.5", ""], ["gpt-5.6-terra", ""], ["gpt-6-luna", ""], ["gpt-6.1-terra", ""], ["gpt-6.1-sol", ""]]},
+              "models": [["gpt-6.1-sol", "consigliato"], ["gpt-6.1-terra", ""], ["gpt-6-luna", "consuma meno"], ["gpt-5.6-terra", ""]]},
 }
 CLOUD_CTX = int(os.environ.get("CLOUD_CTX", "64000"))
 CLOUD_MAX_TOKENS = int(os.environ.get("CLOUD_MAX_TOKENS", "8192"))   # lunghezza massima di una risposta
@@ -458,6 +458,8 @@ async def cloud_put(body: CloudIn, _: dict = Depends(require_user)):
     preset = CLOUD_PRESETS.get(body.provider, CLOUD_PRESETS["custom"])
     if preset.get("account") and not is_owner():
         raise HTTPException(403, "Questo fornitore è solo per il proprietario: usa una tua chiave API")
+    if body.provider == "codex" and body.model.strip() == "gpt-5.5":
+        raise HTTPException(400, "gpt-5.5 non è utilizzabile con Codex: scegli un altro modello")
     base = (body.base or preset["base"]).strip().rstrip("/")
     if base and not base.startswith("https://"):
         raise HTTPException(400, "L'indirizzo dell'API deve iniziare con https://")
