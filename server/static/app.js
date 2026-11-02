@@ -732,7 +732,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       ? h('button', { class: 'tool-card link', title: 'Apri nel cervello', onclick: () => openBrainFile(m.open) }, h('span', { html: icon(tIcon, 'sm') }),
           h('span', { text: m.display || `Ha usato ${m.tool_name}` }), h('span', { class: 'tc-open', html: icon('chevron', 'sm') }))
       : h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo);
-    return h('div', { class: 'msg step' }, card,
+    return h('div', { class: 'msg step' }, m.view?.kind === 'consuntivo' ? null : card,   // la scheda dice gia' tutto
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
@@ -2483,30 +2483,38 @@ function hbCard(it) {
 function consView(v) {
   const hm = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
   const day = `${v.day.slice(8)}/${v.day.slice(5, 7)}/${v.day.slice(0, 4)}`;
+  const longDay = new Date(`${v.day}T12:00:00`).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
   const ore = (m) => String(m / 60).replace('.', ',');   // come vuole il gestionale: 0,5 / 1 / 1,5
-  const text = (v.rows || []).map((r) => `${r.project || r.client}\t${r.what}\t${ore(r.min)}`).join('\n') + `\nTotale\t\t${ore(v.total)}`;
-  const cp = (txt, label) => h('button', { class: 'cs-mini', title: `Copia ${label}`, html: icon('copy', 'sm'), onclick: (e) => copyText(txt, e.currentTarget) });
-  const pct = Math.min(100, Math.round((v.total / (v.target || 480)) * 100));
-  return h('div', { class: 'cs-card' },
-    h('div', { class: 'cs-head' }, h('b', { text: `Consuntivo del ${day}` }),
-      (v.rows || []).length ? h('button', { class: 'cs-copy', 'data-label': '1', title: 'Copia per il gestionale', html: icon('copy', 'sm') + 'Copia', onclick: (e) => copyText(text, e.currentTarget) }) : null),
-    (v.rows || []).length ? h('div', { class: 'cs-rows' }, ...v.rows.map((r) => h('div', { class: 'cs-row' },
-      h('div', { class: 'tx' },
-        h('div', { class: 'cs-f' + (r.project ? '' : ' none') }, h('b', { text: r.project || `Fascicolo da scegliere (${r.client})` }),
-          r.project ? cp(r.project, 'titolo progetto') : null, r.doubt ? h('span', { class: 'cs-doubt', text: 'da controllare' }) : null),
-        h('div', { class: 'cs-d' }, h('span', { text: r.what }), cp(r.what, 'descrizione')),
-        r.contract ? h('small', { text: r.contract }) : null),
-      h('div', { class: 'cs-time' }, h('span', { text: ore(r.min) }), h('small', { text: hm(r.min) }))))) : null,
-    h('div', { class: 'cs-total' }, h('span', { text: 'Totale' }), h('b', { text: `${hm(v.total)} su ${hm(v.target || 480)}` })),
-    h('div', { class: 'cs-bar' + (v.total > (v.target || 480) ? ' over' : v.total === (v.target || 480) ? ' full' : '') }, h('i', { style: `width:${pct}%` })),
-    v.note ? h('div', { class: 'cs-note', text: v.note }) : null,
-    (v.ask || []).length ? h('div', { class: 'cs-ask' }, h('b', { text: 'Ci hai lavorato? Ticket tuoi ancora aperti, senza niente fatto quel giorno nel CRM' }),
-      ...v.ask.map((a) => { const row = h('div', { class: 'cs-ask-row' },
-        h('span', { class: 'tx', text: `${tkNum(a.no)} · ${a.title}${a.client ? ' · ' + a.client : ''}` }),
+  const rows = v.rows || [], target = v.target || 480, gap = target - v.total;
+  const text = rows.map((r) => `${r.project || r.client}\t${r.what}\t${ore(r.min)}`).join('\n') + `\nTotale\t\t${ore(v.total)}`;
+  const cp = (txt, label) => h('button', { class: 'cons-cp', title: `Copia ${label}`, 'aria-label': `Copia ${label}`, html: icon('copy', 'sm'), onclick: (e) => copyText(txt, e.currentTarget) });
+  const pct = Math.min(100, Math.round((v.total / target) * 100));
+  const row = (r) => {
+    const tk = r.what.match(/^(TK[-\s]?[\d-]+|TK#)\s*[-–—:]\s*(.+)$/);   // il numero del ticket a parte: la voce si legge meglio (si copia sempre intera)
+    return h('div', { class: 'cons-row' },
+      h('div', { class: 'cons-body' },
+        h('div', { class: 'cons-line' }, h('div', { class: 'cons-what' }, tk ? h('span', { class: 'cons-tk', text: tk[1] }) : null, h('span', { text: tk ? tk[2] : r.what })), cp(r.what, 'descrizione')),
+        h('div', { class: 'cons-line' }, h('div', { class: 'cons-f' + (r.project ? '' : ' none'), title: r.contract || null },
+          r.doubt ? h('span', { class: 'cons-doubt', text: 'da controllare' }) : null, h('span', { text: r.project || `Fascicolo da scegliere (${r.client})` })),
+          r.project ? cp(r.project, 'fascicolo') : null)),
+      h('div', { class: 'cons-time' }, h('b', { text: ore(r.min) }), h('small', { text: r.min === 60 ? 'ora' : 'ore' })));
+  };
+  return h('div', { class: 'cs-card cons' },
+    h('div', { class: 'cons-head' },
+      h('div', {}, h('b', { text: 'Consuntivo' }), h('small', { text: longDay })),
+      rows.length ? h('button', { class: 'cs-copy', 'data-label': '1', title: 'Copia tutto per il gestionale', html: icon('copy', 'sm') + 'Copia tutto', onclick: (e) => copyText(text, e.currentTarget) }) : null),
+    h('div', { class: 'cons-sum' },
+      h('div', { class: 'cons-tot' }, h('b', { text: hm(v.total) }), h('span', { text: `su ${hm(target)}` })),
+      h('span', { class: 'cons-gap' + (gap === 0 ? ' full' : gap < 0 ? ' over' : ''), text: gap > 0 ? `mancano ${hm(gap)}` : gap < 0 ? `${hm(-gap)} in più` : 'giornata completa' })),
+    h('div', { class: 'cs-bar' + (gap < 0 ? ' over' : gap === 0 ? ' full' : ''), role: 'progressbar', 'aria-valuenow': v.total, 'aria-valuemax': target, 'aria-label': 'Ore segnate' }, h('i', { style: `width:${pct}%` })),
+    rows.length ? h('div', { class: 'cons-rows' }, ...rows.map(row)) : h('div', { class: 'cs-note', text: v.note || '' }),
+    (v.ask || []).length ? h('div', { class: 'cons-ask' }, h('b', { text: 'Ci hai lavorato?' }), h('small', { text: 'Ticket tuoi ancora aperti, senza niente fatto quel giorno nel CRM.' }),
+      ...v.ask.map((a) => { const el = h('div', { class: 'cons-ask-row' },
+        h('div', { class: 'tx' }, h('span', { class: 'cons-tk', text: tkNum(a.no) }), h('span', { text: a.title }), a.client ? h('small', { text: a.client }) : null),
         h('button', { text: 'Sì', title: 'Scrivi cosa hai fatto: lo aggiunge al consuntivo', onclick: () => { input.value = `Il ${day} sul ticket ${a.no} ho fatto: `; autosize(); renderComposer(); input.focus(); } }),
-        h('button', { text: 'No', onclick: () => row.remove() }));
-        return row; })) : null,
-    (v.excluded || []).length ? h('details', { class: 'cs-ex' }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): non sono lavoro` }),
+        h('button', { text: 'No', onclick: () => el.remove() }));
+        return el; })) : null,
+    (v.excluded || []).length ? h('details', { class: 'cons-ex' }, h('summary', { text: `Lasciati fuori (${v.excluded.length}): non sono lavoro` }),
       h('ul', {}, ...v.excluded.map((x) => h('li', { text: x })))) : null);
 }
 function hbView(v) {

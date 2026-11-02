@@ -1437,6 +1437,43 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .hb-btn--danger { background: rgba(239, 68, 68, .1); border-color: rgba(248, 113, 113, .35); color: #fecaca; } .hb-btn--danger:hover { background: rgba(239, 68, 68, .22); border-color: var(--t-red); }
 .hb-btn--sm { height: 28px; padding: 0 10px; font-size: 12px; }
 /* consuntivo di un giorno */
+.cons { padding: 14px 16px; }
+.cons-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.cons-head b { display: block; font-size: 15px; font-weight: 600; }
+.cons-head small { display: block; margin-top: 1px; font-size: 12.5px; color: var(--text-3); }
+.cons-sum { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 12px; }
+.cons-tot { display: flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
+.cons-tot b { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; line-height: 1.1; }
+.cons-tot span { font-size: 13px; color: var(--text-3); }
+.cons-gap { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.cons-gap.full { color: var(--ok); } .cons-gap.over { color: var(--err); }
+.cons .cs-bar { margin-top: 8px; }
+.cons .cs-bar.full i { background: var(--ok); } .cons .cs-bar.over i { background: var(--err); }
+.cons-rows { margin-top: 12px; }
+.cons-row { display: grid; grid-template-columns: minmax(0, 1fr) 44px; gap: 12px; padding: 11px 0; border-top: 1px solid var(--border); }
+.cons-body { display: grid; gap: 4px; min-width: 0; }
+.cons-line { display: grid; grid-template-columns: minmax(0, 1fr) 26px; gap: 6px; align-items: start; }
+.cons-what { font-size: 14px; line-height: 1.4; color: var(--text); overflow-wrap: anywhere; }
+.cons-tk { display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; line-height: 19px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cons-f { font-size: 12.5px; line-height: 1.4; color: var(--text-3); overflow-wrap: anywhere; }
+.cons-f.none { font-style: italic; }
+.cons-doubt { display: inline-block; margin-right: 6px; padding: 0 7px; border-radius: 99px; border: 1px solid var(--warn); color: var(--warn); font-size: 11px; line-height: 16px; font-style: normal; }
+.cons-cp { display: inline-grid; place-items: center; width: 26px; height: 24px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); cursor: pointer; }
+.cons-cp:hover { background: var(--hover); color: var(--text); }
+.cons-time { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
+.cons-time b { font-size: 16px; font-weight: 600; line-height: 1.25; }
+.cons-time small { font-size: 11px; color: var(--text-3); }
+.cons .cs-note { margin-top: 12px; }
+.cons-ask { margin-top: 2px; padding: 12px; border-radius: 11px; background: var(--hover); display: grid; gap: 2px; }
+.cons-ask > b { font-size: 13.5px; font-weight: 600; }
+.cons-ask > small { font-size: 12.5px; color: var(--text-3); }
+.cons-ask-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13.5px; }
+.cons-ask-row .tx { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cons-ask-row .tx small { display: block; margin-top: 1px; font-size: 12px; color: var(--text-3); }
+.cons-ask-row button { flex: none; height: 30px; min-width: 42px; padding: 0 10px; border-radius: 99px; border: 1px solid var(--border-strong); background: transparent; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+.cons-ask-row button:hover { border-color: var(--accent); color: var(--accent); }
+.cons-ex { margin-top: 10px; font-size: 12.5px; color: var(--text-3); }
+.cons-ex summary { cursor: pointer; } .cons-ex ul { margin: 6px 0 0 18px; padding: 0; }
 .cs-card { margin-top: 8px; max-width: 620px; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); padding: 12px 14px; }
 .cs-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
 .cs-copy { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border);
