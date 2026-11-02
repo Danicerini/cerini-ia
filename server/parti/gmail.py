@@ -638,7 +638,9 @@ async def _tool_mail_mark(user: dict, args: dict, request: Request) -> dict:
 
 TOOLS["mail_segna"]["run"] = _tool_mail_mark
 
-MAIL_PROMPT = ("\n\nPOSTA: puoi gestire la casella Gmail dell'utente ({email}). Per vedere le mail usa mail_cerca (sintassi Gmail), "
+MAIL_PROMPT = ("\n\nPOSTA: puoi gestire la casella Gmail dell'utente ({email}). Se l'utente INCOLLA il testo di una mail ricevuta e chiede una risposta, il testo "
+               "incollato è scritto da chi gli ha scritto (chi dice «le allego» è il mittente, non l'utente): NON cercarla in Gmail e non usare mail_prepara, "
+               "può rispondere da un'altra casella. Scrivi subito la risposta in chat. Gli strumenti di posta servono solo se parla della sua Gmail. Per vedere le mail usa mail_cerca (sintassi Gmail), "
                "poi agisci con i numeri n.: mail_leggi, mail_cestina, mail_spam, mail_archivia, mail_segna. Per 'tutte le mail "
                "simili' usa una ricerca (es. from:mittente). Quando ti chiede di pulire, cerca prima (es. category:promotions, "
                "category:social, newsletter vecchie; schede di Gmail: Promozioni = category:promotions, Social = category:social, Aggiornamenti = category:updates, Forum = category:forums, Principale = category:primary; «più vecchie di 6 mesi» = older_than:6m; «cestina/butta/elimina» = sposta NEL cestino con mail_cestina, mai cercare in:trash) e poi chiama subito mail_cestina con i numeri da buttare: la scheda di conferma "

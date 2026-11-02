@@ -809,6 +809,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             said_all = ""        # tutto il testo scritto insieme agli strumenti in questo turno
             for _round in range(6):
                 payload = {"model": body.model, "messages": msgs, "stream": True, "keep_alive": KEEP_ALIVE}
+                print(f"Chat: utente {user['id']}, modello {body.model}, giro {_round + 1}", flush=True)   # per poter controllare che modello ha risposto
                 if body.think is not None:
                     payload["think"] = body.think
                 if tools:
@@ -861,7 +862,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                                  "premi Invia.»"})
                     yield json.dumps({"message": {"role": "assistant", "content": "\n\n"}, "done": False}) + "\n"
                     continue
-                if (not calls and not answered and not composed and len(content) < 2000 and COMPOSE_RE.search(_last_user_text(body.messages))
+                if (not calls and not answered and not composed and len(content) < 300 and COMPOSE_RE.search(_last_user_text(body.messages))
                         and not wa_turn(body.messages, done_calls) and any(t["function"]["name"] == "mail_prepara" for t in tools)):
                     # ha chiesto una mail e Gemma ha risposto solo «posso scriverla»: le si fa preparare la scheda adesso
                     composed = answered = True

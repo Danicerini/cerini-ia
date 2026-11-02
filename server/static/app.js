@@ -3275,7 +3275,7 @@ function cloudCard({ gate = false } = {}) {
       adv,
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Attivo' }), h('small', { text: 'Compare nel menu dei modelli.' })), en),
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Lavora anche in sottofondo' }),
-        h('small', { text: 'A PC spento smista la posta, scrive il diario e i messaggi di Aura (consuma un po\' di credito).' })), bg),
+        h('small', { text: 'Smista la posta, scrive il diario e i messaggi di Aura con questo modello, anche a PC acceso: così Gemma non si carica da sola (consuma un po\' di credito o di abbonamento).' })), bg),
       h('div', { class: 'form-actions' }, gate ? null : saveBtn, testBtn), out));
     showAccount();
   })();

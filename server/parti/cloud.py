@@ -268,10 +268,11 @@ def cloud_error_text(err: str) -> str:
 
 async def llm_once(messages: list[dict], json_mode: bool = False, temperature: float = 0.2, model: str | None = None,
                    num_ctx: int = 8192, timeout: float = 180) -> str:
-    """Una risposta sola (lavori di sottofondo): Gemma sul PC se e' acceso, altrimenti il modello nel cloud se c'e'."""
+    """Una risposta sola (lavori di sottofondo): il modello nel cloud se ha i lavori di sottofondo accesi, cosi' Gemma non si carica da sola;
+    altrimenti Gemma sul PC."""
     if model and not is_cloud(model) and not pc_allowed():
         model = None
-    use_cloud = is_cloud(model) or (not model and not await _pc_on() and cloud_bg_ready())
+    use_cloud = is_cloud(model) or (not model and cloud_bg_ready())
     payload = {"messages": messages, "stream": False, "options": {"temperature": temperature}}
     if json_mode:
         payload["format"] = "json"
