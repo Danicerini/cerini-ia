@@ -471,6 +471,13 @@ MEMORY_PROMPT = ("\n\nMEMORIA: hai una memoria personale per questo utente (solo
                  "'Aggiorno la tua memoria' o 'ho registrato tutto'): sotto la risposta l'utente lo vede già da solo.")
 
 
+def _mine_file(uid: int, fid) -> bool:
+    try:
+        return bool(file_row(uid, fid))
+    except (ValueError, TypeError):
+        return False
+
+
 def tool_allowed(name: str, tool: dict, user: dict) -> bool:
     """Gli strumenti da amministratore lavorano sui servizi del proprietario (Homebase, sito, clienti): solo suoi. Gli inviti di ogni amministratore."""
     if not tool["admin"]:
@@ -960,6 +967,10 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args = {**args, "_uid": user["id"]}
                     if name == "mail_prepara":
                         args = {**args, "_last_user": _last_user_text(body.messages), "_chat": body.chat_id or ""}
+                    if name == "immagine_crea":   # le foto le prende il server dai messaggi dell'utente: il modello non le ricopia
+                        here = next((m for m in reversed(body.messages) if m.get("role") == "user"), {})
+                        args = {**args, "_images": list(here.get("images") or []), "_images_before": last_images,
+                                "_files": [dict(file_row(user["id"], f.get("id")), id=_int(f.get("id"))) for f in here.get("files") or [] if _mine_file(user["id"], f.get("id"))]}
                     if name == "ticket_foto":
                         args = {**args, "_last_user": _last_user_text(body.messages), "_model": body.model}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
