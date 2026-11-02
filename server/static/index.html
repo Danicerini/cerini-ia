@@ -202,6 +202,10 @@ button:disabled { cursor: default; }
 .chat-item:hover .acts, .chat-item.active .acts, .chat-item.confirm .acts { display: flex; }
 .chat-item .icon-btn { width: 28px; height: 28px; border-radius: 7px; }
 .chat-item .icon-btn:hover { background: var(--border); }
+.chat-item.busy::after { content: ""; flex: none; width: 7px; height: 7px; margin: 0 8px 0 6px; border-radius: 50%; background: var(--accent); animation: chatBusy 1.2s ease-in-out infinite; }
+.chat-item.busy:hover::after, .chat-item.busy.active::after { display: none; }
+@keyframes chatBusy { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .chat-item.busy::after { animation: none; } }
 .chat-item.confirm { background: var(--err-soft); }
 .chat-item.confirm .t { color: var(--err); }
 .chat-item input { flex: 1; min-width: 0; height: 28px; border: 1px solid var(--accent); border-radius: 7px; background: var(--raised); padding: 0 8px; font-size: 14px; }

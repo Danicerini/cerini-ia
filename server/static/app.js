@@ -154,7 +154,8 @@ const Store = {
 // =================================================================== state
 const S = {
   chats: [], currentId: null, status: null, model: String(pref.get('model', '') || '').startsWith('cloud:') ? null : pref.get('model', null), busyModel: null, busySince: 0,
-  stream: null, attachments: [], think: pref.get('think', false), caps: {}, wol: false, editing: null, me: null,
+  streams: new Map(), get stream() { return this.streams.get(this.currentId) || null; },   // una risposta per chat: S.stream e' quella della chat aperta
+  attachments: [], think: pref.get('think', false), caps: {}, wol: false, editing: null, me: null,
 };
 const current = () => S.chats.find((c) => c.id === S.currentId) || null;
 const loadedNames = () => new Set((S.status?.loaded || []).map((m) => m.name));
@@ -434,7 +435,7 @@ function renderSidebar() {
   }
 }
 function chatItem(c) {
-  const el = h('div', { class: 'chat-item' + (c.id === S.currentId ? ' active' : ''), role: 'button', tabindex: 0, title: c.title,
+  const el = h('div', { class: 'chat-item' + (c.id === S.currentId ? ' active' : '') + (S.streams.has(c.id) ? ' busy' : ''), role: 'button', tabindex: 0, title: c.title,
     onclick: () => openChat(c.id), onkeydown: (e) => { if (e.key === 'Enter') openChat(c.id); } });
   const t = h('span', { class: 't', text: c.title });
   const pin = h('button', { class: 'icon-btn', title: c.pinned ? 'Togli dalle fissate' : 'Fissa in cima', 'aria-label': c.pinned ? 'Togli dalle fissate' : 'Fissa in cima',
@@ -470,7 +471,7 @@ function startRename(el, c) {
   inp.onblur = () => done(true);
 }
 function deleteChat(id) {
-  if (S.stream?.chatId === id) S.stream.controller.abort();
+  S.streams.get(id)?.controller.abort();
   S.chats = S.chats.filter((c) => c.id !== id);
   Store.del(id).catch(() => toast('Non sono riuscito a eliminare la chat dal server'));
   if (S.currentId === id) S.currentId = null;
@@ -1101,7 +1102,7 @@ async function checkUpdate() {
   try {
     const { v } = await (await fetch('/api/app/version', { cache: 'no-store' })).json();
     if (!v || v === APP_VER) return;
-    const busy = S.stream || input.value.trim() || document.querySelector('.ag-modal, .email-card:not(.done) textarea:focus');
+    const busy = S.streams.size || input.value.trim() || document.querySelector('.ag-modal, .email-card:not(.done) textarea:focus');
     if (!busy) location.reload();   // niente in corso: si ricarica e basta
     else if (!$('#updBar')) document.body.append(h('button', { id: 'updBar', class: 'upd-bar', text: 'C\'è una versione nuova di Cerini IA: tocca per aggiornare', onclick: () => location.reload() }));
   } catch {}
@@ -2436,7 +2437,7 @@ async function openAura() {
     await loadAuraFeed();
     let c = S.chats.find((x) => x.id === id);
     if (!c) { c = { id, title: 'Aura', created: Date.now() }; S.chats.push(c); }
-    Object.assign(c, await Store.get(id));
+    if (!S.streams.has(id)) Object.assign(c, await Store.get(id));   // sta ancora rispondendo: i messaggi veri sono questi
     S.currentId = id; S.editing = null; S.attachments = [];
   } catch (e) { toast('Non riesco ad aprire Da Aura: ' + e.message); return; }
   renderAll(); scrollToBottom(true); focusInput();
@@ -4185,7 +4186,7 @@ async function run(chat) {
   // Lo spostamento in cima della chat la mostra come "recente" nella barra laterale
   S.chats = [chat, ...S.chats.filter((c) => c !== chat)];
   const controller = new AbortController();
-  S.stream = { chatId: chat.id, controller };
+  S.streams.set(chat.id, { chatId: chat.id, controller });
   renderAll(); scrollToBottom(true);
 
   // Al modello vanno solo i messaggi veri (utente, assistente, esiti degli strumenti), non le schede dell'interfaccia
@@ -4234,11 +4235,11 @@ async function run(chat) {
           if (thinkStart && !reply.thinkMs) reply.thinkMs = performance.now() - thinkStart;
           delete reply._streaming;
           const slow = (d.message.tool_calls || []).map((t) => t.function?.name).find((n) => WORKING_LABEL[n]);
-          if (slow) { reply = { role: 'assistant', content: '', thinking: '', _streaming: true, _reading: slow }; chat.messages.push(reply); renderThread(); keepFollowing(); }
+          if (slow) { reply = { role: 'assistant', content: '', thinking: '', _streaming: true, _reading: slow }; chat.messages.push(reply); if (S.currentId === chat.id) { renderThread(); keepFollowing(); } }
           continue;
         }
         if (d.event === 'ping') continue;
-        if (d.event === 'project') { chat.project = d.project || null; renderProjectChip(); continue; }
+        if (d.event === 'project') { chat.project = d.project || null; if (S.currentId === chat.id) renderProjectChip(); continue; }
         if (d.event === 'tool_result') {
           if (reply && reply._streaming && !reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1);
           chat.messages.push({ ...d.message, display: d.display, view: d.view || undefined, undo: d.undo || undefined, sources: d.sources || undefined, files: d.files || undefined, open: d.open || undefined });
@@ -4247,7 +4248,7 @@ async function run(chat) {
           if (d.message?.tool_name?.startsWith('mail_')) refreshMailBadge();
           if (d.undo?.type === 'cal_event') loadToday();
           chat.messages.push(reply); thinkStart = 0;
-          renderThread(); keepFollowing();
+          if (S.currentId === chat.id) { renderThread(); keepFollowing(); }
           continue;
         }
         if (d.event === 'confirm') {
@@ -4260,7 +4261,7 @@ async function run(chat) {
         if (d.message?.content) {
           if (thinkStart && !reply.thinkMs) reply.thinkMs = performance.now() - thinkStart;
           reply.content += d.message.content;
-          voiceFeed(d.message.content);
+          if (S.currentId === chat.id) voiceFeed(d.message.content);
         }
         if (d.done) {
           const parts = [];
@@ -4282,12 +4283,12 @@ async function run(chat) {
     if (thinkStart && !reply.thinkMs) reply.thinkMs = performance.now() - thinkStart;
     if (!reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1);
   }
-  S.stream = null;
+  S.streams.delete(chat.id);
   saveChat(chat);
   renderAll();
   if (S.currentId === chat.id) keepFollowing();
   refresh();
-  voiceStreamDone(chat);
+  if (S.currentId === chat.id) voiceStreamDone(chat);
 }
 function friendlyError(msg) {
   if (/network error|Failed to fetch|NetworkError|\b52[2-4]\b/i.test(msg)) return 'La connessione si è interrotta prima della risposta. Riprova: se un’azione era partita, controlla prima se è già stata fatta.';
