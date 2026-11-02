@@ -589,20 +589,39 @@ TOOLS.update({
 
 
 # ---- cartelle come nel CRM (Lista personale / Lista condivisa)
-# L'API non dà le liste salvate del CRM: si rifanno qui con gli stessi criteri (stato, assegnazione, categoria, gruppo di
-# supporto). Quelle vere dell'utente stanno in data/crm.json («cartelle»), perché hanno nomi di aziende; queste sono la base.
+# L'API con la chiave d'accesso non dà le liste salvate del CRM: si costruiscono dai dati del CRM dell'utente (le sue categorie e i
+# suoi gruppi di supporto). Chi ha elencato le proprie le tiene nel suo crm.json («cartelle»), che hanno nomi di aziende.
 CRM_FOLDERS_BASE = [
     {"nome": "Ticket non assegnati", "lista": "personale", "stato": "aperti", "non_assegnati": True},
     {"nome": "Ticket miei aperti", "lista": "personale", "stato": "aperti", "miei": True},
     {"nome": "Ticket miei chiusi", "lista": "personale", "stato": "chiusi", "miei": True},
     {"nome": "Tutti", "lista": "condivisa", "stato": "tutti"},
-    {"nome": "Ticket Tecnici Aperti", "lista": "condivisa", "stato": "aperti", "categoria": "Tecnico"},
-    {"nome": "Ticket Commerciali Aperti", "lista": "condivisa", "stato": "aperti", "categoria": "Commerciale"},
 ]
+_CRM_LISTS = _PerUser(dict)
 
 
-def crm_folders() -> list[dict]:
-    return [{**f, "id": i} for i, f in enumerate(_crm_file().get("cartelle") or CRM_FOLDERS_BASE)]
+async def _crm_folders_live() -> list[dict]:
+    if "at" in _CRM_LISTS and time.time() - _CRM_LISTS["at"] < 3600:
+        return _CRM_LISTS["folders"]
+    fields = {f.get("name"): f for f in (await _crm_get("describe", elementType="HelpDesk")).get("fields") or []}
+    out = list(CRM_FOLDERS_BASE)
+    for field, key in (("ticketcategories", "categoria"), ("gruppo_di_supporto", "gruppo")):
+        for v in ((fields.get(field) or {}).get("type") or {}).get("picklistValues") or []:
+            if v.get("value") and not str(v["value"]).startswith("--"):
+                out.append({"nome": f"{v.get('label') or v['value']} aperti", "lista": "condivisa", "stato": "aperti", key: v["value"]})
+    _CRM_LISTS.update(at=time.time(), folders=out)
+    return out
+
+
+async def crm_folders() -> list[dict]:
+    return [{**f, "id": i} for i, f in enumerate(_crm_file().get("cartelle") or await _crm_folders_live())]
+
+
+async def _crm_group_prefix() -> str:
+    """Il prefisso degli id dei gruppi cambia da un CRM all'altro."""
+    if "group" not in _CRM_LISTS:
+        _CRM_LISTS["group"] = str((await _crm_get("describe", elementType="Groups")).get("idPrefix") or "20") + "x"
+    return _CRM_LISTS["group"]
 
 
 def _crm_where(f: dict, uid: str) -> list[str]:
@@ -621,7 +640,7 @@ def _crm_where(f: dict, uid: str) -> list[str]:
 
 async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
     """I ticket di una cartella, i più recenti in cima. «Non assegnati» = assegnati a un gruppo e non a una persona."""
-    f = next((x for x in crm_folders() if x["id"] == fid), None)
+    f = next((x for x in await crm_folders() if x["id"] == fid), None)
     if not f:
         raise ValueError("cartella sconosciuta")
     _, uid = await _crm_sess()
@@ -632,7 +651,8 @@ async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
            + f" ORDER BY modifiedtime DESC LIMIT {100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
     rows = await _crm_get("query", query=sql)
     if f.get("non_assegnati"):
-        rows = [t for t in rows if str(t.get("assigned_user_id", "")).startswith("20x")]
+        group = await _crm_group_prefix()
+        rows = [t for t in rows if str(t.get("assigned_user_id", "")).startswith(group)]
     out = []
     for t in rows[:limite]:
         r = await _crm_row(t, uid)
@@ -644,7 +664,7 @@ async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
 async def crm_folder_counts() -> dict:
     _, uid = await _crm_sess()
     out = {}
-    for f in crm_folders():
+    for f in await crm_folders():
         try:
             if f.get("non_assegnati"):
                 out[f["id"]] = len(await crm_folder(f["id"], limite=100))
@@ -663,9 +683,9 @@ async def crm_folders_api(counts: int = 1, _: dict = Depends(require_user)):
         raise HTTPException(409, "CRM non collegato")
     try:
         c = await crm_folder_counts() if counts else {}
+        return {"folders": [{**f, "count": c.get(f["id"])} for f in await crm_folders()]}
     except ValueError as e:
         raise HTTPException(502, str(e))
-    return {"folders": [{**f, "count": c.get(f["id"])} for f in crm_folders()]}
 
 
 @app.get("/api/crm/folder/{fid}")
@@ -777,6 +797,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     _CRM_NAMES.clear()
     _CRM_ACC.clear()
     _CRM_FIELDS.clear()
+    _CRM_LISTS.clear()
     try:
         await _crm_get("query", query="SELECT ticket_no FROM HelpDesk LIMIT 1;")
     except ValueError as e:
@@ -795,6 +816,7 @@ async def crm_link_delete(user: dict = Depends(require_user)):
     _CRM_NAMES.clear()
     _CRM_ACC.clear()
     _CRM_FIELDS.clear()
+    _CRM_LISTS.clear()
     return {"linked": False, "managed": False, "url": "", "user": "", "write": False}
 
 

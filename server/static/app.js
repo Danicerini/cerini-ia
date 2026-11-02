@@ -192,6 +192,8 @@ async function showApp() {
   $('#invite').classList.add('hidden');
   try {
     S.me = await (await api('/api/me')).json(); S.wol = S.me.power || S.me.wol;
+    if (S.shownUser && S.shownUser !== S.me.user) { location.reload(); return; }   // sessione scaduta e accesso con un altro utente
+    S.shownUser = S.me.user;
     $('#userName').textContent = S.me.user; $('#avatar').textContent = S.me.user[0] || '?';
     $('#avatar').classList.add('c'); $('#avatar').style.setProperty('--h', hueOf(S.me.user));
     $('#userRole').textContent = isAdmin() ? 'Amministratore' : 'Utente';
@@ -238,7 +240,8 @@ $('#loginForm').addEventListener('submit', async (e) => {
   } catch (ex) { err.textContent = ex.message === 'Credenziali errate' ? 'Utente o password non corretti.' : ex.message; }
   btn.disabled = false; btn.textContent = 'Accedi';
 });
-$('#logoutBtn').onclick = async () => { try { await api('/api/logout', {}); } catch {} showLogin(); };
+// si ricarica la pagina: niente di quello che era in memoria (liste, ticket, conversazioni) passa all'utente dopo
+$('#logoutBtn').onclick = async () => { try { await api('/api/logout', {}); } catch {} location.reload(); };
 
 // =================================================================== theme
 const THEMES = ['auto', 'light', 'dark'];
