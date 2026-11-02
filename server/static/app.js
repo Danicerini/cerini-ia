@@ -214,7 +214,7 @@ async function showApp() {
     history.replaceState(null, '', '/');
     toast({ ok: 'Google collegato', annullato: 'Collegamento a Gmail annullato', scaduto: 'Il collegamento è scaduto: riprova',
       permessi: 'Serve il permesso di gestire le mail: riprova e lascia la spunta su Gmail' }[gm] || 'Collegamento a Gmail non riuscito');
-    if (gm === 'ok' || gm === 'permessi') openSettings();
+    if (gm === 'ok' || gm === 'permessi') { S.accSec = 'links'; openSettings(); }
   }
 }
 async function migrateLegacy() {
@@ -2699,11 +2699,11 @@ function auraBanner() {
     h('div', { class: 'au-tiles' + (tiles.length < 4 ? ' few' : '') }, ...tiles), panel);
 }
 // Accensione automatica del PC (ESP32): ora, giorni e interruttore
-function powerRow(p) {
+function powerRow(p, after) {
   const save = async (patch) => {
     try { await api('/api/power/schedule', { enabled: !!p.enabled, at: p.at, days: p.days, ...patch }, { method: 'PUT' }); toast('Accensione automatica aggiornata'); }
     catch (e) { toast(e.message); }
-    renderAuraSettings();
+    after();
   };
   const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!p.enabled), 'aria-label': 'Accensione automatica del PC',
     onclick: () => save({ enabled: !p.enabled }) }, h('span'));
@@ -2747,8 +2747,7 @@ async function renderAuraSettings() {
   root.replaceChildren(h('div', { class: 'set-wrap' }, head, h('div', { class: 'set-body' },
     h('section', { class: 'card au-settings' }, mail,
       h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Notifiche sul telefono' }), h('small', { text: pushTxt })), pushCtl),
-      ps === 'on' || ps === 'off' ? await pushDiagRow() : null,
-      d.power ? powerRow(d.power) : null))));
+      ps === 'on' || ps === 'off' ? await pushDiagRow() : null))));
 }
 
 // Il telefono riceve le notifiche anche a pagina chiusa: il service worker resta registrato
@@ -3868,8 +3867,7 @@ function closeViews() { closeSettings(); if (typeof closeMemory === 'function') 
 async function openSettings(tab) {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('settings-open');
-  S.setTab = tab || S.setTab || 'account';
-  if (S.setTab === 'people' && !isAdmin()) S.setTab = 'account';
+  if (tab === 'people') S.accSec = 'people';
   renderSettings();
 }
 $('#accountBtn').onclick = () => openSettings();
@@ -3891,33 +3889,46 @@ function segmented(options, value, onChange, label) {
 
 function renderSettings() {
   const root = $('#settings');
-  const tabs = [['account', 'Account']].concat(isAdmin() ? [['people', 'Persone']] : []);
   const body = h('div', { class: 'set-body' });
-  const wrap = h('div', { class: 'set-wrap' },
+  root.replaceChildren(h('div', { class: 'set-wrap' },
     h('div', { class: 'set-head' }, h('h1', { text: 'Impostazioni' }),
       h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi impostazioni', html: icon('x'), onclick: () => { closeSettings(); focusInput(); } })),
-    tabs.length > 1 ? h('div', { class: 'tabs', role: 'tablist' }, tabs.map(([k, t]) => h('button', { role: 'tab', class: 'tab', 'aria-selected': S.setTab === k, text: t,
-      onclick: () => { S.setTab = k; renderSettings(); } }))) : null,
-    body);
-  root.replaceChildren(wrap);
-  if (S.setTab === 'people') peopleTab(body); else accountTab(body);
+    body));
+  accountTab(body);
 }
 
-// ------------------------------------------------------------------ account
-// In alto il profilo; sotto una sezione alla volta (Aura, Sicurezza, Collegamenti, Aspetto): niente pagina infinita.
-const ACC_SECTIONS = [['aura', 'Aura', 'brain'], ['usage', 'Consumi', 'chart'], ['security', 'Sicurezza', 'shield'], ['links', 'Collegamenti', 'link'], ['look', 'Aspetto', 'sun']];
+// ------------------------------------------------------------------ sezioni
+// Una riga sola in alto, una sezione alla volta: niente pagina infinita.
+const accSections = () => [['aura', 'Aura', 'brain'], ['model', 'Modelli', 'cloud'], ['links', 'Collegamenti', 'link'], ['usage', 'Consumi', 'chart'], ['account', 'Account', 'shield']]
+  .concat(isAdmin() ? [['people', 'Persone', 'link']] : []);
+// L'accensione del PC di casa, se c'e' l'ESP32: si legge dallo stesso stato della pagina di Aura
+function pcCard() {
+  const card = h('section', { class: 'card au-settings' });
+  const paint = async () => { try { const d = await loadAuraFeed(); d.power ? card.replaceChildren(powerRow(d.power, paint)) : card.remove(); } catch (e) { card.remove(); } };
+  paint();
+  return card;
+}
 function accountTab(body) {
-  const sec = S.accSec = ACC_SECTIONS.some(([k]) => k === S.accSec) ? S.accSec : 'aura';
-  const hero = h('section', { class: 'acc-hero' },
+  const list = accSections();
+  const sec = S.accSec = list.some(([k]) => k === S.accSec) ? S.accSec : 'aura';
+  const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...list.map(([k, t, ic]) =>
+    h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
+  body.append(nav);
+  if (sec === 'people') { const wrap = h('div', { class: 'set-body' }); body.append(wrap); peopleTab(wrap); return; }
+  const hero = () => h('section', { class: 'acc-hero' },
     avatar(S.me.user, 'xl'),
     h('div', { class: 'acc-id' },
       h('div', { class: 'p-name' }, S.me.user, h('span', { class: 'badge' + (isAdmin() ? ' admin' : ''), text: isAdmin() ? 'amministratore' : 'utente' })),
       h('div', { class: 'p-sub', text: S.me.email || 'Nessuna email collegata' })),
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
-  const nav = h('div', { class: 'acc-nav', role: 'tablist' }, ...ACC_SECTIONS.map(([k, t, ic]) =>
-    h('button', { role: 'tab', class: 'acc-pill', 'aria-selected': String(sec === k), html: icon(ic, 'sm') + t, onclick: () => { S.accSec = k; renderSettings(); } })));
-  const content = sec === 'aura' ? [personaCard(), S.me?.owner ? startModelCard() : null, S.me?.eleven ? voiceCard() : null, autonomyCard()].filter(Boolean) : sec === 'usage' ? usageCards() : sec === 'security' ? securityCards() : sec === 'links' ? [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null, cloudCard()].filter(Boolean) : lookCard();
-  body.append(hero, nav, ...[content].flat(3));   // una sezione puo' avere piu' schede (anche liste dentro liste)
+  const content = {
+    aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()],
+    model: () => [cloudCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
+    links: () => [gmailCard(), crmCard(), isAdmin() ? whatsappCard() : null],
+    usage: () => usageCards(),
+    account: () => [hero(), securityCards(), lookCard()],
+  }[sec]();
+  body.append(...[content].flat(3).filter(Boolean));   // una sezione puo' avere piu' schede (anche liste dentro liste)
 }
 
 function securityCards() {
@@ -3959,28 +3970,34 @@ function lookCard() {
 
 // Il CRM dei ticket: ognuno collega il suo (quello del proprietario sta sul server). La chiave non torna mai al browser.
 function crmCard() {
+  const box = h('div', { class: 'stack' }, h('div', { class: 'list-empty', text: 'Controllo…' }));
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('ticket', 'sm') + 'CRM dei ticket' }),
-    h('p', { text: 'Aura legge i tuoi ticket, solo in lettura. Funziona con vtiger / OpenCRM: l\'indirizzo è quello del CRM, la chiave di accesso la trovi nel tuo profilo («Access Key»).' })), h('div', { class: 'list-empty', text: 'Controllo…' }));
+    h('p', { text: 'Aura legge i tuoi ticket. Funziona con vtiger / OpenCRM.' })), box);
+  // chiudere e rispondere: spento di partenza; acceso, Aura prepara il testo e parte solo con la tua conferma
+  const writeRow = (s) => { const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(!!s.write), 'aria-label': 'Chiudere i ticket e rispondere ai clienti', onclick: async () => {
+    try { paint({ ...s, write: (await (await api('/api/crm/write', { enabled: !s.write }, { method: 'PUT' })).json()).write }); toast(s.write ? 'Scrittura sul CRM spenta' : 'Scrittura sul CRM accesa'); } catch (e) { toast(e.message); } } }, h('span'));
+    return h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Chiudere i ticket e rispondere ai clienti' }),
+      h('small', { text: s.write ? 'Acceso: Aura prepara il testo e te lo mostra. Nel CRM va solo quando premi Conferma, ogni volta.' : 'Spento: Aura legge soltanto, nel CRM non scrive niente.' })), sw); };
   const paint = (s) => {
     const was = S.me.crm;
     S.me.crm = s.linked; $('#ticketsBtn').classList.toggle('hidden', !s.linked);
     if (was !== s.linked && $('#brainPanel')?.children.length) { $('#brainPanel').replaceChildren(); renderBrainPanel(); }   // la linguetta Ticket compare o sparisce subito
-    if (s.managed) { card.lastChild.replaceWith(h('small', { class: 'cloud-note', text: s.linked ? `Collegato: ${s.url}` : 'Non configurato sul server.' })); return; }
+    if (s.managed) { box.replaceChildren(s.linked ? h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: s.url }))) : h('small', { class: 'cloud-note', text: 'Non configurato sul server.' }), s.linked ? writeRow(s) : ''); return; }
     if (s.linked) {
-      card.lastChild.replaceWith(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: `${s.url} · ${s.user}` })),
-        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/crm/link', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })));
+      box.replaceChildren(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: `${s.url} · ${s.user}` })),
+        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/crm/link', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })), writeRow(s));
       return;
     }
     const url = h('input', { class: 'ag-in', placeholder: 'https://crm.tuaazienda.it', 'aria-label': 'Indirizzo del CRM' }), usr = h('input', { class: 'ag-in', autocomplete: 'off', 'aria-label': 'Utente' });
-    const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', 'aria-label': 'Chiave di accesso', placeholder: 'La chiave di accesso del tuo profilo nel CRM' }), out = h('div', { class: 'form-msg', role: 'status' });
-    card.lastChild.replaceWith(h('div', { class: 'stack cloud-form' },
+    const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', 'aria-label': 'Chiave di accesso', placeholder: 'La «Access Key» del tuo profilo nel CRM' }), out = h('div', { class: 'form-msg', role: 'status' });
+    box.replaceChildren(h('div', { class: 'stack cloud-form' },
       h('label', { class: 'ag-f' }, h('span', { text: 'Indirizzo' }), url), h('label', { class: 'ag-f' }, h('span', { text: 'Utente' }), usr), h('label', { class: 'ag-f' }, h('span', { text: 'Chiave di accesso' }), key),
       h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Collega', onclick: async () => {
         out.className = 'form-msg'; out.textContent = 'Provo…';
         try { paint(await (await api('/api/crm/link', { url: url.value, user: usr.value, key: key.value }, { method: 'PUT' })).json()); }
         catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } })), out));
   };
-  api('/api/crm/link').then((r) => r.json()).then(paint).catch((e) => { card.lastChild.textContent = e.message; });
+  api('/api/crm/link').then((r) => r.json()).then(paint).catch((e) => { box.replaceChildren(h('div', { class: 'form-msg err', text: e.message })); });
   return card;
 }
 function gmailCard() {

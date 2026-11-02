@@ -6,12 +6,14 @@
 
 # ================================================================== CRM
 # Quelli del proprietario stanno nel .env del server (CRM_URL, CRM_USER, CRM_KEY), quelli degli altri in data/users/<id>/, mai nel codice.
-# Si usano solo le operazioni di lettura dell'API webservice: qualunque altra viene rifiutata qui, prima di partire.
+# Di base si usano solo le operazioni di lettura dell'API webservice: qualunque altra viene rifiutata qui, prima di partire.
+# Scrivere (risposta al cliente, chiusura) e' possibile solo da crm_write, se l'utente l'ha attivato, e sempre dopo la sua conferma.
 
 import hashlib
 import html as _html
 
 OWNER_CRM = {"url": os.environ.get("CRM_URL", "").rstrip("/"), "user": os.environ.get("CRM_USER", ""), "key": os.environ.get("CRM_KEY", "")}
+CRM_WRITE_OPS = {"create", "revise"}
 CRM_READ_OPS = {"getchallenge", "login", "query", "retrieve", "describe", "listtypes"}
 # campi del modulo ticket (personalizzati nel CRM dell'azienda): soluzione, tempo, cliente
 CRM_SOLUTION = os.environ.get("CRM_SOLUTION_FIELD", "cf_acf_rtf_soluzione_ticket")
@@ -112,14 +114,14 @@ async def _crm_sql(sql: str, session: str) -> str:
     return sql[:m.start(1)] + ",".join(keep) + sql[m.end(1):]
 
 
-async def _crm(op: str, **p) -> dict | list:
-    if op not in CRM_READ_OPS:
+async def _crm(op: str, _write: bool = False, **p) -> dict | list:
+    if op not in CRM_READ_OPS and not (_write and op in CRM_WRITE_OPS):
         raise ValueError(f"operazione CRM non permessa: {op} (il collegamento è solo in lettura)")
     if op == "query" and p.get("sessionName"):
         p["query"] = await _crm_sql(p["query"], p["sessionName"])
     url = crm_cfg().get("url", "") + "/webservice.php"
     try:
-        if op == "login":
+        if op == "login" or _write:
             r = await client.post(url, data={"operation": op, **p}, timeout=20)
         else:
             r = await client.get(url, params={"operation": op, **p}, timeout=20)
@@ -758,7 +760,7 @@ class CrmLinkIn(BaseModel):
 @app.get("/api/crm/link")
 async def crm_link_get(user: dict = Depends(require_user)):
     c = crm_cfg()
-    return {"linked": crm_on(), "managed": is_owner(user["id"]), "url": c.get("url", ""), "user": c.get("user", "")}
+    return {"linked": crm_on(), "managed": is_owner(user["id"]), "url": c.get("url", ""), "user": c.get("user", ""), "write": bool(_prefs(user).get("crm_write"))}
 
 
 @app.put("/api/crm/link")
@@ -780,7 +782,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     except ValueError as e:
         f.unlink(missing_ok=True)
         raise HTTPException(400, f"Non riesco a entrare nel CRM: {e}")
-    return {"linked": True, "managed": False, "url": url, "user": body.user.strip()}
+    return {"linked": True, "managed": False, "url": url, "user": body.user.strip(), "write": bool(_prefs(user).get("crm_write"))}
 
 
 @app.delete("/api/crm/link")
@@ -793,4 +795,103 @@ async def crm_link_delete(user: dict = Depends(require_user)):
     _CRM_NAMES.clear()
     _CRM_ACC.clear()
     _CRM_FIELDS.clear()
-    return {"linked": False, "managed": False, "url": "", "user": ""}
+    return {"linked": False, "managed": False, "url": "", "user": "", "write": False}
+
+
+# ---- rispondere al cliente e chiudere: spento finche' l'utente non lo attiva, e ogni volta parte solo se preme Conferma
+
+def crm_write_on(user: dict) -> bool:
+    return crm_on() and bool(_prefs(user).get("crm_write"))
+
+
+async def crm_write(user: dict, op: str, module: str, element: dict) -> dict:
+    if not crm_write_on(user):
+        raise ValueError("la scrittura sul CRM è spenta: si attiva in Impostazioni → Collegamenti")
+    s, _ = await _crm_sess()
+    return await _crm(op, _write=True, sessionName=s, elementType=module, element=json.dumps(element, ensure_ascii=False))
+
+
+def _crm_html(text: str) -> str:
+    """Il testo come lo vuole il CRM: paragrafi HTML."""
+    return "".join(f"<p>{_html.escape(p).replace(chr(10), '<br />')}</p>" for p in re.split(r"\n\s*\n", text.strip()))
+
+
+def _quote(text: str) -> str:
+    return "\n".join("> " + x for x in text.strip().splitlines())
+
+
+async def _crm_target(args: dict, field: str) -> tuple[dict, str]:
+    text = str(args.get(field) or "").strip()
+    if len(text) < 2:
+        raise ValueError("manca il testo")
+    t = await crm_detail(str(args.get("ticket") or ""))
+    args["_id"], args["_no"] = t["id"], t["no"]
+    return t, text
+
+
+async def _summary_crm_reply(args: dict) -> str:
+    t, text = await _crm_target(args, "testo")
+    if t["done"]:
+        raise ValueError(f"il ticket {t['no']} è già chiuso")
+    who = "Nota interna (il cliente non la vede)" if _truthy(args.get("interna")) else "Risposta al cliente"
+    return f"**{who}** sul ticket **{t['no']}** ({t['client'] or 'cliente sconosciuto'}, «{t['title']}»):\n\n{_quote(text)}"
+
+
+async def _summary_crm_close(args: dict) -> str:
+    t, text = await _crm_target(args, "soluzione")
+    if t["done"]:
+        raise ValueError(f"il ticket {t['no']} è già chiuso")
+    return f"**Chiudo il ticket {t['no']}** ({t['client'] or 'cliente sconosciuto'}, «{t['title']}») con questo messaggio di chiusura:\n\n{_quote(text)}"
+
+
+async def _tool_crm_reply(user: dict, args: dict, request: Request) -> dict:
+    _, uid = await _crm_sess()
+    private = _truthy(args.get("interna"))
+    r = await crm_write(user, "create", "ModComments", {"commentcontent": _crm_html(str(args["testo"])), "related_to": args["_id"],
+                                                         "assigned_user_id": uid, "is_private": 1 if private else 0})
+    if not r.get("id"):
+        raise ValueError("il CRM non ha confermato il commento")
+    what = "Nota interna aggiunta" if private else "Risposta inserita"
+    return {"content": f"{what} sul ticket {args['_no']} nel CRM (commento {r['id']}). Il CRM ha confermato che il commento esiste; non so se e quando il cliente riceve la mail: non dire che l'ha ricevuta.",
+            "display": f"{what} sul ticket {args['_no']}"}
+
+
+async def _tool_crm_close(user: dict, args: dict, request: Request) -> dict:
+    s, _ = await _crm_sess()
+    await _crm_sql("SELECT id FROM HelpDesk", s)
+    known = _CRM_FIELDS.get("HelpDesk") or set()
+    field = CRM_SOLUTION if not known or CRM_SOLUTION in known else "solution"
+    await crm_write(user, "revise", "HelpDesk", {"id": args["_id"], "ticketstatus": "Closed", field: _crm_html(str(args["soluzione"]))})
+    after = await _crm_get("retrieve", id=args["_id"])   # si dice «chiuso» solo se il CRM lo dice
+    if after.get("ticketstatus") != "Closed":
+        raise ValueError(f"il CRM ha risposto, ma il ticket risulta «{after.get('ticketstatus')}»")
+    return {"content": f"Ticket {args['_no']} chiuso nel CRM: lo stato letto dopo la modifica è Closed. Non so se il cliente riceve una mail: non dire che l'ha ricevuta.",
+            "display": f"Ticket {args['_no']} chiuso"}
+
+
+class CrmWriteIn(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/crm/write")
+async def crm_write_set(body: CrmWriteIn, user: dict = Depends(require_user)):
+    prefs = _prefs(user)
+    prefs["crm_write"] = body.enabled
+    with db() as c:
+        c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
+    return {"write": body.enabled}
+
+
+TOOLS.update({
+    "ticket_rispondi": {"admin": False, "crm": True, "crm_write": True, "confirm": True, "always_confirm": True, "run": _tool_crm_reply, "summary": _summary_crm_reply,
+        "spec": _fn("ticket_rispondi", "Scrive nel ticket del CRM una risposta al cliente (o una nota interna, che il cliente non vede). Usalo solo se l'utente "
+                    "chiede di rispondere a un ticket. Prima dell'invio l'utente vede il testo e preme Conferma: chiamalo direttamente. Scrivi il testo come lo "
+                    "scriverebbe lui, senza inventare fatti.",
+                    {"ticket": {"type": "string", "description": "Numero del ticket"}, "testo": {"type": "string", "description": "Il testo della risposta"},
+                     "interna": {"type": "boolean", "description": "true = nota interna, il cliente non la vede"}}, ["ticket", "testo"])},
+    "ticket_chiudi": {"admin": False, "crm": True, "crm_write": True, "confirm": True, "always_confirm": True, "run": _tool_crm_close, "summary": _summary_crm_close,
+        "spec": _fn("ticket_chiudi", "Chiude un ticket del CRM col messaggio di chiusura per il cliente. Usalo solo se l'utente chiede di chiudere il ticket. Prima "
+                    "l'utente vede il testo e preme Conferma: chiamalo direttamente. Scrivi il messaggio come lo scriverebbe lui, senza inventare fatti.",
+                    {"ticket": {"type": "string", "description": "Numero del ticket"}, "soluzione": {"type": "string", "description": "Il messaggio di chiusura"}},
+                    ["ticket", "soluzione"])},
+})

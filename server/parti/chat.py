@@ -477,7 +477,8 @@ def tools_for(user: dict) -> list:
     hbase = user["role"] == "admin" and homebase_on()
     wapp = user["role"] == "admin" and wa_linked()
     crm = crm_on()
-    return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin")
+    crm_w = crm and crm_write_on(user)
+    return [t["spec"] for t in TOOLS.values() if not t.get("hidden") and (not t["admin"] or user["role"] == "admin") and (crm_w or not t.get("crm_write"))
             and (gmail or not t.get("gmail")) and (cal or not t.get("calendar")) and (hbase or not t.get("homebase"))
             and (wapp or not t.get("whatsapp")) and (crm or not t.get("crm"))]
 
