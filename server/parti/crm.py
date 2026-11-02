@@ -625,6 +625,8 @@ def _crm_where(f: dict, uid: str) -> list[str]:
         w += [f"ticketstatus!='{s}'" for s in CRM_DONE]
     elif f.get("stato") == "chiusi":
         w.append("ticketstatus='Closed'")
+    elif f.get("stato") == "open":   # nel CRM aziendale lo stato Open si legge «Non assegnato»
+        w.append("ticketstatus='Open'")
     for field, key in (("ticketcategories", "categoria"), ("gruppo_di_supporto", "gruppo")):
         if f.get(key):
             w.append(f"{field}='{_crm_like(f[key])}'")
