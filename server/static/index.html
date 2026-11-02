@@ -1680,12 +1680,27 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tkb-fields label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--text-3); min-width: 0; }
 .tkb-off { font-size: 13px; color: var(--text-2); }
 .tk-com-priv { margin-left: 6px; font-size: 11px; padding: 1px 6px; border-radius: 99px; color: var(--tk-on); background: var(--tk-note); }
-.tk-files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; } .tk-files:empty { display: none; }
-.tk-photo { display: block; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; line-height: 0; background: var(--bg); max-width: 100%; }
-.tk-photo img { display: block; max-width: min(320px, 100%); max-height: 240px; width: auto; height: auto; object-fit: contain; }
-.tk-photo:hover { border-color: var(--accent); }
-.tk-file { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border: 1px solid var(--border-strong); border-radius: 99px; font-size: 13px; color: var(--text); text-decoration: none; }
-.tk-file:hover { border-color: var(--accent); color: var(--accent); }
+.tk-files { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; } .tk-files:empty { display: none; }
+.tk-photos { display: flex; flex-wrap: wrap; gap: 10px; }
+.tk-photo { display: flex; flex-direction: column; gap: 4px; padding: 0; border: 0; background: none; color: var(--text-3); font: inherit; cursor: zoom-in; max-width: 220px; text-align: left; }
+.tk-photo .plate { display: flex; align-items: center; justify-content: center; height: 124px; min-width: 96px; padding: 6px; box-sizing: border-box; border-radius: 10px; background: var(--tk-on); box-shadow: 0 0 0 1px var(--border); overflow: hidden; }
+.tk-photo img { display: block; max-width: 208px; max-height: 112px; width: auto; height: auto; object-fit: contain; }
+.tk-photo:hover .plate { box-shadow: 0 0 0 2px var(--accent); }
+.tk-photo:focus-visible { outline: none; } .tk-photo:focus-visible .plate { box-shadow: 0 0 0 2px var(--accent); }
+.tk-photo small { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tk-photos.small .tk-photo { max-width: 130px; } .tk-photos.small .plate { height: 64px; min-width: 64px; padding: 4px; } .tk-photos.small img { max-width: 122px; max-height: 56px; }
+.tk-logos summary { font-size: 12.5px; color: var(--text-3); cursor: pointer; width: fit-content; } .tk-logos[open] summary { margin-bottom: 8px; }
+.tk-chips { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+.tk-file { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; }
+.tk-file .ic { color: var(--text-3); display: flex; } .tk-file .tx { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tk-file b { font-size: 13.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .tk-file small { font-size: 12px; color: var(--text-3); }
+.tkv { position: fixed; inset: 0; z-index: 2000; display: flex; flex-direction: column; background: color-mix(in oklch, black 86%, transparent); outline: none; }
+.tkv-top { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border); }
+.tkv-top .tx { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; } .tkv-top b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .tkv-top small { color: var(--text-3); font-size: 12.5px; flex: none; }
+.tkv-body { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 16px; }
+.tkv-body img { max-width: 100%; max-height: 100%; object-fit: contain; background: var(--tk-on); border-radius: 6px; }
+.tkv-nav { position: absolute; top: 50%; translate: 0 -50%; width: 42px; height: 42px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 50%; background: var(--bg); color: var(--text); cursor: pointer; box-shadow: 0 0 0 1px var(--border); }
+.tkv-nav.prev { left: 14px; } .tkv-nav.prev svg { rotate: 90deg; } .tkv-nav.next { right: 14px; } .tkv-nav.next svg { rotate: -90deg; }
 .tk-meta { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px 16px; padding: 12px 14px; border-radius: 12px; background: var(--hover); }
 .tk-m { display: flex; flex-direction: column; min-width: 0; }
 .tk-m small { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }

@@ -749,7 +749,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
         : m.view?.kind === 'consuntivo' ? consView(m.view)
         : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket)
-        : m.view?.kind === 'ticket_photos' ? h('div', { class: 'tk-files' }, ...m.view.files.map((f) => h('a', { class: 'tk-photo', href: `/api/crm/file/${f.id}`, target: '_blank', rel: 'noopener', title: f.name }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' })))) : null);
+        : m.view?.kind === 'ticket_photos' ? h('div', { class: 'tk-photos' }, ...m.view.files.map((f, i) => tkPhotoTile(f, m.view.files, i))) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
   if (m.role === 'note') return noteEl(m);
@@ -3055,25 +3055,60 @@ function tkActions(t, reload) {
   return box;
 }
 // Foto e allegati del ticket: le foto di una mail nel CRM stanno nel suo commento, con lo stesso nome del «cid:» nel testo.
-// Sotto i 4 KB sono icone di firme e di avvisi automatici: non si mostrano
-function tkFilesFill(t, descBox, boxes) {
-  const ids = [...new Set((t.comments || []).flatMap((c) => c.files || []))];
+const tkSize = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1024))} KB`);
+function tkViewer(list, start) {
+  let i = start;
+  const img = h('img', { alt: '' }), name = h('b'), count = h('small', { class: 'tnum' });
+  const dl = h('a', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica' });
+  const paint = () => { const f = list[i]; img.src = `/api/crm/file/${f.id}`; img.alt = f.name; name.textContent = f.name; count.textContent = list.length > 1 ? `${i + 1} di ${list.length}` : ''; dl.href = `/api/crm/file/${f.id}?dl=1`; dl.setAttribute('download', f.name); };
+  const go = (d) => { i = (i + d + list.length) % list.length; paint(); };
+  const close = () => { box.remove(); opener?.focus(); };
+  const opener = document.activeElement;
+  const nav = (cls, label, d) => (list.length > 1 ? h('button', { class: 'tkv-nav ' + cls, 'aria-label': label, html: icon('chevron'), onclick: () => go(d) }) : null);
+  const closeBtn = h('button', { class: 'icon-btn', 'aria-label': 'Chiudi', html: icon('x'), onclick: close });
+  const box = h('div', { class: 'tkv', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Foto del ticket', tabindex: '-1',
+    onclick: (e) => { if (e.target === box || e.target.classList.contains('tkv-body')) close(); },
+    onkeydown: (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowLeft' && list.length > 1) go(-1); if (e.key === 'ArrowRight' && list.length > 1) go(1); } },
+    h('div', { class: 'tkv-top' }, h('div', { class: 'tx' }, name, count), dl, closeBtn),
+    h('div', { class: 'tkv-body' }, nav('prev', 'Foto precedente', -1), img, nav('next', 'Foto successiva', 1)));
+  paint();
+  document.body.append(box);
+  closeBtn.focus();
+}
+function tkPhotoTile(f, list, i) {
+  return h('button', { type: 'button', class: 'tk-photo', title: f.name, 'aria-label': 'Apri ' + f.name, onclick: () => tkViewer(list, i) },
+    h('span', { class: 'plate' }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' })),
+    h('small', { text: f.name }));
+}
+function tkFileChip(f) {
+  return h('div', { class: 'tk-file' }, h('span', { class: 'ic', html: icon('clip', 'sm') }),
+    h('div', { class: 'tx' }, h('b', { text: f.name, title: f.name }), h('small', { class: 'tnum', text: tkSize(f.size) })),
+    f.open ? h('a', { class: 'btn sm', href: `/api/crm/file/${f.id}`, target: '_blank', rel: 'noopener', text: 'Apri' }) : null,
+    h('a', { class: 'btn sm', href: `/api/crm/file/${f.id}?dl=1`, download: f.name, html: icon('down', 'sm') + 'Scarica' }));
+}
+// in un riquadro: prima le foto, poi gli allegati. Le icone piccolissime spariscono, le immagini delle firme stanno da parte
+function tkFilesPaint(box, files) {
+  const list = files.filter((f) => f && (!f.image || f.size >= 4096));
+  const photos = list.filter((f) => f.image && !f.logo), logos = list.filter((f) => f.image && f.logo), others = list.filter((f) => !f.image);
+  if (photos.length) box.append(h('div', { class: 'tk-photos' }, ...photos.map((f, i) => tkPhotoTile(f, photos, i))));
+  if (others.length) box.append(h('div', { class: 'tk-chips' }, ...others.map(tkFileChip)));
+  if (logos.length) box.append(h('details', { class: 'tk-logos' }, h('summary', { text: `Immagini della firma (${logos.length})` }), h('div', { class: 'tk-photos small' }, ...logos.map((f, i) => tkPhotoTile(f, logos, i)))));
+}
+function tkFilesFill(t, descBox, boxes, docBox) {
+  const ids = [...new Set([...(t.comments || []).flatMap((c) => c.files || []), ...(t.documents || [])])];
   if (!ids.length) return;
   api('/api/crm/file-info?' + new URLSearchParams({ ids: ids.join(',') })).then((r) => r.json()).then((d) => {
     const info = new Map(d.files.map((f) => [f.id, f]));
     const moved = new Set();
     const wanted = new Set(t.desc_images || []);
     const first = (t.comments || []).find((c) => (c.files || []).some((x) => wanted.has(info.get(x)?.name)));
-    const show = (list) => list.map((f) => f.image
-      ? h('a', { class: 'tk-photo', href: `/api/crm/file/${f.id}`, target: '_blank', rel: 'noopener', title: f.name }, h('img', { src: `/api/crm/file/${f.id}`, alt: f.name, loading: 'lazy' }))
-      : h('a', { class: 'tk-file', href: `/api/crm/file/${f.id}`, download: f.name }, h('span', { html: icon('clip', 'sm') }), h('span', { text: f.name })));
-    const useful = (f) => f && (!f.image || f.size >= 4096);
     if (first && descBox) {
-      const own = (first.files || []).map((x) => info.get(x)).filter((f) => f && wanted.has(f.name) && useful(f));
+      const own = (first.files || []).map((x) => info.get(x)).filter((f) => f && wanted.has(f.name));
       own.forEach((f) => moved.add(f.id));
-      descBox.append(...show(own));
+      tkFilesPaint(descBox, own);
     }
-    (t.comments || []).forEach((c, i) => boxes[i]?.append(...show((c.files || []).map((x) => info.get(x)).filter((f) => useful(f) && !moved.has(f.id)))));
+    (t.comments || []).forEach((c, i) => { if (boxes[i]) tkFilesPaint(boxes[i], (c.files || []).map((x) => info.get(x)).filter((f) => f && !moved.has(f.id))); });
+    if (docBox) tkFilesPaint(docBox, (t.documents || []).map((x) => info.get(x)));
   }).catch(() => {});
 }
 function tkDetail(t, full) {
@@ -3082,7 +3117,8 @@ function tkDetail(t, full) {
   const descBox = full ? h('div', { class: 'tk-files' }) : null;
   const shown = full ? (t.comments || []) : (t.comments || []).slice(-3);
   const boxes = shown.map(() => (full ? h('div', { class: 'tk-files' }) : null));
-  if (full) setTimeout(() => tkFilesFill(t, descBox, boxes), 0);
+  const docBox = full && t.documents?.length ? h('div', { class: 'tk-files' }) : null;
+  if (full) setTimeout(() => tkFilesFill(t, descBox, boxes, docBox), 0);
   return h('div', { class: 'tk-detail' },
     h('div', { class: 'tk-head' },
       h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
@@ -3091,6 +3127,7 @@ function tkDetail(t, full) {
       meta('Aperto', tkDay(t.created)), meta('Preso in carico', tkDay(t.taken)), meta('Chiuso', tkDay(t.closed)), meta('Tipo', [t.category, t.kind].filter(Boolean).join(' · '))),
     sec('Richiesta', full ? (t.description || (t.desc_images?.some((x) => /^image/i.test(x)) ? 'Solo immagini:' : '')) : _clipTxt(t.description, 420), '', descBox),
     sec('Soluzione', full ? t.solution : _clipTxt(t.solution, 420), 'sol'),
+    docBox ? h('div', { class: 'tk-sec' }, h('div', { class: 'tk-sec-h', text: 'Documenti' }), docBox) : null,
     (t.comments || []).length ? h('div', { class: 'tk-sec' }, h('div', { class: 'tk-sec-h', text: `Commenti (${t.comments.length})` }),
       h('div', { class: 'tk-coms' }, ...shown.map((c, ci) => h('div', { class: 'tk-com' + (c.client ? ' client' : '') + (c.me ? ' me' : '') },
         h('div', { class: 'tk-com-h' }, h('b', { text: c.me ? 'Tu' : c.who }), c.private ? h('span', { class: 'tk-com-priv', text: 'interna' }) : null, h('small', { class: 'tnum', text: `${tkDay(c.at)} ${c.at.slice(11, 16)}` })),

@@ -531,6 +531,8 @@ class Security:
         async def send_secure(message):
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", [])) + SEC_HEADERS
+                if path.startswith("/api/crm/file/") and any(k.lower() == b"content-type" and v.startswith(b"application/pdf") for k, v in headers):
+                    headers = [(k, v) for k, v in headers if k.lower() != b"content-security-policy"]
                 # Librerie (non cambiano mai nome): cache lunga. Il resto dei file statici: sempre ricontrollato.
                 if path.startswith("/static/"):
                     headers = [(k, v) for k, v in headers if k.lower() != b"cache-control"]
