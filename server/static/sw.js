@@ -18,7 +18,7 @@ self.addEventListener('notificationclick', (e) => {
   const url = e.notification.data?.url || '/?aura=1';
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((wins) => {
     for (const w of wins) {
-      if (new URL(w.url).origin === self.location.origin) { w.postMessage({ type: 'aura-open' }); return w.focus(); }
+      if (new URL(w.url).origin === self.location.origin) { w.postMessage({ type: 'aura-open', url }); return w.focus(); }
     }
     return self.clients.openWindow(url);
   }));

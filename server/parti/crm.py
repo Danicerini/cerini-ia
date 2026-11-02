@@ -897,7 +897,7 @@ class CrmLinkIn(BaseModel):
 @app.get("/api/crm/link")
 async def crm_link_get(user: dict = Depends(require_user)):
     c = crm_cfg()
-    return {"linked": crm_on(), "managed": is_owner(user["id"]), "url": c.get("url", ""), "user": c.get("user", ""), "write": bool(_prefs(user).get("crm_write"))}
+    return {"linked": crm_on(), "managed": is_owner(user["id"]), "url": c.get("url", ""), "user": c.get("user", ""), "write": bool(_prefs(user).get("crm_write")), "notify": _prefs(user).get("crm_notify") is not False}
 
 
 @app.put("/api/crm/link")
@@ -925,7 +925,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
         await crm_bootstrap(user)
     except Exception as e:   # il collegamento e' riuscito: il resto lo rifa' il giro di sorveglianza
         print(f"CRM: primo avvio non riuscito: {e}", flush=True)
-    return {"linked": True, "managed": False, "url": url, "user": body.user.strip(), "write": bool(_prefs(user).get("crm_write"))}
+    return {"linked": True, "managed": False, "url": url, "user": body.user.strip(), "write": bool(_prefs(user).get("crm_write")), "notify": _prefs(user).get("crm_notify") is not False}
 
 
 @app.delete("/api/crm/link")
@@ -1452,6 +1452,89 @@ async def _tool_crm_take(user: dict, args: dict, request: Request) -> dict:
 async def _tool_crm_edit(user: dict, args: dict, request: Request) -> dict:
     await _ticket_revise(user, args["_id"], args["_changes"])
     return {"content": f"Ticket {args['_no']} modificato nel CRM, riletto dopo la modifica.", "display": f"Ticket {args['_no']} modificato"}
+
+
+# ---- gli avvisi: un ticket nuovo tra quelli che l'utente vede come «non assegnati», o assegnato a lui
+
+CRM_NEW_EVERY = 120   # secondi tra un controllo e l'altro
+
+
+def _ticket_for_me(t: dict, folders: list[dict], uid: str) -> bool:
+    if t.get("ticketstatus") in CRM_DONE:
+        return False
+    assigned = str(t.get("assigned_user_id") or "")
+    if assigned == uid:
+        return True
+    for f in folders:
+        if f.get("non_assegnati"):
+            if assigned and not assigned.startswith(uid.split("x")[0] + "x"):
+                return True
+        elif f.get("stato") == "open" and t.get("ticketstatus") == "Open" and all(
+                not f.get(k) or _crm_like(f[k]).lower() == str(t.get(field) or "").lower() for k, field in (("categoria", "ticketcategories"), ("gruppo", "gruppo_di_supporto"))):
+            return True
+    return False
+
+
+async def crm_new_tickets(user: dict) -> int:
+    """Guarda gli ultimi ticket creati: la prima volta si segna quelli che ci sono, senza avvisare; poi avvisa solo dei nuovi."""
+    if _prefs(user).get("crm_notify") is False or not crm_on():
+        return 0
+    _, uid = await _crm_sess()
+    rows = await _crm_get("query", query="SELECT id,ticket_no,ticket_title,ticketstatus,parent_id,createdtime,assigned_user_id,ticketpriorities,ticketcategories,gruppo_di_supporto "
+                                         "FROM HelpDesk ORDER BY createdtime DESC LIMIT 40;")
+    seen = _crm_file().get("ticket_visti")
+    ids = [t["id"] for t in rows if t.get("id")]
+    new = [t for t in reversed(rows) if t.get("id") and t["id"] not in (seen or [])] if seen is not None else []
+    if not new and seen is not None:
+        return 0
+    folders = [f for f in await crm_folders() if f.get("non_assegnati") or f.get("stato") == "open"]
+    labels = {v["value"]: v["label"] for v in (await crm_options())["picks"].get("ticketpriorities", [])}
+    found = []
+    for t in new:
+        if _ticket_for_me(t, folders, uid):
+            found.append({"no": t.get("ticket_no", ""), "title": _html.unescape(t.get("ticket_title") or "(senza titolo)")[:160], "client": await _crm_name(t.get("parent_id")),
+                          "priority": labels.get(t.get("ticketpriorities"), t.get("ticketpriorities") or ""), "mine": t.get("assigned_user_id") == uid})
+    d = _crm_file()   # prima si segna, poi si avvisa: mai lo stesso avviso due volte
+    d["ticket_visti"] = list(dict.fromkeys(ids + list(seen or [])))[:300]
+    _crm_save(d)
+    for x in found:
+        feed_add(user["id"], "ticket", f"🎫 Nuovo ticket {x['no']}", " · ".join(v for v in (x["title"], x["client"]) if v), x, push=False)
+    if len(found) == 1:
+        x = found[0]
+        asyncio.create_task(push_send(user["id"], f"🎫 Nuovo ticket {x['no']}", "\n".join(v for v in (x["title"], x["client"]) if v), url="/?ticket=" + quote_plus(x["no"]), tag=f"ticket-{x['no']}"))
+    elif found:
+        asyncio.create_task(push_send(user["id"], f"🎫 {len(found)} ticket nuovi", "\n".join(f"{x['no']} {x['title']}" for x in found[:4]), url="/?tickets=1", tag="ticket-nuovi"))
+    return len(found)
+
+
+async def crm_new_loop():
+    await asyncio.sleep(90)
+    while True:
+        if 7 <= local_now().hour < 21:   # di notte niente avvisi: quello che arriva si dice al mattino
+            for uid in crm_users():
+                try:
+                    with db() as c:
+                        urow = c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+                    await crm_new_tickets(dict(urow))
+                except Exception as e:   # il CRM giu' non deve fermare niente
+                    print(f"CRM: controllo dei ticket nuovi non riuscito per l'utente {uid}: {_clip(str(e), 150)}", flush=True)
+        await asyncio.sleep(CRM_NEW_EVERY)
+
+
+class CrmNotifyIn(BaseModel):
+    enabled: bool
+
+
+@app.put("/api/crm/notify")
+async def crm_notify_set(body: CrmNotifyIn, user: dict = Depends(require_user)):
+    prefs = _prefs(user)
+    prefs["crm_notify"] = body.enabled
+    with db() as c:
+        c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
+    d = _crm_file()   # riaccendendo si riparte da adesso: niente valanga di quelli arrivati mentre era spento
+    d.pop("ticket_visti", None)
+    _crm_save(d)
+    return {"notify": body.enabled}
 
 
 class CrmWriteIn(BaseModel):

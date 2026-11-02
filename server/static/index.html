@@ -1357,7 +1357,7 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 @keyframes auIn { from { opacity: 0; transform: translateY(6px); } }
 .msg.au-row + .msg.au-row { margin-top: -16px; }
 .au-row.au-cont .au-mini { visibility: hidden; }
-.ak-suspect { --k: var(--err); } .ak-reminder, .ak-brief, .ak-deadline { --k: var(--warn); } .ak-code { --k: var(--ok); }
+.ak-ticket { --k: var(--tk-reply); } .ak-suspect { --k: var(--err); } .ak-reminder, .ak-brief, .ak-deadline { --k: var(--warn); } .ak-code { --k: var(--ok); }
 .ak-parcel { --k: oklch(0.68 0.12 200); } .ak-trashed, .ak-power, .ak-checked { --k: var(--text-3); }
 .au-mini { width: 30px; height: 30px; border-radius: 50%; flex: none; display: grid; place-items: center; margin-top: 2px;
   background: conic-gradient(from 200deg, var(--accent), color-mix(in oklch, var(--accent) 40%, var(--ok)), var(--accent)); }
@@ -1668,6 +1668,16 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .em-ext-hint { flex: 1; min-width: 160px; font-size: 12.5px; color: var(--text-3); }
 .cons-ex-add { margin-left: 4px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--border-strong); background: none; color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .cons-ex-add:hover { border-color: var(--accent); color: var(--accent); }
+.au-ticket { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--k); } .au-ticket .au-sub { color: var(--text-3); }
+.tk-alert { position: fixed; top: 14px; right: 14px; z-index: 95; width: min(340px, calc(100vw - 28px)); border-radius: 14px; overflow: hidden; background: var(--raised); border: 1px solid color-mix(in oklch, var(--tk-reply) 50%, var(--border)); box-shadow: var(--shadow); animation: tkAlertIn .3s cubic-bezier(.16, 1, .3, 1) both; }
+@keyframes tkAlertIn { from { opacity: 0; transform: translateY(-10px); } }
+@media (prefers-reduced-motion: reduce) { .tk-alert { animation: none; } }
+.tk-alert-h { display: flex; align-items: center; gap: 8px; padding: 8px 8px 8px 12px; background: var(--tk-reply); color: var(--tk-on); font-size: 13.5px; } .tk-alert-h b { font-weight: 650; }
+.tk-alert-h .no { margin-left: auto; font-size: 12.5px; opacity: .9; }
+.tk-alert-x { display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 7px; background: none; color: inherit; cursor: pointer; } .tk-alert-x:hover { background: color-mix(in oklch, black 18%, transparent); }
+.tk-alert-h b + .tk-alert-x { margin-left: auto; }
+.tk-alert-b { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px 12px; } .tk-alert-b .tt { font-size: 14px; font-weight: 550; overflow-wrap: anywhere; } .tk-alert-b small { font-size: 12.5px; color: var(--text-2); }
+.tk-alert-f { display: flex; gap: 6px; margin-top: 6px; }
 .tka { --tka: var(--tk-take); border: 1px solid color-mix(in oklch, var(--tka) 50%, var(--border)); border-radius: 14px; overflow: hidden; background: var(--bg); max-width: 720px; }
 .tka.close { --tka: var(--tk-close); } .tka.reply { --tka: var(--tk-reply); } .tka.note { --tka: var(--tk-note); }
 .tka-h { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--tka); color: var(--tk-on); font-weight: 650; font-size: 14px; }

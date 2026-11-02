@@ -669,6 +669,8 @@ async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_
         with db() as c:
             c.execute("UPDATE parcels SET status = 'consegnato', updated = ? WHERE id = ? AND user_id = ?", (int(time.time()), data["parcel_id"], uid))
         status, msg = "delivered", "Segnato come consegnato"
+    elif body.action == "ticket_taken" and r["kind"] == "ticket":
+        status = "taken"
     elif body.action == "dismiss":
         status = "dismissed"
         if data.get("agenda_id"):   # «Fatto» su un promemoria: fatto anche in agenda

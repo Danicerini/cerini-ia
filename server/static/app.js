@@ -207,6 +207,8 @@ async function showApp() {
   $('#ticketsBtn').classList.toggle('hidden', !S.me?.crm);
   refreshAuraBadge();
   if (new URLSearchParams(location.search).get('aura')) { history.replaceState(null, '', '/'); openAura(); }
+  const fromPush = new URLSearchParams(location.search);
+  if (fromPush.get('ticket') || fromPush.get('tickets')) { history.replaceState(null, '', '/'); setTimeout(() => tkOpenFromAlert(fromPush.get('ticket')), 300); }
   if (!isMobile() && pref.get('brainPanel', true)) toggleBrain(true);
   try { S.chats = await Store.list(); } catch (e) { S.chats = []; toast('Non riesco a leggere le chat: ' + e.message); }
   renderAll(); refresh(); focusInput();
@@ -2441,10 +2443,55 @@ async function openAura() {
   api('/api/aura/feed/read', {}).then(() => { $('#auraCount').textContent = ''; }).catch(() => {});
 }
 $('#auraBtn').onclick = openAura;
+// L'avviso di un ticket nuovo mentre l'app è aperta
+async function tkOpenFromAlert(no) {
+  $('#tkAlert')?.remove();
+  TKP.sel = no || null;
+  await openTickets();
+}
+async function tkTakeFromAlert(no) {
+  try {
+    const url = '/api/crm/ticket/' + encodeURIComponent(no);
+    const t = await (await api(url)).json();
+    if (t.done) { toast(`Il ticket ${no} è già chiuso`); return false; }
+    if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo prendi tu?`)) return false;
+    await api(url + '/take', {});
+    TKP.folders = null; TK.folders = null;
+    toast(`Ticket ${no} preso in carico`);
+    return true;
+  } catch (e) { toast(e.message); return false; }
+}
+function tkAlert(items) {
+  $('#tkAlert')?.remove();
+  const one = items.length === 1 ? items[0].data || {} : null;
+  const close = () => { clearTimeout(timer); box.remove(); };
+  const box = h('div', { id: 'tkAlert', class: 'tk-alert', role: 'status', 'aria-live': 'polite' },
+    h('div', { class: 'tk-alert-h' }, h('span', { html: icon('ticket', 'sm') }), h('b', { text: one ? 'Nuovo ticket' : `${items.length} ticket nuovi` }), one ? h('span', { class: 'no tnum', text: one.no }) : null,
+      h('button', { class: 'tk-alert-x', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: () => close() })),
+    h('div', { class: 'tk-alert-b' },
+      one ? h('div', { class: 'tt', text: one.title || '' }) : h('div', { class: 'tt', text: items.slice(0, 3).map((i) => i.data?.no).join(' · ') + (items.length > 3 ? ' …' : '') }),
+      one?.client ? h('small', { text: [one.client, one.priority].filter(Boolean).join(' · ') }) : null,
+      h('div', { class: 'tk-alert-f' },
+        h('button', { class: 'btn sm primary', text: one ? 'Apri' : 'Vedi i ticket', onclick: () => tkOpenFromAlert(one?.no) }),
+        one && !one.mine ? h('button', { class: 'btn sm', text: 'Prendi in carico', onclick: async (e) => {
+          e.currentTarget.disabled = true;
+          if (await tkTakeFromAlert(one.no)) { const it = items[0]; api(`/api/aura/feed/${it.id}/act`, { action: 'ticket_taken' }).catch(() => {}); close(); } else if (e.target.isConnected) e.target.disabled = false; } }) : null)));
+  const timer = setTimeout(close, 30000);
+  document.body.append(box);
+}
+function tkAlertCheck(items) {
+  const tickets = items.filter((i) => i.kind === 'ticket');
+  const top = tickets.reduce((m, i) => Math.max(m, i.id), 0);
+  if (S.tkAlertSeen === undefined) { S.tkAlertSeen = top; return; }   // appena aperta: quello che c'è già sta in «Da Aura»
+  const fresh = tickets.filter((i) => i.id > S.tkAlertSeen && i.unread && !i.status);
+  S.tkAlertSeen = Math.max(S.tkAlertSeen, top);
+  if (fresh.length) { tkAlert(fresh.sort((a, b) => a.id - b.id)); TKP.folders = null; TK.folders = null; }
+}
 async function refreshAuraBadge() {
   try {
     const before = S.feed ? Object.keys(S.feed).length : -1;
     const d = await loadAuraFeed();
+    tkAlertCheck(d.items);
     $('#auraCount').textContent = isAuraChat(current()) ? '' : d.unread || '';
     // Da Aura aperta e c'e' un messaggio nuovo: lo si mostra subito
     if (isAuraChat(current()) && !S.stream && before >= 0 && d.items.length !== before) {
@@ -2528,7 +2575,7 @@ async function feedAct(it, action, mid, extra) {
 }
 const AURA_KIND = { voce: ['Voce', 'sound'], code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
   reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'], deadline: ['Scadenza', 'calendar'],
-  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'] };
+  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'], ticket: ['Ticket nuovo', 'ticket'] };
 const PARCEL_STEPS = ['ordinato', 'spedito', 'in consegna', 'consegnato'];
 const hhmm = (sec) => new Date(sec * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 const shortDay = (iso) => { const d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'numeric' }); };
@@ -2712,7 +2759,7 @@ function feedCard(it) {
   if (it.kind === 'homebase') return hbCard(it);
   const d = it.data || {};
   const done = { keep: 'Segnato come interessante', junk: 'Non ti interessa: d\'ora in poi le cestino', restored: 'Rimesse nella posta in arrivo',
-    dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti', added: 'Promemoria messo', delivered: 'Consegnato' }[it.status];
+    dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti', added: 'Promemoria messo', delivered: 'Consegnato', taken: 'Preso in carico' }[it.status];
   const chip = (txt, ic, fn, primary) => h('button', { class: 'au-chip' + (primary ? ' primary' : ''), html: (ic ? icon(ic, 'sm') : '') + txt, onclick: fn });
   const link = d.link ? h('a', { class: 'au-chip', href: d.link, target: '_blank', rel: 'noopener', html: icon('mail', 'sm') + 'Apri la mail' }) : null;
   const [kind, kic] = AURA_KIND[it.kind] || ['Aura', 'bell'];
@@ -2723,6 +2770,12 @@ function feedCard(it) {
     body.push(h('div', { class: 'au-code-row' }, h('span', { class: 'au-codebox mono', text: d.code }),
       chip('Copia', 'copy', () => navigator.clipboard.writeText(d.code).then(() => toast('Codice copiato')), true)));
     body.push(h('div', { class: 'au-sub', text: `Da ${d.from || ''}${d.subject ? ' · ' + d.subject : ''}` }));
+  } else if (it.kind === 'ticket') {
+    body.push(h('div', { class: 'au-ticket' }, h('b', { class: 'tnum', text: d.no || '' }), d.priority ? h('span', { class: 'au-sub', text: d.priority }) : null));
+    body.push(h('div', { class: 'au-title', text: d.title || title }));
+    if (d.client) body.push(h('div', { class: 'au-sub', text: d.client }));
+    chips.push(chip('Apri il ticket', 'ticket', () => tkOpenFromAlert(d.no), true));
+    if (!done && !d.mine) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }));
   } else if (it.kind === 'deadline') {
     const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
     body.push(h('div', { class: 'au-due' },
@@ -2874,7 +2927,11 @@ async function renderAuraSettings() {
 // Il telefono riceve le notifiche anche a pagina chiusa: il service worker resta registrato
 if ('serviceWorker' in navigator && window.isSecureContext) {
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
-  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'aura-open') { openAura(); refreshAuraBadge(); } });
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'aura-open') {
+    const q = new URL(e.data.url || '/', location.href).searchParams;
+    if (q.get('ticket') || q.get('tickets')) tkOpenFromAlert(q.get('ticket')); else openAura();
+    refreshAuraBadge();
+  } });
 }
 setInterval(() => { if (S.me && !document.hidden && !isAuraChat(current())) refreshAuraBadge(); }, 60000);
 setInterval(() => { if (S.me && !document.hidden && isAuraChat(current()) && !S.stream) refreshAuraBadge(); }, 10000);
@@ -4353,14 +4410,18 @@ function crmCard() {
     try { paint({ ...s, write: (await (await api('/api/crm/write', { enabled: !s.write }, { method: 'PUT' })).json()).write }); toast(s.write ? 'Scrittura sul CRM spenta' : 'Scrittura sul CRM accesa'); } catch (e) { toast(e.message); } } }, h('span'));
     return h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Chiudere i ticket e rispondere ai clienti' }),
       h('small', { text: s.write ? 'Acceso: i tasti nella sezione Ticket scrivono nel CRM. Aura prepara e ti mostra l\'anteprima: scrive solo quando premi il tasto sulla scheda, ogni volta.' : 'Spento: Aura legge soltanto, nel CRM non scrive niente.' })), sw); };
+  const notifyRow = (s) => { const on = s.notify !== false; const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(on), 'aria-label': 'Avvisi per i ticket nuovi', onclick: async () => {
+    try { paint({ ...s, notify: (await (await api('/api/crm/notify', { enabled: !on }, { method: 'PUT' })).json()).notify }); toast(on ? 'Avvisi dei ticket spenti' : 'Avvisi dei ticket accesi'); } catch (e) { toast(e.message); } } }, h('span'));
+    return h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Avvisi per i ticket nuovi' }),
+      h('small', { text: on ? 'Acceso: quando arriva un ticket non assegnato o assegnato a te, ti avviso qui, in «Da Aura» e sul telefono se hai attivato le notifiche. Di notte aspetto le 7.' : 'Spento: non ti avviso dei ticket nuovi.' })), sw); };
   const paint = (s) => {
     const was = S.me.crm;
     S.me.crm = s.linked; $('#ticketsBtn').classList.toggle('hidden', !s.linked);
     if (was !== s.linked && $('#brainPanel')?.children.length) { $('#brainPanel').replaceChildren(); renderBrainPanel(); }   // la linguetta Ticket compare o sparisce subito
-    if (s.managed) { box.replaceChildren(s.linked ? h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: s.url }))) : h('small', { class: 'cloud-note', text: 'Non configurato sul server.' }), s.linked ? writeRow(s) : ''); return; }
+    if (s.managed) { box.replaceChildren(s.linked ? h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: s.url }))) : h('small', { class: 'cloud-note', text: 'Non configurato sul server.' }), s.linked ? writeRow(s) : '', s.linked ? notifyRow(s) : ''); return; }
     if (s.linked) {
       box.replaceChildren(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'CRM collegato' }), h('small', { text: `${s.url} · ${s.user}` })),
-        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/crm/link', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })), writeRow(s));
+        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/crm/link', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })), writeRow(s), notifyRow(s));
       return;
     }
     const url = h('input', { class: 'ag-in', placeholder: 'https://crm.tuaazienda.it', 'aria-label': 'Indirizzo del CRM' }), usr = h('input', { class: 'ag-in', autocomplete: 'off', 'aria-label': 'Utente' });
