@@ -1991,11 +1991,44 @@ async function runTriage() {
 const TKP = { fid: null, q: '', all: false, sel: null, folders: null, rows: [], more: false, words: [], partial: false, key: '', stato: '', sla: '', pick: {}, sort: pref.get('tkOrder', 'modified'), qsort: 'rel', nav: [], scroll: 0, seq: 0, timer: 0 };
 const TKP_SORTS = [['rel', 'Più pertinenti'], ['modified', 'Ultima modifica'], ['sla', 'SLA a rischio'], ['created', 'Apertura'], ['client', 'Cliente']];
 const TKP_PICKS = [['client', 'Tutti i clienti'], ['owner', 'Tutti gli assegnati'], ['group', 'Tutti i gruppi'], ['kind_it', 'Tutti i tipi'], ['category_it', 'Tutte le categorie'], ['priority_it', 'Tutte le priorità']];
-function closeTickets() { $('#main').classList.remove('tickets-open'); clearTimeout(TKP.timer); }
+function closeTickets() { $('#main').classList.remove('tickets-open'); clearTimeout(TKP.timer); clearInterval(TKP.ticker); }
 async function openTickets() {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('tickets-open');
+  clearInterval(TKP.ticker); TKP.ticker = setInterval(tkpTick, 60000);
   await renderTickets(true);
+}
+// I numeri delle liste e l'elenco si leggono in momenti diversi: si scrivono senza ridisegnare la pagina, e l'elenco appena letto fa fede per la sua lista
+function tkpPaintCounts() {
+  const list = TKP.folders || [];
+  document.querySelectorAll('#ticketsView .tkp-f').forEach((b) => { const f = list.find((x) => x.id === Number(b.dataset.fid)), n = b.querySelector('.tkp-fc'); if (f && n && f.count != null) n.textContent = String(f.count); });
+  const label = (f) => `${f.nome}${f.count != null ? ` (${f.count})` : ''}`;
+  document.querySelectorAll('#ticketsView .tkp-pick option').forEach((o) => { const f = list.find((x) => x.id === Number(o.value)); if (f) o.textContent = label(f); });
+  const cur = list.find((x) => x.id === TKP.fid), shown = document.querySelector('#ticketsView .tkp-pickbox .dd-l');
+  if (cur && shown) shown.textContent = label(cur);
+}
+function tkpListCount(fid, rows, more) {
+  const f = TKP.folders?.find((x) => x.id === fid);
+  if (f && !more) { f.count = rows; tkpPaintCounts(); }
+}
+// ogni minuto, e dopo ogni modifica: nuovi numeri e, se è cambiato qualcosa, nuovo elenco (mai mentre si cerca o si sta scegliendo un filtro)
+async function tkpTick() {
+  if (!$('#main').classList.contains('tickets-open') || document.hidden || TKP.ticking) return;
+  TKP.ticking = true;
+  try {
+    const fresh = (await (await api('/api/crm/folders')).json()).folders;
+    (TKP.folders || []).forEach((f) => { const n = fresh.find((x) => x.id === f.id); if (n) f.count = n.count; });
+    tkpPaintCounts();
+    const results = document.querySelector('#ticketsView .tkp-results');
+    if (TKP.sel || TKP.q || TKP.all || !results || TKP.rows.length > 60) return;
+    const fid = TKP.fid, d = await (await api(`/api/crm/folder/${fid}`)).json();
+    if (fid !== TKP.fid || TKP.sel || TKP.q || TKP.all) return;
+    tkpListCount(fid, d.rows.length, d.more);
+    const mark = (rows) => rows.map((r) => `${r.no}|${r.status}|${r.modified}`).join();
+    if (mark(d.rows) === mark(TKP.rows) || document.querySelector('#ticketsView .tkp-filters [aria-expanded="true"]') || !results.isConnected) return;
+    Object.assign(TKP, { rows: d.rows, more: !!d.more });
+    tkpPaint(results, document.querySelector('#ticketsView .tkp-filters'), document.querySelector('#ticketsView .tkp-count'));
+  } catch {} finally { TKP.ticking = false; }
 }
 $('#ticketsBtn').onclick = openTickets;
 function tkpFiltersOff() { Object.assign(TKP, { stato: '', sla: '', pick: {} }); }
@@ -2096,6 +2129,7 @@ function tkpList(main) {
         const d = await (await api(`/api/crm/folder/${TKP.fid}`)).json();
         if (seq !== TKP.seq) return;
         Object.assign(TKP, { rows: d.rows, more: !!d.more, words: [], partial: false, deep: false });
+        tkpListCount(TKP.fid, d.rows.length, d.more);
       }
       TKP.key = key;
       tkpPaint(results, filters, count);
@@ -2104,6 +2138,7 @@ function tkpList(main) {
   if (TKP.key === `${TKP.fid}|${TKP.all}|${TKP.q}`) {   // tornando indietro da un ticket: stessa lista, stessi filtri, stesso punto
     tkpPaint(results, filters, count);
     $('#ticketsView').scrollTop = TKP.scroll;
+    tkpTick();
   } else return load();
 }
 function tkpVisible() {
@@ -2174,7 +2209,7 @@ function tkpPaint(results, filters, count) {
       try {
         const d = await (await api(`/api/crm/folder/${TKP.fid}?` + new URLSearchParams({ offset: TKP.rows.length }))).json();
         const seen = new Set(TKP.rows.map((r) => r.no));
-        TKP.rows = [...TKP.rows, ...d.rows.filter((r) => !seen.has(r.no))]; TKP.more = !!d.more; again();
+        TKP.rows = [...TKP.rows, ...d.rows.filter((r) => !seen.has(r.no))]; TKP.more = !!d.more; tkpListCount(TKP.fid, TKP.rows.length, TKP.more); again();
       } catch (err) { toast(err.message); e.target.disabled = false; } } }) : null,
     TKP.more && (active || sortNow !== 'modified') ? h('div', { class: 'tkp-note', text: `Filtri e ordine valgono sui ${all.length} ticket caricati finora.` }) : null].filter(Boolean));
 }
@@ -3422,8 +3457,9 @@ function tkActions(t, reload, manage) {
   const box = h('div', { class: 'tkb' }, h('div', { class: 'tkb-off', text: 'Carico le azioni…' }));
   const url = '/api/crm/ticket/' + encodeURIComponent(t.no);
   const after = async (msg) => {
-    TKP.folders = null; TK.folders = null; if (msg) toast(msg);
+    TKP.key = ''; TK.folders = null; if (msg) toast(msg);
     $('#tkAlert')?.remove();
+    tkpTick();
     loadAuraFeed().then(() => { if (isAuraChat(current())) renderThread(); }).catch(() => {});   // l'avviso del ticket se ne va anche da «Da Aura»
     await reload();
   };
