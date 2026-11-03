@@ -813,6 +813,7 @@ async def crm_folder(fid: int, limite: int = 60, offset: int = 0) -> list[dict]:
     return await _crm_page_rows(rows, uid)
 
 
+_CRM_FIND_SKIP = _CRM_STOP | set("non che per con una uno del dei nel sul dal gli le lo la il di da in su ma si ho ha".split())
 _CRM_FIND_WEIGHT = {"numero": 9, "titolo": 3, "cliente": 2, "contatto": 2, "descrizione": 1, "soluzione": 1}
 
 
@@ -829,9 +830,9 @@ def _crm_snippet(text: str, words: list[str], n: int = 170) -> str:
     return ("…" if start else "") + cut + ("…" if start + n < len(text) else "")
 
 
-async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
-    """La ricerca della pagina Ticket: numero, titolo, cliente, contatto, descrizione e soluzione, in una lista o in tutto il CRM.
-    Con più parole restano i ticket che ne hanno di più."""
+async def crm_find(q: str, fid: int | None = None, limite: int = 60, deep: bool = True) -> dict:
+    """La ricerca della pagina Ticket: numero, titolo, cliente, contatto e, con «deep», richiesta e soluzione (lì il CRM è lento),
+    in una lista o in tutto il CRM. Con più parole restano i ticket che ne hanno di più."""
     _, uid = await _crm_sess()
     f = None
     if fid is not None:
@@ -840,7 +841,8 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
             raise ValueError("cartella sconosciuta")
     base = _crm_where(f, uid) if f else []
     q = str(q or "").strip()
-    words = list(dict.fromkeys(re.findall(r"[\wàèéìòù.@-]{2,}", q.lower())))[:4]
+    words = list(dict.fromkeys(re.findall(r"[\wàèéìòù.@-]{2,}", q.lower())))
+    words = ([w for w in words if w not in _CRM_FIND_SKIP] or words)[:4]
     num = re.fullmatch(r"#?(?:tk-?)?(?:(\d{4})-)?0*(\d{1,6})", q.lower())
     if not words and not num:
         return {"rows": [], "words": []}
@@ -862,16 +864,17 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
             hits.setdefault(t["id"], {}).setdefault(word, []).append(label)
 
     jobs = []
-    if num:
+    if num:   # un numero che esiste basta: il resto non serve
         pat = f"TK-{num.group(1)}-{int(num.group(2)):06d}" if num.group(1) else f"%-{int(num.group(2)):06d}"
-        jobs.append(run(f"ticket_no LIKE '{pat}'", words[0], "numero"))
-    for w in words:
+        await run(f"ticket_no LIKE '{pat}'", words[0], "numero")
+    for w in [] if found else words:
         like = _crm_like(w)
         if not like:
             continue
         jobs.append(run(f"ticket_title LIKE '%{like}%'", w, "titolo"))
-        jobs.append(run(f"{CRM_DESC} LIKE '%{like}%'", w, "descrizione", f"{_CRM_PAGE_F},{CRM_DESC}"))
-        jobs.append(run(f"{CRM_SOLUTION} LIKE '%{like}%'", w, "soluzione", f"{_CRM_PAGE_F},{CRM_SOLUTION}"))
+        if deep:
+            jobs.append(run(f"{CRM_DESC} LIKE '%{like}%'", w, "descrizione", f"{_CRM_PAGE_F},{CRM_DESC}"))
+            jobs.append(run(f"{CRM_SOLUTION} LIKE '%{like}%'", w, "soluzione", f"{_CRM_PAGE_F},{CRM_SOLUTION}"))
         flat = _flat(w)
         accounts = [i for i, n in _crm_accounts().items() if flat in _flat(n)][:40]
         if accounts:
@@ -889,6 +892,7 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
                 jobs.append(run("contact_id IN (" + ",".join(f"'{_crm_q(i)}'" for i in list(contacts)[:40]) + ")", w, "contatto"))
     for i in range(0, len(jobs), 6):
         await asyncio.gather(*jobs[i:i + 6])
+    exact = bool(num and found and not jobs)
     if f and f.get("non_assegnati"):
         keep = {t["id"] for t in _crm_group_only(list(found.values()), uid)}
         found = {k: v for k, v in found.items() if k in keep}
@@ -909,7 +913,7 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
                 if label in where:
                     r.update(match=label, snippet=_crm_snippet(_crm_clean(t.get(field), 20000), words))
                     break
-    return {"rows": rows, "words": words, "partial": bool(best) and top < len(words)}
+    return {"rows": rows, "words": words, "partial": bool(best) and top < len(words) and not exact, "exact": exact}
 
 
 async def crm_related(no: str, client: str = "", contact: str = "") -> list[dict]:
@@ -964,11 +968,11 @@ async def crm_folder_api(fid: int, offset: int = 0, _: dict = Depends(require_us
 
 
 @app.get("/api/crm/search")
-async def crm_search_api(q: str = "", fid: int | None = None, _: dict = Depends(require_user)):
+async def crm_search_api(q: str = "", fid: int | None = None, deep: int = 1, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
-        return await crm_find(q, fid)
+        return await crm_find(q, fid, deep=bool(deep))
     except ValueError as e:
         raise HTTPException(502, str(e))
 

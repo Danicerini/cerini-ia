@@ -2080,7 +2080,7 @@ function tkpList(main) {
     TKP.key = ''; TKP.scroll = 0;
     filters.replaceChildren(); count.textContent = '';
     if (TKP.all && !TKP.q) {
-      Object.assign(TKP, { rows: [], more: false, words: [] });
+      Object.assign(TKP, { rows: [], more: false, words: [], deep: false });
       results.replaceChildren(h('div', { class: 'tkp-hint' }, h('b', { text: 'Cerca in tutti i ticket, aperti e chiusi, anche dei colleghi' }),
         h('span', { text: 'Scrivi un numero (5819), un cliente, un contatto o le parole del problema (outlook non sincronizza): guardo anche nella richiesta e nella soluzione.' })));
       return;
@@ -2088,13 +2088,25 @@ function tkpList(main) {
     results.replaceChildren(tkpSkeleton(7));
     try {
       if (TKP.q) {
-        const d = await (await api('/api/crm/search?' + new URLSearchParams({ q: TKP.q, ...(TKP.all ? {} : { fid: TKP.fid }) }))).json();
+        // prima numero, titolo, cliente e contatto, che arrivano subito; poi anche dentro richieste e soluzioni, che nel CRM sono lente
+        const ask = async (deep) => (await api('/api/crm/search?' + new URLSearchParams({ q: TKP.q, deep: deep ? 1 : 0, ...(TKP.all ? {} : { fid: TKP.fid }) }))).json();
+        const take = (d, deep) => Object.assign(TKP, { rows: d.rows, more: false, words: d.words || [], partial: !!d.partial, deep });
+        const d = await ask(false);
         if (seq !== TKP.seq) return;
-        Object.assign(TKP, { rows: d.rows, more: false, words: d.words || [], partial: !!d.partial });
+        take(d, !d.exact);
+        TKP.key = key;
+        tkpPaint(results, filters, count);
+        if (d.exact) return;
+        let full = null;
+        try { full = await ask(true); } catch {}
+        if (seq !== TKP.seq) return;
+        if (full) take(full, false); else TKP.deep = false;
+        if (results.isConnected) tkpPaint(results, filters, count);
+        return;
       } else {
         const d = await (await api(`/api/crm/folder/${TKP.fid}`)).json();
         if (seq !== TKP.seq) return;
-        Object.assign(TKP, { rows: d.rows, more: !!d.more, words: [], partial: false });
+        Object.assign(TKP, { rows: d.rows, more: !!d.more, words: [], partial: false, deep: false });
       }
       TKP.key = key;
       tkpPaint(results, filters, count);
@@ -2137,6 +2149,7 @@ function tkpPaint(results, filters, count) {
       h('select', { class: 'tkp-sel', 'aria-label': 'Ordina per', onchange: (e) => { if (TKP.q) TKP.qsort = e.target.value; else { TKP.sort = e.target.value; pref.set('tkSort', TKP.sort); } again(); } },
         ...TKP_SORTS.filter(([v]) => TKP.q || v !== 'rel').map(([v, l]) => h('option', { value: v, selected: sortNow === v ? true : null, text: 'Ordina: ' + l.toLowerCase() }))),
       active ? h('button', { class: 'tkp-off', text: 'Togli i filtri', onclick: () => { tkpFiltersOff(); again(); } }) : null));
+  if (!all.length && TKP.deep) { results.replaceChildren(h('div', { class: 'tkp-note', text: 'Cerco dentro richieste e soluzioni…' }), tkpSkeleton(3)); return; }
   if (!all.length) {
     results.replaceChildren(h('div', { class: 'tkp-hint' }, h('b', { text: TKP.q ? `Nessun ticket per «${TKP.q}»` : 'Lista vuota' }),
       h('span', { text: TKP.q ? (TKP.all ? 'Prova con meno parole o con il cognome del contatto.' : 'Non è in questa lista: prova «In tutto il CRM».') : 'Non ci sono ticket qui.' })));
@@ -2158,7 +2171,7 @@ function tkpPaint(results, filters, count) {
       h('small', { class: 'tkp-when tnum', title: `Ultima modifica ${r.modified}`, text: tkDay(r.modified) }));
   };
   results.replaceChildren(...[
-    TKP.partial ? h('div', { class: 'tkp-note', text: 'Nessun ticket ha tutte le parole: questi ne hanno una parte.' }) : null,
+    TKP.deep ? h('div', { class: 'tkp-note', text: 'Cerco anche dentro richieste e soluzioni…' }) : TKP.partial ? h('div', { class: 'tkp-note', text: 'Nessun ticket ha tutte le parole: questi ne hanno una parte.' }) : null,
     h('div', { class: 'tkp-list' },
       h('div', { class: 'tkp-thead', 'aria-hidden': 'true' }, ...['N.', 'Ticket', 'Stato', 'Scadenza', 'Assegnato a', 'Modif.'].map((x) => h('span', { text: x }))),
       ...rows.map(row)),
