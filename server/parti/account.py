@@ -139,6 +139,8 @@ def _acct_cmd(p: str, model: str, run: Path, system_file: Path, image_files: lis
            "-c", f'model_instructions_file="{system_file}"']
     for f in _CODEX_OFF:
         cmd += ["--disable", f]
+    if web:   # in chat: di base Codex ragiona e scrive al minimo. Una domanda semplice resta veloce lo stesso; i lavori di sottofondo restano leggeri
+        cmd += ["-c", f'model_reasoning_effort="{os.environ.get("ACCOUNT_EFFORT", "high")}"', "-c", 'model_verbosity="medium"']
     for f in image_files:
         cmd += ["--image", str(f)]
     return cmd + ["-"]
