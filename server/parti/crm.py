@@ -1807,7 +1807,7 @@ async def crm_feed_sync(user: dict) -> int:
             return 0
         _, uid = await _crm_sess()
         person = uid.split("x")[0] + "x"
-        nos = ",".join(f"'{_crm_q(n)}'" for n in by_no)
+        nos = ",".join(f"'{_crm_like(n)}'" for n in by_no)
         settled = []
         for t in await _crm_get("query", query=f"SELECT ticket_no,ticketstatus,assigned_user_id FROM HelpDesk WHERE ticket_no IN ({nos}) LIMIT 100;"):
             who, st = str(t.get("assigned_user_id") or ""), t.get("ticketstatus")
