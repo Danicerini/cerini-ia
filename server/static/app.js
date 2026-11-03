@@ -1167,10 +1167,11 @@ function renderComposer() {
   const s = S.status, m = activeModel(), streaming = !!S.stream;
   const online = canChat();
   const send = $('#sendBtn');
-  send.innerHTML = streaming ? '<span class="stop"></span>' : icon('up');
-  send.setAttribute('aria-label', streaming ? 'Interrompi' : 'Invia');
   const uploading = (S.files || []).some((f) => f.uploading);
-  send.disabled = !streaming && (!online || !m || uploading || (!input.value.trim() && !S.attachments.length && !(S.files || []).length));
+  const typed = !!(input.value.trim() || S.attachments.length || (S.files || []).length);
+  send.innerHTML = streaming && !typed ? '<span class="stop"></span>' : icon('up');
+  send.setAttribute('aria-label', !streaming ? 'Invia' : typed ? 'Manda dopo questa risposta' : 'Interrompi');
+  send.disabled = !(streaming && !typed) && (!online || !m || uploading || (!input.value.trim() && !S.attachments.length && !(S.files || []).length));
   $('#attachBtn').classList.remove('hidden');
   const mic = $('#micBtn');
   mic.classList.toggle('hidden', !S.me?.voice || !navigator.mediaDevices || !window.MediaRecorder);
@@ -1184,6 +1185,12 @@ function renderComposer() {
   tb.setAttribute('aria-pressed', S.think);
   const att = $('#attachments');
   S.files = S.files || [];
+  // i messaggi scritti mentre Aura risponde: partono uno alla volta, appena ha finito
+  let queued = $('#queued');
+  if (!queued) { queued = h('div', { id: 'queued' }); att.before(queued); }
+  const waiting = S.stream?.queue || [];
+  queued.replaceChildren(...waiting.map((q, i) => h('div', { class: 'queued' }, h('span', { class: 'queued-l', text: 'Dopo questa risposta' }), h('span', { class: 'queued-t', text: q.content || 'Allegato' }),
+    h('button', { type: 'button', 'aria-label': 'Togli dalla coda', html: icon('x', 'sm'), onclick: () => { waiting.splice(i, 1); renderComposer(); } }))));
   att.classList.toggle('hidden', !S.attachments.length && !S.files.length);
   att.replaceChildren(...S.attachments.map((src, i) => h('div', { class: 'att' }, h('img', { src, alt: '' }),
     h('button', { type: 'button', 'aria-label': 'Rimuovi immagine', html: icon('x'), onclick: () => { S.attachments.splice(i, 1); const im = S.files.filter((f) => f.image)[i]; if (im) S.files.splice(S.files.indexOf(im), 1); renderComposer(); } }))),
@@ -1275,9 +1282,9 @@ function shrink(file, max = 1536) {
 
 comp.addEventListener('submit', (e) => {
   e.preventDefault();
-  if (S.stream) { S.stream.controller.abort(); return; }
   const text = input.value.trim();
   S.files = S.files || [];
+  if (S.stream && !text && !S.attachments.length && !S.files.length) { S.stream.controller.abort(); return; }
   if (S.files.some((f) => f.uploading)) return;
   if ((!text && !S.attachments.length && !S.files.length) || !canChat() || !activeModel()) return;
   let c = current();
@@ -1290,6 +1297,11 @@ comp.addEventListener('submit', (e) => {
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
   if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
+  if (S.stream) {   // sta ancora rispondendo: Invio non deve fermarlo
+    S.stream.queue.push(msg);
+    input.value = ''; S.attachments = []; S.files = []; autosize(); renderComposer();
+    return;
+  }
   c.messages.push(msg);
   if (c.title === 'Nuova chat') c.title = (text || S.files[0]?.name || 'Immagine').replace(/\s+/g, ' ').slice(0, 48);
   input.value = ''; S.attachments = []; S.files = []; autosize();
@@ -4433,7 +4445,9 @@ async function run(chat) {
   // Lo spostamento in cima della chat la mostra come "recente" nella barra laterale
   S.chats = [chat, ...S.chats.filter((c) => c !== chat)];
   const controller = new AbortController();
-  S.streams.set(chat.id, { chatId: chat.id, controller });
+  const entry = { chatId: chat.id, controller, queue: [] };
+  S.streams.set(chat.id, entry);
+  let ended = 'ok';
   renderAll(); scrollToBottom(true);
 
   // Al modello vanno solo i messaggi veri (utente, assistente, esiti degli strumenti), non le schede dell'interfaccia
@@ -4521,8 +4535,14 @@ async function run(chat) {
       schedule();
     }
   } catch (err) {
-    if (err.name === 'AbortError') { if (reply) reply.stats = 'Interrotta'; }
-    else chat.messages.push({ role: 'error', content: friendlyError(err.message) });
+    if (err.name === 'AbortError') {
+      ended = 'stop';
+      if (reply) {
+        reply.stats = 'Interrotta';
+        // niente sparisce in silenzio: un'azione può essere già partita prima dello stop
+        if (!reply.content && !reply.thinking && !reply.tool_calls) reply.content = '_Risposta interrotta. Se avevi chiesto un\'azione, controlla se è già stata fatta._';
+      }
+    } else { ended = 'error'; chat.messages.push({ role: 'error', content: friendlyError(err.message) }); }
   }
   if (frame) cancelAnimationFrame(frame);
   if (reply) {
@@ -4536,6 +4556,18 @@ async function run(chat) {
   if (S.currentId === chat.id) keepFollowing();
   refresh();
   if (S.currentId === chat.id) voiceStreamDone(chat);
+  const next = entry.queue.shift();
+  if (!next) return;
+  if (ended !== 'ok') {   // fermata o andata male: quello che aspettava torna da scrivere, non parte da solo
+    if (S.currentId === chat.id && !input.value.trim()) { input.value = [next, ...entry.queue].map((m) => m.content).filter(Boolean).join('\n'); S.attachments = next.images || []; S.files = next.files || []; autosize(); renderComposer(); }
+    return;
+  }
+  chat.messages.push(next);
+  saveChat(chat);
+  const rest = entry.queue;
+  run(chat);
+  S.streams.get(chat.id)?.queue.push(...rest);
+  renderComposer();
 }
 function friendlyError(msg) {
   if (/network error|Failed to fetch|NetworkError|\b52[2-4]\b/i.test(msg)) return 'La connessione si è interrotta prima della risposta. Riprova: se un’azione era partita, controlla prima se è già stata fatta.';

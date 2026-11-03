@@ -2091,6 +2091,11 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .cloud-pick span { color: var(--text-3); font-size: 11.5px; }
 .cloud-pick:hover { border-color: var(--accent); }
 .cloud-pick.on { border-color: var(--accent); background: var(--accent-soft); }
+.queued { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 5px 6px 5px 12px; border-radius: 10px; background: var(--hover); font-size: 13px; }
+.queued-l { flex: none; font-size: 12px; color: var(--text-3); }
+.queued-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queued button { flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 7px; background: none; color: var(--text-3); cursor: pointer; }
+.queued button:hover { background: var(--border); color: var(--text); }
 #brainResize { display: none; }
 .bp-cal { max-width: 340px; margin-left: auto; margin-right: auto; }
 @media (min-width: 821px) {
