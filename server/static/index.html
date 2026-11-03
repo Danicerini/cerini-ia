@@ -661,7 +661,7 @@ button:disabled { cursor: default; }
 #main.tickets-open .center-wrap, #main.tickets-open #toBottom, #main.tickets-open #modelBtn, #main.tickets-open #brainToggle { display: none; }
 /* qui serve tutta la larghezza: il pannello del cervello torna appena si esce */
 #app.brain-on #main.tickets-open ~ #brainPanel { display: none; }
-.tkp-wrap { max-width: 1400px; margin: 0 auto; padding: 18px 22px 60px; display: grid; grid-template-columns: 216px minmax(0, 1fr); gap: 24px; align-items: start; }
+.tkp-wrap { max-width: 1560px; margin: 0 auto; padding: 18px 22px 60px; display: grid; grid-template-columns: 196px minmax(0, 1fr); gap: 18px; align-items: start; }
 .tkp-side { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; max-height: calc(100dvh - 24px); overflow-y: auto; }
 .tkp-fh { font-size: 11.5px; font-weight: 700; letter-spacing: .08em; color: var(--text-3); padding: 14px 10px 6px; }
 .tkp-fh:first-child { padding-top: 4px; }
@@ -720,7 +720,7 @@ button:disabled { cursor: default; }
 @media (prefers-reduced-motion: reduce) { .tkp-skel i { animation: none; } }
 /* l'elenco */
 .tkp-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; }
-.tkp-thead, .tkp-row { display: grid; grid-template-columns: 54px minmax(0, 1fr) 150px 118px 136px 46px; gap: 12px; align-items: center; padding-inline: 14px; }
+.tkp-thead, .tkp-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 138px 124px 104px 104px 104px 40px; gap: 12px; align-items: center; padding-inline: 14px; }
 .tkp-thead { height: 34px; font-size: 11.5px; font-weight: 600; color: var(--text-3); background: var(--hover); }
 .tkp-thead span:last-child { text-align: right; }
 .tkp-row { width: 100%; padding-block: 10px; border: 0; border-top: 1px solid var(--border); background: transparent; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
@@ -728,7 +728,12 @@ button:disabled { cursor: default; }
 .tkp-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .tkp-no { font-size: 12.5px; font-weight: 600; color: var(--text-3); }
 .tkp-t { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-.tkp-t b { font-weight: 550; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkp-t b { font-weight: 550; font-size: 14px; line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.tkp-pair { display: flex; flex-direction: column; min-width: 0; font-size: 12.5px; color: var(--text-2); }
+.tkp-pair > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkp-pair small { font-size: 12px; color: var(--text-3); }
+.tkp-c1, .tkp-c2, .tkp-c3 { min-width: 0; }
+.tkp-sla { font-size: 12px; line-height: 1.3; color: var(--text-3); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tkp-sub { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tkp-snip { margin-top: 3px; font-size: 12.5px; line-height: 1.4; color: var(--text-2); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .tkp-snip em { font-style: normal; color: var(--text-3); }
@@ -805,7 +810,7 @@ button:disabled { cursor: default; }
 .tkp-relt b { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tkp-relt small { font-size: 11.5px; color: var(--text-3); }
 /* con poco spazio: le colonne dell'elenco diventano righe, i dati del ticket vanno sotto */
-@container (max-width: 860px) {
+@container (max-width: 900px) {
   .tkp-thead { display: none; }
   .tkp-row { grid-template-columns: auto minmax(0, 1fr) auto; gap: 3px 10px; padding-block: 11px; }
   .tkp-row:first-of-type { border-top: 0; }
@@ -813,8 +818,8 @@ button:disabled { cursor: default; }
   .tkp-st { grid-column: 2; grid-row: 1; flex-direction: row; align-items: center; gap: 6px; }
   .tkp-when { grid-column: 3; grid-row: 1; }
   .tkp-t { grid-column: 1 / -1; grid-row: 2; margin-top: 3px; }
-  .tkp-own { grid-column: 1 / 3; grid-row: 3; margin-top: 3px; }
-  .tkp-due { grid-column: 3; grid-row: 3; margin-top: 3px; text-align: right; align-self: center; }
+  .tkp-own { grid-column: 1 / -1; grid-row: 3; margin-top: 3px; }
+  .tkp-c1, .tkp-c2, .tkp-c3 { display: none; }
   .tkp-grid { grid-template-columns: minmax(0, 1fr); }
   .tkp-props { position: static; max-height: none; overflow: visible; }
 }

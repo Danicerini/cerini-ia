@@ -382,12 +382,21 @@ def crm_link(tid: str) -> str:
     return f"{url}/index.php?module=HelpDesk&view=Detail&record={str(tid).split('x')[-1]}" if url else ""
 
 
+def _crm_local(ts) -> str:
+    """Creazione, modifica e commenti: il CRM li dà in UTC (ricezione e scadenza invece sono già in ora italiana)."""
+    ts = str(ts or "")[:16]
+    try:
+        return datetime.fromisoformat(ts + "+00:00").astimezone(_rome()).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return ts
+
+
 async def _crm_row(t: dict, uid: str) -> dict:
     st = t.get("ticketstatus", "")
     return {"id": t.get("id", ""), "no": t.get("ticket_no", ""), "title": _html.unescape(t.get("ticket_title", "")),
             "status": st, "status_it": await _crm_status_it(st), "done": st in CRM_DONE,
-            "client": await _crm_name(t.get("parent_id")), "created": (t.get("createdtime") or "")[:16],
-            "modified": (t.get("modifiedtime") or "")[:16], "closed": t.get("data_chiusura_ticket") or "",
+            "client": await _crm_name(t.get("parent_id")), "created": _crm_local(t.get("createdtime")),
+            "modified": _crm_local(t.get("modifiedtime")), "closed": t.get("data_chiusura_ticket") or "",
             "priority": t.get("ticketpriorities", ""), "mine": t.get("assigned_user_id") == uid, "link": crm_link(t.get("id", ""))}
 
 
@@ -480,13 +489,26 @@ def _crm_when(day, hour="") -> str:
     return f"{day} {str(hour or '')[:5]}".strip() if day else ""
 
 
+async def _crm_labels() -> dict:
+    """I nomi che i campi a scelta hanno nel CRM (Normal si legge «Normale»)."""
+    try:
+        return {k: {x["value"]: x["label"] for x in v} for k, v in (await crm_options())["picks"].items()}
+    except ValueError:
+        return {}
+
+
+def _crm_labelled(labels: dict, t: dict) -> dict:
+    lab = lambda field: _html.unescape(str(labels.get(field, {}).get(t.get(field, ""), t.get(field, "")) or ""))
+    return {"priority_it": lab("ticketpriorities"), "category_it": lab("ticketcategories"), "kind_it": lab("tipo_intervento"), "group": lab("gruppo_di_supporto")}
+
+
 async def _crm_more(t: dict) -> dict:
     """Quello che serve alla pagina del ticket e non agli strumenti: contatto con i recapiti, contratto, SLA, date complete."""
     contact, contract, place, sla, parent = await asyncio.gather(*[_crm_get_quiet(t.get(k)) for k in ("contact_id", "contratto_di_servizio", "sede", "sla", "ticket_principale")])
     product, by = await asyncio.gather(_crm_name(t.get("product_id")), _crm_name(t.get("modifiedby")))
-    closed = bool(t.get("data_chiusura_ticket"))
+    closed, labels = bool(t.get("data_chiusura_ticket")), await _crm_labels()
     return {
-        "client_id": t.get("parent_id", ""), "contact_id": t.get("contact_id", ""), "group": _html.unescape(t.get("gruppo_di_supporto", "") or ""),
+        **_crm_labelled(labels, t), "client_id": t.get("parent_id", ""), "contact_id": t.get("contact_id", ""),
         "contact_info": {k: contact.get(k, "") for k in ("email", "phone", "mobile", "mansione")}, "contact_account": contact.get("account_id", ""),
         "cc": t.get("contatti_in_cc", ""), "place": _html.unescape(place.get("label", "") or ""), "product": product,
         "contract": {"name": _html.unescape(contract.get("subject") or contract.get("label") or ""), "no": contract.get("contract_no", ""), "status": contract.get("contract_status", ""),
@@ -537,7 +559,7 @@ async def crm_detail(ref: str, more: bool = False) -> dict:
             _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
         who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
-                         "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
+                         "at": _crm_local(c.get("createdtime")), "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
     r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
              taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 20000 if more else 2500),
@@ -770,13 +792,11 @@ async def _crm_page_rows(tickets: list[dict], uid: str) -> list[dict]:
     names = [x for x in names if _crm_real_id(x) and x not in _CRM_NAMES]
     for i in range(0, len(names), 8):
         await asyncio.gather(*[_crm_name(x) for x in names[i:i + 8]])
-    out = []
+    out, labels = [], await _crm_labels()
     for t in tickets:
         r, c = await _crm_row(t, uid), _CRM_CONTACTS.get(t.get("contact_id")) or {}
         r.update(owner="te" if r["mine"] else await _crm_name(t.get("assigned_user_id")), contact=c.get("name", ""),
-                 client=r["client"] or await _crm_name(c.get("account")), group=_html.unescape(t.get("gruppo_di_supporto", "") or ""),
-                 due=_crm_when(t.get("data_scadenza_ricezione"), t.get("orario_scadenza_ricezione")), sla=t.get("stato_sla", ""), sla_type=t.get("tipo_sla", ""),
-                 category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""))
+                 client=r["client"] or await _crm_name(c.get("account")), sla=t.get("stato_sla", ""), sla_type=t.get("tipo_sla", ""), **_crm_labelled(labels, t))
         out.append(r)
     return out
 

@@ -1988,8 +1988,9 @@ async function runTriage() {
 // ================================================================== ticket (pagina intera)
 // A sinistra le liste come nel CRM (Lista personale / Lista condivisa). Al centro l'elenco con ricerca e filtri,
 // oppure il ticket aperto: richiesta e cronologia da una parte, dati del cliente, SLA e gestione dall'altra.
-const TKP = { fid: null, q: '', all: false, sel: null, folders: null, rows: [], more: false, words: [], partial: false, key: '', stato: '', gruppo: '', cliente: '', late: false, sort: pref.get('tkSort', 'modified'), qsort: 'rel', nav: [], scroll: 0, seq: 0, timer: 0 };
-const TKP_SORTS = [['rel', 'Più pertinenti'], ['modified', 'Ultima modifica'], ['due', 'Scadenza'], ['created', 'Apertura'], ['client', 'Cliente']];
+const TKP = { fid: null, q: '', all: false, sel: null, folders: null, rows: [], more: false, words: [], partial: false, key: '', stato: '', sla: '', pick: {}, sort: pref.get('tkOrder', 'modified'), qsort: 'rel', nav: [], scroll: 0, seq: 0, timer: 0 };
+const TKP_SORTS = [['rel', 'Più pertinenti'], ['modified', 'Ultima modifica'], ['sla', 'SLA a rischio'], ['created', 'Apertura'], ['client', 'Cliente']];
+const TKP_PICKS = [['client', 'Tutti i clienti'], ['owner', 'Tutti gli assegnati'], ['group', 'Tutti i gruppi'], ['kind_it', 'Tutti i tipi'], ['category_it', 'Tutte le categorie'], ['priority_it', 'Tutte le priorità']];
 function closeTickets() { $('#main').classList.remove('tickets-open'); clearTimeout(TKP.timer); }
 async function openTickets() {
   closeSide(); togglePicker(false); closeViews();
@@ -1997,7 +1998,7 @@ async function openTickets() {
   await renderTickets(true);
 }
 $('#ticketsBtn').onclick = openTickets;
-function tkpFiltersOff() { Object.assign(TKP, { stato: '', gruppo: '', cliente: '', late: false }); }
+function tkpFiltersOff() { Object.assign(TKP, { stato: '', sla: '', pick: {} }); }
 function tkpFolder(id) { Object.assign(TKP, { fid: id, sel: null, q: '', all: false, key: '', scroll: 0 }); tkpFiltersOff(); renderTickets(); }
 async function renderTickets(reloadFolders) {
   const root = $('#ticketsView');
@@ -2021,20 +2022,8 @@ async function renderTickets(reloadFolders) {
   return tkpList(main);
 }
 
-// ---- quando scade: testo e colore, dalla data del CRM
-function tkpDue(due, done) {
-  if (!due) return { text: '', tone: '' };
-  if (done) return { text: tkDay(due), tone: '' };
-  const at = new Date(due.replace(' ', 'T')), now = new Date(), hour = due.slice(11, 16);
-  if (isNaN(at)) return { text: due, tone: '' };
-  const mins = Math.round((at - now) / 60000);
-  const day0 = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const days = Math.round((day0(at) - day0(now)) / 86400000);
-  if (mins < 0) { const late = -mins; return { text: 'Scaduto da ' + (late < 60 ? `${late} min` : late < 2880 ? `${Math.round(late / 60)} h` : `${Math.round(late / 1440)} g`), tone: 'late' }; }
-  if (days === 0) return { text: `Oggi ${hour}`, tone: 'soon' };
-  if (days === 1) return { text: `Domani ${hour}`, tone: 'soon' };
-  return { text: `${tkDay(due)} ${hour}`.trim(), tone: '' };
-}
+// ---- l'allarme viene solo dallo stato SLA del CRM: la «Data scadenza» è la prima presa in carico e passa quasi subito anche nei ticket in regola
+const tkpSla = (state, done) => (done ? '' : { 'SLA scaduto': 'late', 'SLA in scadenza': 'soon' }[state] || '');
 const tkpInitials = (n) => (n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map((x) => x[0].toUpperCase()).join('');
 const tkpOwner = (r) => (r.owner === 'te' ? 'Tu' : r.owner || r.group || '—');
 // il testo con le parole cercate evidenziate (mai come HTML: viene dal CRM)
@@ -2119,10 +2108,11 @@ function tkpList(main) {
 }
 function tkpVisible() {
   const q = !!TKP.q, sort = q ? TKP.qsort : TKP.sort;
-  const rows = TKP.rows.filter((r) => (!TKP.stato || r.status === TKP.stato) && (!TKP.gruppo || r.group === TKP.gruppo) && (!TKP.cliente || r.client === TKP.cliente) && (!TKP.late || tkpDue(r.due, r.done).tone === 'late'));
+  const rows = TKP.rows.filter((r) => (!TKP.stato || r.status === TKP.stato) && (!TKP.sla || tkpSla(r.sla, r.done) === TKP.sla) && Object.entries(TKP.pick).every(([k, v]) => !v || r[k] === v));
+  const risk = (r) => ({ late: 0, soon: 1 }[tkpSla(r.sla, r.done)] ?? (r.done ? 3 : 2));
   const by = { modified: (a, b) => (b.modified || '').localeCompare(a.modified || ''), created: (a, b) => (b.created || '').localeCompare(a.created || ''),
     client: (a, b) => (a.client || '~').localeCompare(b.client || '~', 'it'),
-    due: (a, b) => (a.done - b.done) || (!a.due - !b.due) || (a.due || '').localeCompare(b.due || '') }[sort];
+    sla: (a, b) => (risk(a) - risk(b)) || (b.modified || '').localeCompare(a.modified || '') }[sort];
   return by ? [...rows].sort(by) : rows;
 }
 function tkpPaint(results, filters, count) {
@@ -2135,18 +2125,19 @@ function tkpPaint(results, filters, count) {
   const chip = (label, n, on, tone, click) => h('button', { class: 'tkp-chip' + (on ? ' on' : '') + (tone ? ' t-' + tone : ''), 'aria-pressed': String(on), onclick: click },
     tone ? h('i', { class: 'tk-dot' }) : null, label, h('span', { class: 'tnum', text: String(n) }));
   const states = [...tally('status').entries()].sort((a, b) => b[1] - a[1]);
-  const lateN = all.filter((r) => tkpDue(r.due, r.done).tone === 'late').length;
-  const pickF = (label, key, map) => map.size < 2 ? null : h('select', { class: 'tkp-sel', 'aria-label': label, onchange: (e) => { TKP[key] = e.target.value; again(); } },
-    h('option', { value: '', text: label }), ...[...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'it')).map(([v, n]) => h('option', { value: v, selected: TKP[key] === v ? true : null, text: `${v} (${n})` })));
+  const lateN = all.filter((r) => tkpSla(r.sla, r.done) === 'late').length, soonN = all.filter((r) => tkpSla(r.sla, r.done) === 'soon').length;
+  const pickF = ([key, label]) => { const map = tally(key); return map.size < 2 ? null : h('select', { class: 'tkp-sel', 'aria-label': label, onchange: (e) => { TKP.pick[key] = e.target.value; again(); } },
+    h('option', { value: '', text: label }), ...[...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'it')).map(([v, n]) => h('option', { value: v, selected: TKP.pick[key] === v ? true : null, text: `${v === 'te' ? 'Tu' : v} (${n})` }))); };
   const sortNow = TKP.q ? TKP.qsort : TKP.sort;
-  const active = TKP.stato || TKP.gruppo || TKP.cliente || TKP.late;
+  const active = TKP.stato || TKP.sla || Object.values(TKP.pick).some(Boolean);
   if (!all.length) filters.replaceChildren();
   else filters.replaceChildren(h('div', { class: 'tkp-chips' },
-    states.length > 1 ? chip('Tutti', all.length, !TKP.stato && !TKP.late, '', () => { TKP.stato = ''; TKP.late = false; again(); }) : null,
-    lateN ? chip('Scaduti', lateN, TKP.late, 'late', () => { TKP.late = !TKP.late; again(); }) : null,
+    states.length > 1 ? chip('Tutti', all.length, !TKP.stato && !TKP.sla, '', () => { TKP.stato = ''; TKP.sla = ''; again(); }) : null,
+    lateN ? chip('SLA scaduto', lateN, TKP.sla === 'late', 'late', () => { TKP.sla = TKP.sla === 'late' ? '' : 'late'; again(); }) : null,
+    soonN ? chip('SLA in scadenza', soonN, TKP.sla === 'soon', 'amber', () => { TKP.sla = TKP.sla === 'soon' ? '' : 'soon'; again(); }) : null,
     states.length > 1 ? states.map(([st, n]) => chip(all.find((r) => r.status === st).status_it, n, TKP.stato === st, tkTone(st), () => { TKP.stato = TKP.stato === st ? '' : st; again(); })) : null),
-    h('div', { class: 'tkp-tools' }, pickF('Tutti i gruppi', 'gruppo', tally('group')), pickF('Tutti i clienti', 'cliente', tally('client')),
-      h('select', { class: 'tkp-sel', 'aria-label': 'Ordina per', onchange: (e) => { if (TKP.q) TKP.qsort = e.target.value; else { TKP.sort = e.target.value; pref.set('tkSort', TKP.sort); } again(); } },
+    h('div', { class: 'tkp-tools' }, TKP_PICKS.map(pickF),
+      h('select', { class: 'tkp-sel', 'aria-label': 'Ordina per', onchange: (e) => { if (TKP.q) TKP.qsort = e.target.value; else { TKP.sort = e.target.value; pref.set('tkOrder', TKP.sort); } again(); } },
         ...TKP_SORTS.filter(([v]) => TKP.q || v !== 'rel').map(([v, l]) => h('option', { value: v, selected: sortNow === v ? true : null, text: 'Ordina: ' + l.toLowerCase() }))),
       active ? h('button', { class: 'tkp-off', text: 'Togli i filtri', onclick: () => { tkpFiltersOff(); again(); } }) : null));
   if (!all.length && TKP.deep) { results.replaceChildren(h('div', { class: 'tkp-note', text: 'Cerco dentro richieste e soluzioni…' }), tkpSkeleton(3)); return; }
@@ -2157,7 +2148,8 @@ function tkpPaint(results, filters, count) {
   }
   if (!rows.length) { results.replaceChildren(h('div', { class: 'tkp-hint' }, h('b', { text: 'Nessun ticket con questi filtri' }), h('span', { text: 'Togli un filtro per vederne altri.' }))); return; }
   const row = (r) => {
-    const due = tkpDue(r.due, r.done), tone = tkTone(r.status), who = tkpOwner(r);
+    const risk = tkpSla(r.sla, r.done), tone = tkTone(r.status), who = tkpOwner(r);
+    const pair = (a, b) => h('span', { class: 'tkp-pair' }, h('span', { text: a || '—', title: a || null }), b ? h('small', { text: b, title: b }) : null);
     const sub = [r.client, r.contact].filter(Boolean);
     const subEl = h('small', { class: 'tkp-sub' });
     tkpMark(subEl, sub.join(' · ') || 'Cliente non indicato', TKP.words);
@@ -2165,15 +2157,17 @@ function tkpPaint(results, filters, count) {
       h('span', { class: 'tkp-no tnum', text: tkNum(r.no) }),
       h('span', { class: 'tkp-t' }, tkpMark(h('b', {}), r.title, TKP.words), subEl,
         r.snippet ? h('span', { class: 'tkp-snip' }, h('em', { text: r.match === 'soluzione' ? 'Soluzione: ' : 'Richiesta: ' }), tkpMark(h('span', {}), r.snippet, TKP.words)) : null),
-      h('span', { class: 'tkp-st' }, h('span', { class: 'tk-tag', text: r.status_it }), r.priority && !/^(normal|normale|--)/i.test(r.priority) ? h('small', { text: r.priority }) : null),
-      h('span', { class: 'tkp-due tnum' + (due.tone ? ' ' + due.tone : ''), title: r.due ? `Scadenza ${r.due}` : null, text: due.text || (r.closed ? `Chiuso ${tkDay(r.closed)}` : '—') }),
-      h('span', { class: 'tkp-own', title: r.group || null }, h('i', { class: 'tkp-av' + (r.mine ? ' me' : ''), text: tkpInitials(who) }), h('span', { text: who })),
+      h('span', { class: 'tkp-st' }, h('span', { class: 'tk-tag', text: r.status_it }), risk ? h('small', { class: 'tkp-due ' + risk, text: r.sla }) : r.closed ? h('small', { class: 'tnum', text: `Chiuso ${tkDay(r.closed)}` }) : null),
+      h('span', { class: 'tkp-own', title: who }, h('i', { class: 'tkp-av' + (r.mine ? ' me' : ''), text: tkpInitials(who) }), h('span', { text: who })),
+      h('span', { class: 'tkp-c1' }, pair(r.kind_it, r.category_it)),
+      h('span', { class: 'tkp-c2' }, pair(r.group, r.priority_it)),
+      h('span', { class: 'tkp-c3' }, h('span', { class: 'tkp-sla', title: r.sla_type || null, text: r.sla_type || '—' })),
       h('small', { class: 'tkp-when tnum', title: `Ultima modifica ${r.modified}`, text: tkDay(r.modified) }));
   };
   results.replaceChildren(...[
     TKP.deep ? h('div', { class: 'tkp-note', text: 'Cerco anche dentro richieste e soluzioni…' }) : TKP.partial ? h('div', { class: 'tkp-note', text: 'Nessun ticket ha tutte le parole: questi ne hanno una parte.' }) : null,
     h('div', { class: 'tkp-list' },
-      h('div', { class: 'tkp-thead', 'aria-hidden': 'true' }, ...['N.', 'Ticket', 'Stato', 'Scadenza', 'Assegnato a', 'Modif.'].map((x) => h('span', { text: x }))),
+      h('div', { class: 'tkp-thead', 'aria-hidden': 'true' }, ...['N.', 'Ticket', 'Stato', 'Assegnato a', 'Tipo e categoria', 'Gruppo e priorità', 'Tipo SLA', 'Modif.'].map((x) => h('span', { text: x }))),
       ...rows.map(row)),
     TKP.more ? h('button', { class: 'btn sm tkp-morebtn', text: 'Carica altri', onclick: async (e) => {
       e.target.disabled = true;
@@ -2198,7 +2192,7 @@ async function tkpDetail(main, no) {
   const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => ask(text) });
   const pos = TKP.nav.indexOf(t.no);
   const step = (d, label, glyph) => { const n = TKP.nav[pos + d]; return h('button', { class: 'btn sm tkp-step', 'aria-label': label, title: label, text: glyph, disabled: n ? null : true, onclick: () => open(n) }); };
-  const due = tkpDue(t.due, t.done), sla = t.sla || {}, con = t.contract, info = t.contact_info || {};
+  const sla = t.sla || {}, risk = tkpSla(sla.state, t.done), con = t.contract, info = t.contact_info || {};
   const row = (label, val) => val ? h('div', { class: 'tkp-kv' }, h('dt', { text: label }), h('dd', {}, val)) : null;
   const card = (title, ...kids) => { const body = kids.flat().filter(Boolean); return body.length ? h('section', { class: 'tkp-card' }, h('h3', { text: title }), h('dl', {}, ...body)) : null; };
   const link = (href, text) => h('a', { href, text });
@@ -2209,7 +2203,7 @@ async function tkpDetail(main, no) {
   const docBox = t.documents?.length ? h('div', { class: 'tk-files' }) : null;
   setTimeout(() => tkFilesFill(t, descBox, boxes, docBox), 0);
   // gestione: in sola lettura finché il CRM non è aperto alla scrittura, poi tkActions mette i campi da cambiare
-  const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.fields?.ticketpriorities), row('Categoria', t.category), row('Tipo intervento', t.kind), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
+  const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.priority_it), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
   const actions = tkActions(t, () => tkpDetail(main, t.no), manage);
   // la cronologia: i commenti e i passaggi del ticket, in ordine di tempo
   const when = (s) => (s ? `${tkDay(s)} ${s.slice(11, 16)}`.trim() : '');
@@ -2235,7 +2229,7 @@ async function tkpDetail(main, no) {
       h('i', { class: 'tk-dot' }), h('span', { class: 'tkp-relt' }, h('b', { text: r.title }), h('small', { class: 'tnum', text: `${tkNum(r.no)} · ${r.status_it} · ${tkDay(r.modified)}` })))));
   }).catch(() => {});
   const used = Number(con?.used), total = Number(con?.total);
-  const conEnd = con?.end ? tkpDue(con.end, false) : null;
+  const conOver = !!con?.end && con.end < new Date().toISOString().slice(0, 10);
   main.replaceChildren(
     h('div', { class: 'tkp-nav' }, h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('span', { class: 'grow' }),
       pos >= 0 && TKP.nav.length > 1 ? h('span', { class: 'tkp-pager' }, step(-1, 'Ticket precedente', '‹'), h('small', { class: 'tnum', text: `${pos + 1} di ${TKP.nav.length}` }), step(1, 'Ticket successivo', '›')) : null,
@@ -2243,8 +2237,8 @@ async function tkpDetail(main, no) {
       t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null),
     h('header', { class: 'tkp-top' },
       h('div', { class: 'tkp-tags' }, h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
-        due.tone === 'late' ? h('span', { class: 'tk-tag t-late', text: due.text }) : due.tone === 'soon' ? h('span', { class: 'tk-tag t-amber', text: `Scade: ${due.text}` }) : null,
-        t.fields?.ticketpriorities && !/^(normal|normale|--)/i.test(t.fields.ticketpriorities) ? h('span', { class: 'tk-tag t-gray', text: t.fields.ticketpriorities }) : null,
+        risk ? h('span', { class: 'tk-tag ' + (risk === 'late' ? 't-late' : 't-amber'), text: sla.state }) : null,
+        t.priority_it && !/^(normal|normale)/i.test(t.priority_it) ? h('span', { class: 'tk-tag t-gray', text: t.priority_it }) : null,
         h('button', { class: 'tkp-numb tnum', title: 'Copia il numero', text: t.no, onclick: () => navigator.clipboard?.writeText(t.no).then(() => toast('Numero copiato')).catch(() => {}) })),
       h('h1', { text: t.title }),
       h('p', { class: 'tkp-who', text: [t.client, t.contact, t.owner === 'te' ? 'assegnato a te' : t.owner ? `assegnato a ${t.owner}` : ''].filter(Boolean).join(' · ') })),
@@ -2263,14 +2257,14 @@ async function tkpDetail(main, no) {
         docBox ? h('section', { class: 'tkp-box' }, h('h2', { text: `Documenti (${t.documents.length})` }), docBox) : null,
         h('section', { class: 'tkp-tlbox' }, h('div', { class: 'tkp-tlh' }, h('h2', { text: `Cronologia${shown.length ? ` · ${shown.length} comment${shown.length === 1 ? 'o' : 'i'}` : ''}` }), items.length > 2 ? order : null), timeline)),
       h('div', { class: 'tkp-props' },
-        card('Scadenza e SLA', t.due ? row('Scadenza', h('span', { class: 'tkp-due ' + due.tone, text: t.done ? `${tkDay(t.due)} ${t.due.slice(11, 16)}` : due.tone === 'late' ? `${due.text} (${tkDay(t.due)})` : due.text })) : null,
-          row('Stato SLA', sla.state), row('Tipo SLA', sla.type), row('Priorità SLA', sla.name), sla.in_time != null ? row('Chiuso', sla.in_time ? 'Entro lo SLA' : 'Fuori SLA') : null, row('Ore SLA', Number(sla.hours) ? String(sla.hours) : '')),
+        card('SLA', sla.state ? row('Stato SLA', h('span', { class: risk ? 'tkp-due ' + risk : '', text: sla.state })) : null, row('Tipo SLA', sla.type),
+          row('Data scadenza', when(t.due)), row('Priorità SLA', sla.name), sla.in_time != null ? row('Chiuso', sla.in_time ? 'Entro lo SLA' : 'Fuori SLA') : null, row('Ore SLA', Number(sla.hours) ? String(sla.hours) : '')),
         card('Cliente', row('Azienda', t.client), row('Contatto', t.contact), row('Ruolo', info.mansione), info.email ? row('Email', link('mailto:' + info.email, info.email)) : null,
           info.phone ? row('Telefono', link('tel:' + info.phone.replace(/\s/g, ''), info.phone)) : null, info.mobile ? row('Cellulare', link('tel:' + info.mobile.replace(/\s/g, ''), info.mobile)) : null,
           row('In copia', t.cc), row('Sede', t.place), row('Prodotto', t.product)),
         con ? card('Contratto', row('Nome', con.name), row('Numero', con.no), row('Tipo', con.type), row('Stato', con.status),
           total > 0 ? row('Unità', h('span', { class: 'tkp-units' }, h('span', { class: 'tnum', text: `${used || 0} su ${total}` }), h('i', { class: 'tkp-bar' + (used > total ? ' over' : '') }, h('b', { style: `width:${Math.min(100, Math.round((used || 0) / total * 100))}%` })))) : null,
-          conEnd?.text ? row('Scade', h('span', { class: conEnd.tone === 'late' ? 'tkp-due late' : '', text: tkDay(con.end) })) : null) : null,
+          con.end ? row('Scade', h('span', { class: conOver ? 'tkp-due late' : '', text: tkDay(con.end) })) : null) : null,
         h('section', { class: 'tkp-card' }, h('h3', { text: 'Gestione' }), manage),
         card('Date e lavoro', row('Ricevuto', when(t.received)), row('Creato', when(t.created)), row('Preso in carico', when(t.taken_at)), row('Chiuso', when(t.closed_at)),
           row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''),
