@@ -82,6 +82,7 @@ class ChatReq(BaseModel):
     think: bool | None = None
     chat_id: str | None = None   # la chat aperta: la memoria delle conversazioni cerca nelle ALTRE
     voice: bool = False          # modalita' conversazione: la risposta viene letta ad alta voce
+    private: bool = False        # scudo «Riservato»: i dati personali partono coperti (riservato.py)
 
 
 class ChatDoc(BaseModel):

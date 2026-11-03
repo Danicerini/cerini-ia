@@ -853,6 +853,8 @@ function paintAssistant(el, m, chat, isLastAssist) {
     el.append(h('div', { class: 'msg-actions assist' }, copyB, speakB,
       isLastAssist ? h('button', { class: 'icon-btn sm', title: 'Rigenera', 'aria-label': 'Rigenera risposta', html: icon('retry', 'sm'), onclick: () => regenerate(chat) }) : null,
       m.stats ? h('span', { class: 'stats tnum', text: m.stats }) : null));
+    if (m.masked) el.append(h('details', { class: 'mask-info' }, h('summary', { html: icon('shield', 'sm') + (m.masked.length ? `Riservato: ${m.masked.length === 1 ? 'un dato coperto' : m.masked.length + ' dati coperti'}` : 'Riservato: nessun dato riconosciuto') }),
+      m.masked.length ? h('ul', {}, ...m.masked.map((x) => h('li', {}, h('code', { text: x.label }), ` ${x.real}`))) : null));
   }
 }
 
@@ -1213,6 +1215,9 @@ function renderComposer() {
   const tb = $('#thinkBtn');
   tb.classList.toggle('hidden', !hasCap('thinking'));
   tb.setAttribute('aria-pressed', S.think);
+  const pb = $('#privBtn');   // serve solo col cloud: col modello locale i dati non escono di casa
+  pb.classList.toggle('hidden', !isCloudM(m));
+  pb.setAttribute('aria-pressed', !!S.priv);
   const att = $('#attachments');
   S.files = S.files || [];
   // i messaggi scritti mentre Aura risponde: partono uno alla volta, appena ha finito
@@ -1242,6 +1247,8 @@ function renderComposer() {
   if ($('#main').classList.contains('empty')) renderHero();
 }
 $('#thinkBtn').onclick = () => { S.think = !S.think; pref.set('think', S.think); renderComposer(); };
+S.priv = pref.get('riservato', false);
+$('#privBtn').onclick = () => { S.priv = !S.priv; pref.set('riservato', S.priv); renderComposer(); };
 $('#attachBtn').onclick = () => $('#fileInput').click();
 $('#fileInput').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
 function pastedFiles(dt) {
@@ -1326,6 +1333,7 @@ comp.addEventListener('submit', (e) => {
   c.messages = c.messages.filter((m) => m.role !== 'error');
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
+  if (S.attachments.length && S.priv && isCloudM(activeModel())) toast('Con Riservato acceso le foto non vanno al modello');
   if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
   if (S.stream) {   // sta ancora rispondendo: Invio non deve fermarlo
     S.stream.queue.push(msg);
@@ -4507,7 +4515,7 @@ async function run(chat) {
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
 
   try {
-    const r = await api('/api/chat', { model, messages: history, chat_id: chat.id, think: hasCap('thinking') && S.think ? true : undefined,
+    const r = await api('/api/chat', { model, messages: history, chat_id: chat.id, private: !!S.priv && isCloudM(model), think: hasCap('thinking') && S.think ? true : undefined,
       voice: Voice.on || undefined }, { signal: controller.signal });
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '';
@@ -4554,6 +4562,7 @@ async function run(chat) {
           reply.content += d.message.content;
           if (S.currentId === chat.id) voiceFeed(d.message.content);
         }
+        if (d.masked) reply.masked = d.masked;
         if (d.done) {
           const parts = [];
           if (d.eval_count && d.eval_duration) parts.push(`${(d.eval_count / (d.eval_duration / 1e9)).toFixed(1)} token/s`);

@@ -797,6 +797,14 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
 
     async def stream():
         try:
+            private = body.private and is_cloud(body.model)
+            if private:
+                try:
+                    ACT_MASK.set(mask_for(user, body.chat_id))
+                except Exception as e:   # meglio un errore che dati in chiaro
+                    print(f"Riservato: filtro non pronto: {type(e).__name__}", flush=True)
+                    yield ev(error="Modalità riservata: il filtro non ha funzionato e non ho mandato niente al modello. Riprova o spegni lo scudo.")
+                    return
             # Verifica rapida (ed eventuale ricerca del PC) prima di aprire lo stream
             if not is_cloud(body.model):
                 await ollama("GET", "/api/version", timeout=2.5)
@@ -805,6 +813,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             ctx = FREE_CTX if free else (CLOUD_CTX if is_cloud(body.model) else NUM_CTX)
             tools = tools_for(user) if not free and "tools" in await model_caps(body.model) else []
             tools = _topic_tools(tools, body.messages)
+            if private:   # la descrizione e le foto andrebbero al modello così come sono
+                tools = [t for t in tools if t["function"]["name"] != "immagine_crea"]
             if SMALLTALK_RE.fullmatch(next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "").strip()):
                 tools = []   # un saluto non ha bisogno di strumenti (e delle loro istruzioni): ~1/3 dei token
             skill = slash_skill(user, body.messages) if tools else None
@@ -865,6 +875,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             no_confirm = _wants_no_confirm(body.messages)
             if no_confirm:
                 sys_txt += "\n\nIn questo messaggio l'utente ha chiesto di NON chiedere conferma: le azioni vengono eseguite subito."
+            if private:
+                sys_txt += MASK_PROMPT
             # con un abbonamento non si paga a token: un limite stretto farebbe solo dimenticare la chat
             hist_ctx = (ACCOUNT_HISTORY_CTX if is_account() else min(ctx, CLOUD_HISTORY_CTX)) if is_cloud(body.model) else ctx
             msgs = [{"role": "system", "content": sys_txt}] + _fit_history(files_for_prompt(user, body.messages), len(sys_txt) + len(json.dumps(tools)), hist_ctx)
@@ -1524,6 +1536,7 @@ async def delete_chat(chat_id: str, user: dict = Depends(require_user)):
     with db() as c:
         c.execute("DELETE FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"]))
         c.execute("DELETE FROM chat_memory WHERE chat_id = ? AND user_id = ?", (chat_id, user["id"]))
+        c.execute("DELETE FROM chat_masks WHERE chat_id = ? AND user_id = ?", (chat_id, user["id"]))
     return {"ok": True}
 
 # -------------------------------------------------------------- amministra ---

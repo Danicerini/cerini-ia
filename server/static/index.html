@@ -2104,6 +2104,10 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .ask-card.closed .ask-o:not(.on) { opacity: .55; }
 .ask-more { display: flex; align-items: center; gap: 6px; }
 .ask-in { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--text); font: inherit; font-size: 14px; }
+.mask-info { margin-top: 2px; font-size: 12.5px; color: var(--text-3); }
+.mask-info summary { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; cursor: pointer; }
+.mask-info ul { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.mask-info code { color: var(--text-3); font-size: 12px; }
 .queued { display: flex; align-items: center; gap: 8px; margin: 0 0 6px; padding: 5px 6px 5px 12px; border-radius: 10px; background: var(--hover); font-size: 13px; }
 .queued-l { flex: none; font-size: 12px; color: var(--text-3); }
 .queued-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2242,6 +2246,7 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
           <div class="composer-bar">
             <button type="button" class="icon-btn" id="attachBtn" title="Allega file o immagini" aria-label="Allega file" data-icon="clip"></button>
             <button type="button" class="toggle hidden" id="thinkBtn" aria-pressed="false"><span data-icon="bulb"></span>Ragiona</button>
+            <button type="button" class="toggle hidden" id="privBtn" aria-pressed="false" title="I dati personali partono coperti verso il modello e tornano veri qui"><span data-icon="shield"></span>Riservato</button>
             <div class="grow"></div>
             <button type="button" class="icon-btn hidden" id="micBtn" title="Detta (parla e trascrivo)" aria-label="Detta un messaggio" data-icon="mic"></button>
             <button type="button" class="icon-btn hidden" id="voiceBtn" title="Conversa a voce con Aura" aria-label="Conversazione a voce" data-icon="waves"></button>
