@@ -643,11 +643,40 @@ function stepsEl(steps) {
   return h('div', { class: 'msg step' }, d);
 }
 
+// La domanda di Aura con le opzioni: la risposta è un messaggio normale, scelto qui o scritto nella casella in basso
+function questionEl(chat, m) {
+  const v = m.view, at = chat.messages.indexOf(m);
+  const closed = !!v.answer || chat.messages.slice(at + 1).some((x) => x.role === 'user');
+  const send = (text) => {
+    text = text.trim();
+    if (!text || closed) return;
+    v.answer = text; input.value = text; autosize(); renderComposer();
+    $('#composer').requestSubmit();
+  };
+  const picked = new Set();
+  const go = h('button', { class: 'btn sm primary', type: 'button', text: 'Rispondi', disabled: true, onclick: () => send([...picked].join(', ')) });
+  const option = (o) => h('button', { class: 'ask-o' + (v.answer === o.label || (v.answer || '').split(', ').includes(o.label) ? ' on' : ''), type: 'button', disabled: closed ? true : null, 'aria-pressed': v.multi ? 'false' : null,
+    onclick: (e) => {
+      if (!v.multi) return send(o.label);
+      const on = !picked.has(o.label);
+      if (on) picked.add(o.label); else picked.delete(o.label);
+      e.currentTarget.classList.toggle('on', on); e.currentTarget.setAttribute('aria-pressed', String(on));
+      go.disabled = !picked.size;
+    } }, h('b', { text: o.label }), o.detail ? h('small', { text: o.detail }) : null);
+  const other = h('input', { class: 'ask-in', type: 'text', placeholder: 'Altro: scrivi la tua risposta', 'aria-label': 'Un\'altra risposta', disabled: closed ? true : null,
+    oninput: (e) => { more.disabled = !e.target.value.trim(); },
+    onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); send(e.target.value); } } });
+  const more = h('button', { class: 'btn sm', type: 'button', text: 'Invia', disabled: true, onclick: () => send(other.value) });
+  return h('div', { class: 'ask-card' + (closed ? ' closed' : ''), role: 'group', 'aria-label': v.question }, h('p', { class: 'ask-q', text: v.question }),
+    h('div', { class: 'ask-os' }, ...v.options.map(option)),
+    closed ? null : h('div', { class: 'ask-more' }, v.multi ? go : null, other, more));
+}
+
 // Strumenti della memoria: i loro esiti non compaiono uno per uno nella chat, ma raccolti sotto la risposta del turno
 const READ_TOOLS = { homebase_scratchpad_archivio: 'tool', homebase_scratchpad_versioni: 'tool', cerca_memoria: 'brain', mail_cerca: 'mail', mail_leggi: 'mail', calendario_vedi: 'calendar', web_cerca: 'globe', web_leggi: 'globe', homebase_note: 'tool', homebase_nota: 'tool', homebase_cerca: 'tool', homebase_servizi: 'tool', homebase_rete: 'tool', homebase_scratchpad: 'tool', file_leggi: 'clip' };
 const MEMORY_TOOLS = ['ricorda', 'aggiorna_ricordo', ...Object.keys(READ_TOOLS)];
 // le letture con una scheda da vedere (ricerca e documenti della Homebase, chat WhatsApp) restano in vista
-const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image'];
+const SHOWN_VIEWS = ['hb', 'hb_doc', 'wa', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image', 'question'];
 const isMemoryTool = (m) => m.role === 'tool' && !SHOWN_VIEWS.includes(m.view?.kind) && (MEMORY_TOOLS.includes(m.tool_name) || m.undo?.type === 'memory' || m.undo?.type === 'memory_edit');
 const isMemoryOnlyCall = (m) => m.role === 'assistant' && m.tool_calls?.length && m.tool_calls.every((t) => MEMORY_TOOLS.includes(t.function?.name));
 const WORKING_LABEL = { homebase_procedura: 'Sto preparando la procedura con il tuo template… (può volerci un minuto)',
@@ -665,7 +694,7 @@ function groupMemoryNotes(msgs) {
     // il ragionamento dei passaggi nascosti (solo memoria) si somma a quello della risposta
     const hiddenMs = turn.filter((m) => isMemoryOnlyCall(m) && !m.content).reduce((s, m) => s + (m.thinkMs || 0), 0);
     // passaggi intermedi: strumenti senza una scheda propria e i messaggi dell'assistente prima della risposta
-    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image'];
+    const SHOWN = ['email', 'procedure', 'site', 'scratchpad', 'hb', 'wa', 'hb_doc', 'consuntivo', 'tickets', 'ticket', 'ticket_photos', 'image', 'question'];
     turn.forEach((m) => {
       m._step = m !== anchor && !m._streaming && ((m.role === 'tool' && !m.fromConfirm && !isMemoryTool(m) && !SHOWN.includes(m.view?.kind))
         || (m.role === 'assistant' && m.tool_calls?.length > 0 && !!anchor));
@@ -758,7 +787,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
       ? h('button', { class: 'tool-card link', title: 'Apri nel cervello', onclick: () => openBrainFile(m.open) }, h('span', { html: icon(tIcon, 'sm') }),
           h('span', { text: m.display || `Ha usato ${m.tool_name}` }), h('span', { class: 'tc-open', html: icon('chevron', 'sm') }))
       : h('div', { class: 'tool-card' + (m.undone ? ' undone' : '') }, h('span', { html: icon(tIcon, 'sm') }), h('span', { text: m.display || `Ha usato ${m.tool_name}` }), undo || calUndo);
-    return h('div', { class: 'msg step' }, m.view?.kind === 'consuntivo' ? null : card,   // la scheda dice gia' tutto
+    return h('div', { class: 'msg step' }, ['consuntivo', 'question'].includes(m.view?.kind) ? null : card,   // la scheda dice gia' tutto
       m.view?.kind === 'site' ? siteView(m.view) : m.view?.kind === 'scratchpad' ? scratchView(m.view) : m.view?.kind === 'hb' ? hbView(m.view)
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
@@ -767,6 +796,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
         : m.view?.kind === 'image' ? h('figure', { class: 'gen-img' },
             h('a', { href: `/api/files/${m.view.id}`, target: '_blank', rel: 'noopener', title: 'Apri a grandezza piena' }, h('img', { src: `/api/files/${m.view.id}`, alt: m.view.prompt || 'Immagine creata da Aura', loading: 'lazy' })),
             h('figcaption', {}, h('span', { text: m.view.prompt || '' }), h('a', { class: 'btn sm', href: `/api/files/${m.view.id}?download=1`, download: m.view.name || 'immagine.png', html: icon('down', 'sm') + 'Scarica' })))
+        : m.view?.kind === 'question' ? questionEl(chat, m)
         : m.view?.kind === 'ticket_photos' ? h('div', { class: 'tk-photos' }, ...m.view.files.map((f, i) => tkPhotoTile(f, m.view.files, i))) : null);
   }
   if (m.role === 'feed') { const it = S.feed?.[m.fid]; return it ? feedCard(it) : null; }
