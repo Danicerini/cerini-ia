@@ -461,8 +461,47 @@ async def crm_search(problema: str, miei: bool = False, limite: int = 8) -> list
     return out
 
 
-async def crm_detail(ref: str) -> dict:
-    """Un ticket intero: dati, descrizione, soluzione e tutti i commenti in ordine."""
+def _crm_real_id(v) -> bool:
+    return bool(re.fullmatch(r"\d+x\d+", str(v or ""))) and bool(str(v).split("x")[-1].strip("0"))
+
+
+async def _crm_get_quiet(rid: str) -> dict:
+    """Una scheda collegata al ticket (contatto, contratto, sede…): se manca o non si può leggere, niente."""
+    if not _crm_real_id(rid):
+        return {}
+    try:
+        return await _crm_get("retrieve", id=rid)
+    except ValueError:
+        return {}
+
+
+def _crm_when(day, hour="") -> str:
+    """Data e ora del CRM in un valore solo, «AAAA-MM-GG HH:MM»."""
+    return f"{day} {str(hour or '')[:5]}".strip() if day else ""
+
+
+async def _crm_more(t: dict) -> dict:
+    """Quello che serve alla pagina del ticket e non agli strumenti: contatto con i recapiti, contratto, SLA, date complete."""
+    contact, contract, place, sla, parent = await asyncio.gather(*[_crm_get_quiet(t.get(k)) for k in ("contact_id", "contratto_di_servizio", "sede", "sla", "ticket_principale")])
+    product, by = await asyncio.gather(_crm_name(t.get("product_id")), _crm_name(t.get("modifiedby")))
+    closed = bool(t.get("data_chiusura_ticket"))
+    return {
+        "client_id": t.get("parent_id", ""), "contact_id": t.get("contact_id", ""), "group": _html.unescape(t.get("gruppo_di_supporto", "") or ""),
+        "contact_info": {k: contact.get(k, "") for k in ("email", "phone", "mobile", "mansione")}, "contact_account": contact.get("account_id", ""),
+        "cc": t.get("contatti_in_cc", ""), "place": _html.unescape(place.get("label", "") or ""), "product": product,
+        "contract": {"name": _html.unescape(contract.get("subject") or contract.get("label") or ""), "no": contract.get("contract_no", ""), "status": contract.get("contract_status", ""),
+                     "type": contract.get("contract_type", ""), "end": contract.get("end_date", ""), "total": contract.get("total_units", ""), "used": contract.get("unita_utilizzate", "")} if contract else None,
+        "sla": {"state": t.get("stato_sla", ""), "type": t.get("tipo_sla", ""), "name": _html.unescape(sla.get("titolo_sla") or sla.get("label") or ""),
+                "in_time": str(t.get("chiuso_entro_sla", "")) in ("1", "true") if closed else None, "hours": t.get("ore_totali_sla", "")},
+        "received": _crm_when(t.get("data_ricezione"), t.get("orario_ricezione")), "due": _crm_when(t.get("data_scadenza_ricezione"), t.get("orario_scadenza_ricezione")),
+        "taken_at": _crm_when(t.get("data_presa_in_carico"), t.get("ora_presa_in_carico")), "closed_at": _crm_when(t.get("data_chiusura_ticket"), t.get("orario_chiusura")),
+        "modified_by": by, "source": t.get("source", ""), "units": t.get("ore_impiegate", ""), "days": t.get("giorni_gestione", ""),
+        "parent_ticket": {"no": parent.get("ticket_no", ""), "title": _html.unescape(parent.get("ticket_title", "") or "")} if parent else None,
+    }
+
+
+async def crm_detail(ref: str, more: bool = False) -> dict:
+    """Un ticket intero: dati, descrizione, soluzione e tutti i commenti in ordine. «more» per la pagina: testi interi e dati in più."""
     _, uid = await _crm_sess()
     ref = str(ref or "").strip()
     if re.fullmatch(r"\d+x\d+", ref):
@@ -498,14 +537,17 @@ async def crm_detail(ref: str) -> dict:
             _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
         who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
-                         "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
+                         "at": (c.get("createdtime") or "")[:16], "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
     r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
-             taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 2500),
-             solution=_crm_clean(t.get(CRM_SOLUTION), 2000), comments=comments, documents=documents,
+             taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 20000 if more else 2500),
+             solution=_crm_clean(t.get(CRM_SOLUTION), 20000 if more else 2000), comments=comments, documents=documents,
              desc_images=[re.sub(r"@.*", "", x) for x in re.findall(r"""src=["']cid:([^"']+)""", t.get(CRM_DESC) or "", re.I)], assigned=t.get("assigned_user_id", ""),
              other_person=not r["mine"] and str(t.get("assigned_user_id", "")).startswith(uid.split("x")[0] + "x"),
              fields={k: t.get(k, "") for k in ("ticketpriorities", "ticketcategories", "tipo_intervento", "gruppo_di_supporto", "data_intervento", "data_scadenza_ricezione", "starred", await _crm_note_field())})
+    if more:
+        r.update(await _crm_more(t))
+        r["client"] = r["client"] or await _crm_name(r["contact_account"])   # molti ticket hanno solo il contatto: il cliente è la sua azienda
     return r
 
 
@@ -630,7 +672,7 @@ async def crm_ticket_api(ref: str, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
-        return await crm_detail(ref)
+        return await crm_detail(ref, more=True)
     except ValueError as e:
         raise HTTPException(404 if "non trovato" in str(e) else 502, str(e))
 
@@ -706,30 +748,180 @@ def _crm_where(f: dict, uid: str) -> list[str]:
     return w
 
 
-async def crm_folder(fid: int, testo: str = "", limite: int = 60) -> list[dict]:
+_CRM_PAGE_F = _CRM_LIST_F + ",contact_id,gruppo_di_supporto,data_scadenza_ricezione,orario_scadenza_ricezione,stato_sla,tipo_sla,ticketcategories,tipo_intervento"
+_CRM_CONTACTS = _PerUser(dict)
+
+
+def _crm_contact_keep(c: dict):
+    _CRM_CONTACTS[c["id"]] = {"name": " ".join(x for x in (c.get("firstname"), c.get("lastname")) if x).strip(), "account": c.get("account_id", "")}
+
+
+async def _crm_page_rows(tickets: list[dict], uid: str) -> list[dict]:
+    """Le righe della pagina Ticket: i contatti si chiedono tutti insieme, i nomi una volta sola (poi restano in memoria)."""
+    missing = list({t["contact_id"] for t in tickets if _crm_real_id(t.get("contact_id")) and t["contact_id"] not in _CRM_CONTACTS})
+    for i in range(0, len(missing), 50):
+        try:
+            ids = ",".join(f"'{_crm_q(x)}'" for x in missing[i:i + 50])
+            for c in await _crm_get("query", query=f"SELECT id,firstname,lastname,account_id FROM Contacts WHERE id IN ({ids});"):
+                _crm_contact_keep(c)
+        except ValueError:
+            break   # senza nomi dei contatti l'elenco si vede lo stesso
+    names = {t.get(k) for t in tickets for k in ("parent_id", "assigned_user_id")} | {c.get("account") for c in (_CRM_CONTACTS.get(t.get("contact_id")) for t in tickets) if c}
+    names = [x for x in names if _crm_real_id(x) and x not in _CRM_NAMES]
+    for i in range(0, len(names), 8):
+        await asyncio.gather(*[_crm_name(x) for x in names[i:i + 8]])
+    out = []
+    for t in tickets:
+        r, c = await _crm_row(t, uid), _CRM_CONTACTS.get(t.get("contact_id")) or {}
+        r.update(owner="te" if r["mine"] else await _crm_name(t.get("assigned_user_id")), contact=c.get("name", ""),
+                 client=r["client"] or await _crm_name(c.get("account")), group=_html.unescape(t.get("gruppo_di_supporto", "") or ""),
+                 due=_crm_when(t.get("data_scadenza_ricezione"), t.get("orario_scadenza_ricezione")), sla=t.get("stato_sla", ""), sla_type=t.get("tipo_sla", ""),
+                 category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""))
+        out.append(r)
+    return out
+
+
+def _crm_group_only(tickets: list[dict], uid: str) -> list[dict]:
+    """Solo i ticket di un gruppo e non di una persona. I prefissi degli id cambiano da un CRM all'altro; chi non e' una persona e' un gruppo."""
+    user_prefix = uid.split("x")[0] + "x"
+    return [t for t in tickets if "x" in str(t.get("assigned_user_id", "")) and not str(t["assigned_user_id"]).startswith(user_prefix)]
+
+
+async def _crm_unassigned(f: dict, uid: str, fields: str) -> list[dict]:
+    where = _crm_where(f, uid)
+    sql = f"SELECT {fields} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY modifiedtime DESC LIMIT "
+    rows = await _crm_get("query", query=f"{sql}100;")
+    for off in range(100, 1000, 100):   # il CRM da' al massimo 100 righe per volta
+        if len(rows) < off:
+            break
+        rows += await _crm_get("query", query=f"{sql}{off},100;")
+    return _crm_group_only(rows, uid)
+
+
+async def crm_folder(fid: int, limite: int = 60, offset: int = 0) -> list[dict]:
     """I ticket di una cartella, i più recenti in cima. «Non assegnati» = assegnati a un gruppo e non a una persona."""
     f = next((x for x in await crm_folders() if x["id"] == fid), None)
     if not f:
         raise ValueError("cartella sconosciuta")
     _, uid = await _crm_sess()
-    where = _crm_where(f, uid)
-    user_prefix = uid.split("x")[0] + "x"   # i prefissi degli id cambiano da un CRM all'altro; chi non e' una persona e' un gruppo
-    if _crm_like(testo):
-        where.append(f"ticket_title LIKE '%{_crm_like(testo)}%'")
-    sql = f"SELECT {_CRM_LIST_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY modifiedtime DESC LIMIT "
-    rows = await _crm_get("query", query=f"{sql}{100 if f.get('non_assegnati') else max(1, min(limite, 100))};")
     if f.get("non_assegnati"):
-        for off in range(100, 1000, 100):   # il CRM da' al massimo 100 righe per volta
-            if len(rows) < off:
-                break
-            rows += await _crm_get("query", query=f"{sql}{off},100;")
-        rows = [t for t in rows if "x" in str(t.get("assigned_user_id", "")) and not str(t["assigned_user_id"]).startswith(user_prefix)]
-    out = []
-    for t in rows[:limite]:
-        r = await _crm_row(t, uid)
-        r["owner"] = "te" if r["mine"] else await _crm_name(t.get("assigned_user_id"))
-        out.append(r)
-    return out
+        rows = (await _crm_unassigned(f, uid, _CRM_PAGE_F))[offset:offset + limite]
+    else:
+        where = _crm_where(f, uid)
+        rows = await _crm_get("query", query=f"SELECT {_CRM_PAGE_F} FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "")
+                              + f" ORDER BY modifiedtime DESC LIMIT {max(0, offset)},{max(1, min(limite, 100))};")
+    return await _crm_page_rows(rows, uid)
+
+
+_CRM_FIND_WEIGHT = {"numero": 9, "titolo": 3, "cliente": 2, "contatto": 2, "descrizione": 1, "soluzione": 1}
+
+
+def _crm_snippet(text: str, words: list[str], n: int = 170) -> str:
+    """Il pezzo di testo intorno alla prima parola trovata."""
+    low = text.lower()
+    at = min((low.find(w) for w in words if w in low), default=-1)
+    if at < 0:
+        return ""
+    start = max(0, at - 50)
+    while start and not text[start - 1].isspace() and at - start < 70:
+        start -= 1
+    cut = text[start:start + n].replace("\n", " ").strip()
+    return ("…" if start else "") + cut + ("…" if start + n < len(text) else "")
+
+
+async def crm_find(q: str, fid: int | None = None, limite: int = 60) -> dict:
+    """La ricerca della pagina Ticket: numero, titolo, cliente, contatto, descrizione e soluzione, in una lista o in tutto il CRM.
+    Con più parole restano i ticket che ne hanno di più."""
+    _, uid = await _crm_sess()
+    f = None
+    if fid is not None:
+        f = next((x for x in await crm_folders() if x["id"] == fid), None)
+        if not f:
+            raise ValueError("cartella sconosciuta")
+    base = _crm_where(f, uid) if f else []
+    q = str(q or "").strip()
+    words = list(dict.fromkeys(re.findall(r"[\wàèéìòù.@-]{2,}", q.lower())))[:4]
+    num = re.fullmatch(r"#?(?:tk-?)?(?:(\d{4})-)?0*(\d{1,6})", q.lower())
+    if not words and not num:
+        return {"rows": [], "words": []}
+    words = words or [num.group(2)]
+    found, hits = {}, {}   # id -> ticket; id -> {parola: [dove]}
+
+    async def run(where: str, word: str, label: str, fields: str = _CRM_PAGE_F):
+        long_text = label in ("descrizione", "soluzione")
+        sql = f"SELECT {fields} FROM HelpDesk WHERE " + " AND ".join([*base, where]) + f" ORDER BY modifiedtime DESC LIMIT {30 if long_text else 60};"
+        try:
+            rows = await _crm_get("query", query=sql, _timeout=30)
+        except ValueError:
+            return
+        for t in rows:
+            # nel campo c'è l'HTML: conta solo se la parola sta nel testo vero
+            if long_text and word not in _crm_clean(t.get(CRM_DESC if label == "descrizione" else CRM_SOLUTION), 20000).lower():
+                continue
+            found[t["id"]] = {**found.get(t["id"], {}), **t}
+            hits.setdefault(t["id"], {}).setdefault(word, []).append(label)
+
+    jobs = []
+    if num:
+        pat = f"TK-{num.group(1)}-{int(num.group(2)):06d}" if num.group(1) else f"%-{int(num.group(2)):06d}"
+        jobs.append(run(f"ticket_no LIKE '{pat}'", words[0], "numero"))
+    for w in words:
+        like = _crm_like(w)
+        if not like:
+            continue
+        jobs.append(run(f"ticket_title LIKE '%{like}%'", w, "titolo"))
+        jobs.append(run(f"{CRM_DESC} LIKE '%{like}%'", w, "descrizione", f"{_CRM_PAGE_F},{CRM_DESC}"))
+        jobs.append(run(f"{CRM_SOLUTION} LIKE '%{like}%'", w, "soluzione", f"{_CRM_PAGE_F},{CRM_SOLUTION}"))
+        flat = _flat(w)
+        accounts = [i for i, n in _crm_accounts().items() if flat in _flat(n)][:40]
+        if accounts:
+            jobs.append(run("parent_id IN (" + ",".join(f"'{_crm_q(i)}'" for i in accounts) + ")", w, "cliente"))
+        if len(like) >= 3:
+            contacts = {}
+            for field in ("lastname", "firstname", "email"):
+                try:
+                    for c in await _crm_get("query", query=f"SELECT id,firstname,lastname,account_id FROM Contacts WHERE {field} LIKE '%{like}%' LIMIT 20;"):
+                        contacts[c["id"]] = c
+                        _crm_contact_keep(c)
+                except ValueError:
+                    break
+            if contacts:
+                jobs.append(run("contact_id IN (" + ",".join(f"'{_crm_q(i)}'" for i in list(contacts)[:40]) + ")", w, "contatto"))
+    for i in range(0, len(jobs), 6):
+        await asyncio.gather(*jobs[i:i + 6])
+    if f and f.get("non_assegnati"):
+        keep = {t["id"] for t in _crm_group_only(list(found.values()), uid)}
+        found = {k: v for k, v in found.items() if k in keep}
+
+    def score(t):
+        got = hits.get(t["id"], {})
+        return (len(got), sum(max(_CRM_FIND_WEIGHT[x] for x in where) for where in got.values()), t.get("modifiedtime", ""))
+
+    best = sorted(found.values(), key=score, reverse=True)
+    top = len(hits.get(best[0]["id"], {})) if best else 0
+    best = [t for t in best if len(hits.get(t["id"], {})) == top][:limite]
+    rows = await _crm_page_rows(best, uid)
+    for r, t in zip(rows, best):
+        where = [x for w in hits.get(t["id"], {}).values() for x in w]
+        r["match"] = max(where, key=_CRM_FIND_WEIGHT.get) if where else ""
+        if "titolo" not in where:
+            for label, field in (("descrizione", CRM_DESC), ("soluzione", CRM_SOLUTION)):
+                if label in where:
+                    r.update(match=label, snippet=_crm_snippet(_crm_clean(t.get(field), 20000), words))
+                    break
+    return {"rows": rows, "words": words, "partial": bool(best) and top < len(words)}
+
+
+async def crm_related(no: str, client: str = "", contact: str = "") -> list[dict]:
+    """Gli altri ticket dello stesso cliente o dello stesso contatto."""
+    _, uid = await _crm_sess()
+    found = {}
+    for field, v in (("parent_id", client), ("contact_id", contact)):
+        if _crm_real_id(v):
+            for t in await _crm_get("query", query=f"SELECT {_CRM_PAGE_F} FROM HelpDesk WHERE {field}='{_crm_q(v)}' ORDER BY modifiedtime DESC LIMIT 9;"):
+                found[t["id"]] = t
+    rows = sorted((t for t in found.values() if t.get("ticket_no") != no), key=lambda t: t.get("modifiedtime", ""), reverse=True)[:8]
+    return await _crm_page_rows(rows, uid)
 
 
 async def crm_folder_counts() -> dict:
@@ -738,7 +930,7 @@ async def crm_folder_counts() -> dict:
     for f in await crm_folders():
         try:
             if f.get("non_assegnati"):
-                out[f["id"]] = len(await crm_folder(f["id"], limite=1000))
+                out[f["id"]] = len(await _crm_unassigned(f, uid, "assigned_user_id"))
             else:
                 where = _crm_where(f, uid)
                 r = await _crm_get("query", query="SELECT count(*) FROM HelpDesk" + (" WHERE " + " AND ".join(where) if where else "") + ";")
@@ -761,11 +953,32 @@ async def crm_folders_api(counts: int = 1, _: dict = Depends(require_user)):
 
 
 @app.get("/api/crm/folder/{fid}")
-async def crm_folder_api(fid: int, q: str = "", _: dict = Depends(require_user)):
+async def crm_folder_api(fid: int, offset: int = 0, _: dict = Depends(require_user)):
     if not crm_on():
         raise HTTPException(409, "CRM non collegato")
     try:
-        return {"rows": await crm_folder(fid, q)}
+        rows = await crm_folder(fid, 60, max(0, offset))
+        return {"rows": rows, "more": len(rows) == 60}
+    except ValueError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/crm/search")
+async def crm_search_api(q: str = "", fid: int | None = None, _: dict = Depends(require_user)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        return await crm_find(q, fid)
+    except ValueError as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/crm/related")
+async def crm_related_api(no: str = "", client: str = "", contact: str = "", _: dict = Depends(require_user)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        return {"rows": await crm_related(no, client, contact)}
     except ValueError as e:
         raise HTTPException(502, str(e))
 
