@@ -14,7 +14,7 @@ import tempfile
 
 ACCOUNT_BIN = {"claude-code": "claude", "codex": "codex"}
 _ACCT_PATH = "/usr/local/bin:/usr/bin:/bin"
-_ACCT_SEM = asyncio.Semaphore(2)   # ogni chiamata e' un processo: il container ha poca memoria
+_ACCT_SEM = asyncio.Semaphore(int(os.environ.get("ACCOUNT_PARALLEL", "3")))   # ogni chiamata e' un processo da circa 400 MB: 3 stanno in 2 GB
 _ACCT_TAG = "<aura_tool"
 _ACCT_CALL_RE = re.compile(r"<aura_tool>\s*(.*?)\s*(?:</aura_tool>|$)", re.S)
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b.")
@@ -67,7 +67,7 @@ def _acct_env(p: str, term: str = "dumb") -> dict:
     if p == "codex":
         env["CODEX_HOME"] = home
     else:
-        env.update(DISABLE_AUTOUPDATER="1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1")
+        env.update(DISABLE_AUTOUPDATER="1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC="1", CLAUDE_CODE_MAX_OUTPUT_TOKENS="64000")
         if account_ready(p):
             env["CLAUDE_CODE_OAUTH_TOKEN"] = _acct_token_file(p).read_text(encoding="utf-8").strip()
     return env
@@ -132,7 +132,7 @@ def _acct_prompt(payload: dict) -> tuple[str, str, list]:
 def _acct_cmd(p: str, model: str, run: Path, system_file: Path, image_files: list[Path], web: bool = False) -> list[str]:
     if p == "claude-code":
         return [_acct_bin(p), "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--input-format", "stream-json",
-                "--tools", "", "--system-prompt-file", str(system_file), "--model", model, "--no-session-persistence",
+                *(["--tools", "WebSearch", "--allowedTools", "WebSearch"] if web else ["--tools", ""]), "--system-prompt-file", str(system_file), "--model", model, "--no-session-persistence",
                 "--setting-sources", "", "--strict-mcp-config", "--disable-slash-commands"]
     cmd = [_acct_bin(p), "exec", "--json", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules",
            "-C", str(run), "-m", model, "-c", 'cli_auth_credentials_store="file"', "-c", f'web_search="{"live" if web else "disabled"}"',
@@ -189,7 +189,13 @@ async def _acct_run(p: str, model: str, system: str, text: str, images: list, ti
                     left = deadline - time.monotonic()
                     if left <= 0:
                         raise asyncio.TimeoutError
-                    line = await asyncio.wait_for(proc.stdout.readline(), left)
+                    try:
+                        line = await asyncio.wait_for(proc.stdout.readline(), min(left, 20))
+                    except asyncio.TimeoutError:
+                        if left > 20:   # sta pensando: un segnale tiene viva la connessione (Cloudflare chiude dopo 100 s di silenzio)
+                            yield ("ping",)
+                            continue
+                        raise
                     if not line:
                         break
                     try:
@@ -277,16 +283,17 @@ async def account_stream(payload: dict):
     c = cloud_cfg()
     p, model = c.get("provider", ""), c.get("model", "")
     system, text, images = _acct_prompt(payload)
-    web = p == "codex"   # Claude Code resta senza: i suoi strumenti sono tutti spenti
-    if web:
-        system += ACCOUNT_WEB_NOTE
+    system += ACCOUNT_WEB_NOTE
+    text += f"\n<turn role=\"system\">Adesso sono le {local_now().strftime('%H:%M')}.</turn>"   # l'ora qui e non nel prompt di sistema: se cambia, la cache riparte da zero
     t0 = time.monotonic()
     full, buf, held, tokens, usage = "", "", False, 0, None
-    async for e in _acct_run(p, model, system, text, images, web=web):
+    async for e in _acct_run(p, model, system, text, images, timeout=1200, web=True):   # una risposta lunga può durare minuti
         if e[0] == "error":
             yield {"error": e[1]}
             return
-        if e[0] == "usage":
+        if e[0] == "ping":
+            yield {"message": {"role": "assistant", "content": ""}, "done": False}
+        elif e[0] == "usage":
             usage = e[1:]
         elif e[0] == "think":
             yield {"message": {"role": "assistant", "content": "", "thinking": e[1]}, "done": False}
