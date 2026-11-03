@@ -219,7 +219,7 @@ CRM_STATUS = {"Open": "Aperto", "In Progress": "In lavorazione", "Wait For Respo
               "Attesa verifica interna": "Attesa verifica interna", "Attesa risposta esterna": "Attesa risposta esterna",
               "Attività programmata": "Attività programmata", "Annullato": "Annullato"}
 CRM_DONE = ("Closed", "Annullato")
-_CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-]{7,}$|^\S+@\S+\.\w+$|^(?:https?://|www\.)\S+$|"
+_CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-]{7,}$|^\S+@\S+\.\w+$|^(?:https?://|www\.)\S+$|^(?:tel|cell|mob)\b\.?\s*:?\s*\+?\d[\d .()/-]{5,}|"
                        r"\bP\.?\s?IVA\b|\bC\.?F\.?\s*:|\bPEC\b", re.I)
 _CRM_S = _PerUser(lambda: {"s": "", "uid": "", "at": 0.0})
 _CRM_NAMES = _PerUser(dict)
@@ -227,7 +227,11 @@ _CRM_FIELDS = _PerUser(dict)
 # dove finisce il messaggio vero di una mail: firma, avvisi legali, messaggio citato
 _CRM_CUT = re.compile(r"(Codice in materia di protezione|Nota di riservatezza|Rispetta l'ambiente|Questo messaggio e gli eventuali|"
                       r"-{2,}\s*Messaggio originale|-{2,}\s*Original Message|\bDa:\s.{0,120}\bInviato:|\bFrom:\s.{0,120}\bSent:|"
-                      r"\bIl giorno .{5,80} ha scritto:)", re.I | re.S)
+                      r"\bIl giorno .{5,80} ha scritto:|Le informazioni contenute nel presente messaggio|According to European|Questo è un messaggio di informazione)", re.I | re.S)
+# l'inizio di un messaggio citato in una mail
+_CRM_QUOTE = re.compile(r"(?:^|\n)[ \t>]*(?:Da|From):\s*(?P<who>[^\n]{1,160}?)\s*\b(?:Inviato|Sent):\s*(?P<when>[^\n]{1,80}?)(?=\s*(?:\n|\b(?:A|To|Cc|Oggetto|Subject):))"
+                        r"|(?:^|\n)[ \t>]*Il giorno (?P<said>.{5,120}?) ha scritto:", re.I | re.S)
+_CRM_QUOTE_HEAD = re.compile(r"^\s*(?:A|To|Cc|Ccn|Bcc|Oggetto|Subject)\s*:[^\n]*\n?|^\s*\n", re.I)
 
 
 async def _crm_sess() -> tuple[str, str]:
@@ -253,17 +257,50 @@ async def _crm_get(op: str, **p):
         return await _crm(op, sessionName=s, **p)
 
 
-def _crm_clean(h: str, n: int = 1500) -> str:
-    """Il testo vero di un campo HTML (spesso una mail): senza stili, firme, avvisi legali e messaggi citati."""
+def _crm_plain(h: str) -> str:
     h = re.sub(r"(?is)<(style|head|script)[^>]*>.*?</\1>|<!--.*?-->", " ", h or "")
     h = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</tr>|</li>", "\n", h)
-    t = _html.unescape(re.sub(r"<[^>]+>", " ", h)).replace("\xa0", " ")
+    return _html.unescape(re.sub(r"<[^>]+>", " ", h)).replace("\xa0", " ")
+
+
+def _crm_clean(h: str, n: int = 1500) -> str:
+    """Il testo vero di un campo HTML (spesso una mail): senza stili, firme, avvisi legali e messaggi citati."""
+    return _crm_body(_crm_plain(h), n)
+
+
+def _crm_thread(h: str, n: int = 6000) -> list[dict]:
+    """I messaggi citati sotto l'ultimo di una mail, dal più recente, ognuno pulito come il primo."""
+    t, out = _crm_plain(h), []
+    found = list(_CRM_QUOTE.finditer(t))
+    for i, m in enumerate(found[:30]):
+        body = t[m.end():found[i + 1].start() if i + 1 < len(found) else len(t)]
+        while (head := _CRM_QUOTE_HEAD.match(body)):
+            body = body[head.end():]
+        text = _crm_body(body, n)
+        if text:
+            who = re.sub(r"\s*[<\[(].*$", "", m.group("who") or "", flags=re.S).strip() or (m.group("who") or "").strip(" <>[]()")
+            out.append({"who": who or (m.group("said") or "").strip(), "when": (m.group("when") or "").strip(), "text": text})
+    return out
+
+
+def _crm_quoted_text(quoted: list[dict]) -> str:
+    """Per Aura: i messaggi citati stanno sotto il testo, con chi li ha scritti."""
+    return "".join(f"\n    [messaggio citato] {m['who']}, {m['when']}: {m['text']}" for m in quoted)
+
+
+def _crm_searchable(h: str) -> str:
+    """Dove si cerca: l'ultimo messaggio e quelli citati, senza firme e avvisi legali."""
+    return "\n".join([_crm_clean(h, 20000), *(m["text"] for m in _crm_thread(h))])
+
+
+def _crm_body(t: str, n: int) -> str:
     m = _CRM_CUT.search(t)
-    if m and m.start() > 20:
+    # anche una risposta corta («Ok, grazie») si ferma qui; senza testo prima, si taglia solo se sotto c'è un messaggio citato
+    if m and (t[:m.start()].strip() or re.match(r"Da:|From:|Il giorno", m.group(0), re.I)):
         t = t[:m.start()]
     lines = [x.strip() for x in re.sub(r"[ \t]+", " ", t).split("\n") if x.strip()]
     # la firma: dalla prima riga con telefono, mail, sito o partita IVA si taglia, insieme a nome e ruolo subito sopra
-    i = next((k for k, x in enumerate(lines) if k and _CRM_SIGN.search(x)), None)
+    i = next((k for k, x in enumerate(lines) if k and len(x) < 120 and _CRM_SIGN.search(x)), None)   # le righe lunghe sono frasi vere, anche se dicono «PEC»
     if i is not None:
         j = i
         while j > 1 and i - j < 4 and len(lines[j - 1]) < 50 and not re.search(r"[.!?:,]$", lines[j - 1]):
@@ -559,8 +596,19 @@ async def crm_detail(ref: str, more: bool = False) -> dict:
             _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
         who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
-                         "at": _crm_local(c.get("createdtime")), "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
-    r.update(contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
+                         "at": _crm_local(c.get("createdtime")), "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "earlier": _crm_thread(c.get("commentcontent"), 6000 if more else 1500), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
+    # lo stesso messaggio citato torna in ogni risposta della mail: si tiene solo la prima volta, e mai se è già un commento
+    same = lambda text: re.sub(r"\W+", "", text.lower())[:160]
+    desc_earlier = _crm_thread(t.get(CRM_DESC), 6000 if more else 1500)
+    seen = {same(_crm_clean(t.get(CRM_DESC), 20000))} | {same(c["text"]) for c in comments}
+    def fresh(quoted: list[dict]) -> list[dict]:
+        keep = [m for m in quoted if same(m["text"]) not in seen]
+        seen.update(same(m["text"]) for m in keep)
+        return keep
+    desc_earlier = fresh(desc_earlier)
+    for c in comments:
+        c["earlier"] = fresh(c["earlier"])
+    r.update(desc_earlier=desc_earlier, contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
              taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 20000 if more else 2500),
              solution=_crm_clean(t.get(CRM_SOLUTION), 20000 if more else 2000), comments=comments, documents=documents,
@@ -666,12 +714,12 @@ async def _tool_crm_photos(user: dict, args: dict, request: Request) -> dict:
 
 async def _tool_crm_detail(user: dict, args: dict, request: Request) -> dict:
     r = await crm_detail(args.get("ticket") or "")
-    coms = "\n".join(f"  [{c['at']}] {'lui (l utente)' if c['me'] else c['who']}{' (cliente)' if c['client'] else ''}: {c['text']}" for c in r["comments"]) or "  (nessuno)"
+    coms = "\n".join(f"  [{c['at']}] {'lui (l utente)' if c['me'] else c['who']}{' (cliente)' if c['client'] else ''}: {c['text']}{_crm_quoted_text(c['earlier'])}" for c in r["comments"]) or "  (nessuno)"
     return {"content": "L'utente vede già il ticket in una scheda sopra la tua risposta: non ricopiarlo, rispondi a quello che ha chiesto. "
                        f"{CRM_DATA_NOTE}\n{r['no']} «{r['title']}» | cliente {r['client'] or '?'} | contatto {r['contact'] or '?'} | "
                        f"stato {r['status_it']} | assegnato a {r['owner'] or '?'} | aperto {r['created']} | modificato {r['modified']}"
                        + (f" | chiuso il {r['closed']}" if r["closed"] else "")
-                       + f"\nDESCRIZIONE:\n{r['description'] or '(vuota)'}\nSOLUZIONE:\n{r['solution'] or '(vuota)'}\nCOMMENTI:\n{coms}"
+                       + f"\nDESCRIZIONE:\n{r['description'] or '(vuota)'}{_crm_quoted_text(r['desc_earlier'])}\nSOLUZIONE:\n{r['solution'] or '(vuota)'}\nCOMMENTI:\n{coms}"
                        + ("\nIl ticket ha file allegati, forse foto: non le hai viste. Se l'utente ti chiede di guardarle usa ticket_foto, non indovinare cosa c'è dentro." if r["documents"] or any(c["files"] for c in r["comments"]) else ""),
             "display": f"Ha aperto il ticket {r['no']}", "view": {"kind": "ticket", "ticket": r}}
 
@@ -878,7 +926,7 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60, deep: bool 
             return
         for t in rows:
             # nel campo c'è l'HTML: conta solo se la parola sta nel testo vero
-            if long_text and word not in _crm_clean(t.get(CRM_DESC if label == "descrizione" else CRM_SOLUTION), 20000).lower():
+            if long_text and word not in _crm_searchable(t.get(CRM_DESC if label == "descrizione" else CRM_SOLUTION)).lower():
                 continue
             found[t["id"]] = {**found.get(t["id"], {}), **t}
             hits.setdefault(t["id"], {}).setdefault(word, []).append(label)
@@ -931,7 +979,7 @@ async def crm_find(q: str, fid: int | None = None, limite: int = 60, deep: bool 
         if "titolo" not in where:
             for label, field in (("descrizione", CRM_DESC), ("soluzione", CRM_SOLUTION)):
                 if label in where:
-                    r.update(match=label, snippet=_crm_snippet(_crm_clean(t.get(field), 20000), words))
+                    r.update(match=label, snippet=_crm_snippet(_crm_searchable(t.get(field)), words))
                     break
     return {"rows": rows, "words": words, "partial": bool(best) and top < len(words) and not exact, "exact": exact}
 
