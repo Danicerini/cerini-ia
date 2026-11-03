@@ -2093,6 +2093,7 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
   #brainResize:hover, body.brain-resizing #brainResize { background: linear-gradient(90deg, transparent 3px, var(--accent) 3px, var(--accent) 5px, transparent 5px); }
 }
 body.brain-resizing { cursor: col-resize; user-select: none; }
+body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il pannello è nascosto: la sua maniglia pure */
 .msg.note { display: flex; }
 .brain-note { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; border-radius: 12px; border: 1px dashed var(--border-strong);
   background: color-mix(in oklch, var(--accent) 6%, transparent); font-size: 13px; }
