@@ -527,7 +527,7 @@ async def _tool_ask_user(user: dict, args: dict, request: Request) -> dict:
     raw = args.get("opzioni") if isinstance(args.get("opzioni"), list) else []
     for o in raw[:6]:   # di solito oggetti; qualche modello manda solo il testo
         label = str((o.get("etichetta") if isinstance(o, dict) else o) or "").strip()[:120]
-        if label:
+        if label and label.lower().rstrip(".…") != "altro":   # «Altro» c'è già sempre, per scrivere
             options.append({"label": label, "detail": str(o.get("dettaglio") or "").strip()[:240] if isinstance(o, dict) else ""})
     if len(options) < 2:
         raise ValueError("servono almeno due opzioni: per una domanda libera scrivila nel testo")
