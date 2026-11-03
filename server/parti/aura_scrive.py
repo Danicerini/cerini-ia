@@ -594,7 +594,9 @@ async def aura_feed(user: dict = Depends(require_user)):
     uid = user["id"]
     with db() as c:
         _aura_chat_ensure(c, uid)
-        rows = c.execute("SELECT * FROM aura_feed WHERE user_id = ? ORDER BY id DESC LIMIT 100", (uid,)).fetchall()
+        # i ticket già presi o chiusi non sono più avvisi: si tolgono (crm_feed_sync)
+        rows = c.execute("SELECT * FROM aura_feed WHERE user_id = ? AND NOT (kind = 'ticket' AND COALESCE(status, '') IN ('taken', 'taken_other', 'closed')) "
+                         "ORDER BY id DESC LIMIT 100", (uid,)).fetchall()
         devices = c.execute("SELECT COUNT(*) FROM push_subs WHERE user_id = ?", (uid,)).fetchone()[0]
     row = _watch_row(uid)
     today = int(local_now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())

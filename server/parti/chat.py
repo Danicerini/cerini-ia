@@ -649,8 +649,8 @@ def system_prompt(user: dict, with_tools: bool, site: bool = True, model: str = 
             txt += SITE_PROMPT
         if is_owner(user["id"]) and "homebase_procedura" in TOOLS and homebase_on():
             txt += PROC_HINT
-    return txt + ("\nIMMAGINI: puoi crearle solo con lo strumento immagine_crea. Se non lo vedi tra i tuoi strumenti non puoi farlo: dillo subito, non rispondere mai di sì."
-                  " Non dire mai che un'immagine è pronta se lo strumento non l'ha creata.")
+    return txt + ("\nIMMAGINI: puoi crearle e modificarle solo con lo strumento immagine_crea. Non dire mai che un'immagine è pronta se lo strumento non l'ha creata."
+                  if image_ready() else f"\nIMMAGINI: adesso non puoi crearle né modificarle: {image_why()}. Se te lo chiede, spiegaglielo così in una frase; non dire solo che lo strumento non c'è e non rispondere mai di sì.")
 
 
 # Da problema risolto a procedura: quello che avete sistemato insieme non va perso
@@ -662,6 +662,7 @@ PROC_HINT = ("\n\nPROCEDURE: se in questa chat avete appena risolto un problema 
 
 
 CLOUD_HISTORY_CTX = int(os.environ.get("CLOUD_HISTORY_CTX", "24000"))   # col cloud si paga ogni token: la chat vecchia si taglia prima
+ACCOUNT_HISTORY_CTX = int(os.environ.get("ACCOUNT_HISTORY_CTX", "100000"))
 
 
 def _fit_history(messages: list[dict], fixed_chars: int, ctx: int = 0) -> list[dict]:
@@ -834,7 +835,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             no_confirm = _wants_no_confirm(body.messages)
             if no_confirm:
                 sys_txt += "\n\nIn questo messaggio l'utente ha chiesto di NON chiedere conferma: le azioni vengono eseguite subito."
-            hist_ctx = min(ctx, CLOUD_HISTORY_CTX) if is_cloud(body.model) else ctx
+            # con un abbonamento non si paga a token: un limite stretto farebbe solo dimenticare la chat
+            hist_ctx = (ACCOUNT_HISTORY_CTX if is_account() else min(ctx, CLOUD_HISTORY_CTX)) if is_cloud(body.model) else ctx
             msgs = [{"role": "system", "content": sys_txt}] + _fit_history(files_for_prompt(user, body.messages), len(sys_txt) + len(json.dumps(tools)), hist_ctx)
             answered = False   # la risposta all'utente e' gia' scritta: i passaggi successivi sistemano solo i ricordi
             saved = False      # in questo turno ha chiamato davvero ricorda / aggiorna_ricordo
@@ -844,7 +846,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             said = ""            # testo gia' mostrato prima di uno strumento
             said_all = ""        # tutto il testo scritto insieme agli strumenti in questo turno
             seen_images = []
-            for _round in range(6):
+            for _round in range(12 if is_cloud(body.model) else 6):   # Gemma va fermata prima; un modello forte può fare più passaggi
                 payload = {"model": body.model, "messages": msgs, "stream": True, "keep_alive": KEEP_ALIVE}
                 print(f"Chat: utente {user['id']}, modello {body.model}, giro {_round + 1}", flush=True)   # per poter controllare che modello ha risposto
                 if body.think is not None:

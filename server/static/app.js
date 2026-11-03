@@ -3421,7 +3421,12 @@ function ticketActConfirmEl(chat, m) {
 function tkActions(t, reload, manage) {
   const box = h('div', { class: 'tkb' }, h('div', { class: 'tkb-off', text: 'Carico le azioni…' }));
   const url = '/api/crm/ticket/' + encodeURIComponent(t.no);
-  const after = async (msg) => { TKP.folders = null; TK.folders = null; if (msg) toast(msg); await reload(); };
+  const after = async (msg) => {
+    TKP.folders = null; TK.folders = null; if (msg) toast(msg);
+    $('#tkAlert')?.remove();
+    loadAuraFeed().then(() => { if (isAuraChat(current())) renderThread(); }).catch(() => {});   // l'avviso del ticket se ne va anche da «Da Aura»
+    await reload();
+  };
   (async () => {
     let o;
     try { o = await (await api('/api/crm/options')).json(); } catch (e) { box.replaceChildren(h('div', { class: 'tkb-off', text: e.message })); return; }

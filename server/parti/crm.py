@@ -1456,6 +1456,7 @@ async def _ticket_revise(user: dict, tid: str, changes: dict) -> dict:
     for k, v in changes.items():
         if k in _TICKET_CHECK and _html.unescape(str(after.get(k) or "")) != _html.unescape(str(v)):
             raise ValueError(f"il CRM ha risposto, ma il campo {k} non è cambiato")
+    await crm_feed_sync(user)
     return after
 
 
@@ -1792,6 +1793,35 @@ async def crm_new_tickets(user: dict) -> int:
     return len(found)
 
 
+async def crm_feed_sync(user: dict) -> int:
+    """Gli avvisi «Ticket nuovo» seguono il CRM: preso da te, da un collega o chiuso, da qualunque parte, l'avviso sparisce da «Da Aura»."""
+    try:
+        with db() as c:
+            rows = c.execute("SELECT id, data FROM aura_feed WHERE user_id = ? AND kind = 'ticket' AND COALESCE(status, '') = '' ORDER BY id DESC LIMIT 60", (user["id"],)).fetchall()
+        by_no = {}
+        for r in rows:
+            d = json.loads(r["data"] or "{}")
+            if d.get("no"):
+                by_no.setdefault(d["no"], []).append(r["id"])
+        if not by_no:
+            return 0
+        _, uid = await _crm_sess()
+        person = uid.split("x")[0] + "x"
+        nos = ",".join(f"'{_crm_q(n)}'" for n in by_no)
+        settled = []
+        for t in await _crm_get("query", query=f"SELECT ticket_no,ticketstatus,assigned_user_id FROM HelpDesk WHERE ticket_no IN ({nos}) LIMIT 100;"):
+            who, st = str(t.get("assigned_user_id") or ""), t.get("ticketstatus")
+            status = "closed" if st in CRM_DONE else "taken" if who == uid and st != "Open" else "taken_other" if who.startswith(person) and who != uid else ""
+            settled += [(status, i) for i in by_no.get(t.get("ticket_no"), []) if status]
+        if settled:
+            with db() as c:
+                c.executemany("UPDATE aura_feed SET status = ?, unread = 0 WHERE id = ?", settled)
+        return len(settled)
+    except (ValueError, httpx.HTTPError) as e:   # gli avvisi non devono mai far fallire quello che l'utente sta facendo
+        print(f"CRM: avvisi dei ticket non aggiornati per l'utente {user['id']}: {_clip(str(e), 150)}", flush=True)
+        return 0
+
+
 async def crm_new_loop():
     await asyncio.sleep(90)
     while True:
@@ -1800,6 +1830,7 @@ async def crm_new_loop():
                 try:
                     with db() as c:
                         urow = c.execute("SELECT * FROM users WHERE id = ?", (uid,)).fetchone()
+                    await crm_feed_sync(dict(urow))
                     await crm_new_tickets(dict(urow))
                 except Exception as e:   # il CRM giu' non deve fermare niente
                     print(f"CRM: controllo dei ticket nuovi non riuscito per l'utente {uid}: {_clip(str(e), 150)}", flush=True)
