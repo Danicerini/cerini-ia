@@ -3152,6 +3152,7 @@ function feedCard(it) {
     body.push(h('div', { class: 'au-title', text: title }));
     if (it.body) body.push(h('div', { class: 'au-text', text: it.body }));
     body.push(parcelTrack(p?.status || d.status));
+    if (p?.event) body.push(h('div', { class: 'au-sub', text: p.event }));
     if (p?.tracking || p?.carrier) body.push(h('div', { class: 'au-sub mono', text: [p.carrier, p.tracking].filter(Boolean).join(' · ') }));
     if (link) chips.push(link);
   } else if (it.kind === 'checked') {
@@ -3197,7 +3198,7 @@ function auPanel(k) {
     const all = f.parcels || [];
     return h('div', { class: 'au-drawer' }, all.length ? all.map((p) => h('div', { class: 'au-dr-row' },
       h('div', { class: 'tx' }, h('b', { text: p.title }), h('small', { text: [p.shop, p.carrier, p.tracking, p.eta && p.status !== 'consegnato' ? 'arrivo ' + shortDay(p.eta) : ''].filter(Boolean).join(' · ') })),
-      parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
+      p.event ? h('small', { class: 'au-dr-event', text: p.event }) : null, parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
       : h('div', { class: 'au-dr-empty', text: 'Quando nelle mail arriva un ordine o una spedizione, lo segno qui e ti dico quando arriva.' }));
   }
   if (k === 't-dead') {
@@ -4764,7 +4765,7 @@ function accountTab(body) {
   const content = {
     aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()],
     model: () => [cloudCard(), privCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
-    links: () => [gmailCard(), crmCard(), whatsappCard()],
+    links: () => [gmailCard(), trackCard(), crmCard(), whatsappCard()],
     usage: () => usageCards(),
     account: () => [hero(), securityCards(), lookCard()],
   }[sec]();
@@ -4809,6 +4810,28 @@ function lookCard() {
 }
 
 // Il CRM dei ticket: ognuno collega il suo (quello del proprietario sta sul server). La chiave non torna mai al browser.
+// Tracking dei pacchi: con la chiave di 17TRACK lo stato arriva dal corriere, senza fare niente
+function trackCard() {
+  const box = h('div', { class: 'stack' }, h('div', { class: 'list-empty', text: 'Controllo…' }));
+  const paint = (s) => {
+    if (s.linked) {
+      box.replaceChildren(h('div', { class: 'feed-set-row' }, h('div', { class: 'tx' }, h('b', { text: 'Collegato' }), h('small', { text: 'I codici trovati nelle mail si seguono da soli: controllo ogni ora e ti avviso quando cambia lo stato.' })),
+        h('button', { class: 'btn', text: 'Scollega', onclick: async () => { try { paint(await (await api('/api/tracking', undefined, { method: 'DELETE' })).json()); } catch (e) { toast(e.message); } } })));
+      return;
+    }
+    const key = h('input', { class: 'ag-in', type: 'password', autocomplete: 'off', 'aria-label': 'Chiave di 17TRACK', placeholder: 'La «Security Key» del tuo account' }), out = h('div', { class: 'form-msg' });
+    box.replaceChildren(h('div', { class: 'stack cloud-form' },
+      h('small', { class: 'cloud-note', html: 'Senza chiave i pacchi si aggiornano solo con le mail. La chiave si prende su <a href="https://api.17track.net" target="_blank" rel="noopener">api.17track.net</a>. Al servizio vanno solo i codici di tracciamento.' }),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Chiave' }), key),
+      h('div', { class: 'form-actions' }, h('button', { class: 'btn primary', text: 'Collega', onclick: async () => {
+        out.className = 'form-msg'; out.textContent = 'Provo…';
+        try { paint(await (await api('/api/tracking', { key: key.value }, { method: 'PUT' })).json()); toast('Tracking collegato'); }
+        catch (e) { out.className = 'form-msg err'; out.textContent = e.message; } } })), out));
+  };
+  api('/api/tracking').then((r) => r.json()).then(paint).catch((e) => { box.replaceChildren(h('div', { class: 'form-msg err', text: e.message })); });
+  return h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('box', 'sm') + 'Tracking dei pacchi' }),
+    h('p', { text: 'Lo stato vero dei pacchi, direttamente dal corriere.' })), box);
+}
 function crmCard() {
   const box = h('div', { class: 'stack' }, h('div', { class: 'list-empty', text: 'Controllo…' }));
   const card = h('section', { class: 'card' }, h('div', { class: 'card-head' }, h('h2', { html: icon('ticket', 'sm') + 'CRM dei ticket' }),

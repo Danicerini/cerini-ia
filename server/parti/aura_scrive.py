@@ -38,6 +38,10 @@ def init_watch_db():
             agent TEXT NOT NULL DEFAULT '', at INTEGER NOT NULL);
         """)
         c.execute("DELETE FROM mail_seen WHERE at < ?", (int(time.time()) - 30 * 86400,))
+        have = {r["name"] for r in c.execute("PRAGMA table_info(parcels)").fetchall()}
+        if "last_event" not in have:   # tracking vero: l'ultima notizia del corriere e se il numero è già registrato
+            c.execute("ALTER TABLE parcels ADD COLUMN last_event TEXT NOT NULL DEFAULT ''")
+            c.execute("ALTER TABLE parcels ADD COLUMN track_reg INTEGER NOT NULL DEFAULT 0")
 
 
 def _watch_row(uid: int):
@@ -197,6 +201,8 @@ def _deadline_of(x) -> dict | None:
 
 
 PARCEL_STATES = ("ordinato", "spedito", "in consegna", "consegnato", "problema")
+PARCEL_SAY = {"ordinato": "ordine confermato", "spedito": "è partito", "in consegna": "è in consegna oggi", "consegnato": "è stato consegnato",
+              "problema": "ha un problema con la consegna"}
 
 
 def _parcel_of(x) -> dict | None:
@@ -418,8 +424,7 @@ def _parcel_found(uid: int, info: dict, sp: dict):
         d = date.fromisoformat(sp["arrivo"])
         days = (d - local_now().date()).days
         eta = " Arriva oggi." if days <= 0 else " Arriva domani." if days == 1 else f" Arrivo previsto {GIORNI[d.weekday()]} {d.day}/{d.month}."
-    say = {"ordinato": "ordine confermato", "spedito": "è partito", "in consegna": "è in consegna oggi", "consegnato": "è stato consegnato",
-           "problema": "ha un problema con la consegna"}[status]
+    say = PARCEL_SAY[status]
     shop = f" ({sp['negozio']})" if sp["negozio"] else ""
     feed_add(uid, "parcel", f"📦 {title}", f"Il tuo pacco{shop} {say}.{eta}", {**info, "parcel_id": pid, "status": status},
              push=status in ("in consegna", "consegnato", "problema"))
@@ -432,8 +437,140 @@ def parcels_active(uid: int) -> list[dict]:
         rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND (status != 'consegnato' OR updated > ?) AND updated > ? ORDER BY updated DESC",
                          (uid, int(time.time()) - 2 * 86400, int(time.time()) - 30 * 86400)).fetchall()
     return [{"id": r["id"], "title": r["title"], "shop": r["shop"], "carrier": r["carrier"], "tracking": r["tracking"], "status": r["status"],
-             "eta": r["eta"], "link": _mail_link(r["mid"]) if r["mid"] else ""} for r in rows
+             "eta": r["eta"], "event": r["last_event"], "link": _mail_link(r["mid"]) if r["mid"] else ""} for r in rows
             if not (r["eta"] and r["eta"] < late and r["updated"] < time.time() - 7 * 86400)]
+
+
+# ---- tracking vero: i codici presi dalle mail si registrano su 17TRACK e lo stato si aggiorna da solo. La chiave è di ogni utente (user_file), mai quella di un altro.
+TRACK_API = "https://api.17track.net/track/v2.4"
+TRACK_EVERY = 3600   # lì i dati cambiano ogni 6-12 ore; registrare un numero consuma una quota, chiederne lo stato no
+_TRACK_STATES = {"InTransit": "spedito", "OutForDelivery": "in consegna", "AvailableForPickup": "in consegna", "DeliveryFailure": "problema",
+                 "Exception": "problema", "Delivered": "consegnato"}
+
+
+def _track_key() -> str:
+    try:
+        return str(json.loads(user_file("tracking.json").read_text(encoding="utf-8")).get("key") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+async def _track_post(key: str, op: str, items: list[dict]) -> dict:
+    r = await client.post(f"{TRACK_API}/{op}", headers={"17token": key}, json=items, timeout=20)
+    try:
+        d = r.json()
+    except ValueError:
+        d = {}
+    if r.status_code == 401 or d.get("code") == 401:
+        raise ValueError("la chiave non è valida")
+    if r.status_code != 200 or d.get("code") != 0:
+        raise ValueError(f"risposta {r.status_code}")
+    return d.get("data") or {}
+
+
+def _track_apply(uid: int, r, info: dict):
+    """Quello che dice il corriere: stato, arrivo previsto e ultima notizia. Si avvisa solo se lo stato cambia."""
+    ev = info.get("latest_event") or {}
+    when = str(ev.get("time_iso") or "")
+    line = ", ".join(str(x) for x in (ev.get("description"), ev.get("location")) if x)
+    if line and re.match(r"\d{4}-\d\d-\d\dT\d\d:\d\d", when):
+        line = f"{when[8:10]}/{when[5:7]} {when[11:16]} · {line}"
+    line = _clip(line, 200) or r["last_event"]
+    est = (info.get("time_metrics") or {}).get("estimated_delivery_date") or {}
+    eta = str(est.get("from") or est.get("to") or "")[:10]
+    eta = eta if re.fullmatch(r"\d{4}-\d\d-\d\d", eta) else r["eta"]
+    new = _TRACK_STATES.get((info.get("latest_status") or {}).get("status"))
+    status = _parcel_next(r["status"], new) if new else r["status"]
+    if (status, eta, line) == (r["status"], r["eta"], r["last_event"]):
+        return
+    with db() as c:
+        c.execute("UPDATE parcels SET status = ?, eta = ?, last_event = ?, updated = ? WHERE id = ?", (status, eta, line, int(time.time()), r["id"]))
+    if status != r["status"]:
+        say = "è di nuovo in viaggio" if r["status"] == "problema" and status == "spedito" else PARCEL_SAY[status]
+        feed_add(uid, "parcel", f"📦 {r['title']}", f"Il tuo pacco {say}." + (f" {line}" if line else ""),
+                 {"mid": r["mid"], "link": _mail_link(r["mid"]) if r["mid"] else "", "parcel_id": r["id"], "status": status},
+                 push=status in ("in consegna", "consegnato", "problema"))
+
+
+async def track_sync(uid: int):
+    ACT_UID.set(uid)
+    key = _track_key()
+    if not key:
+        return
+    with db() as c:
+        rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND tracking != '' AND status != 'consegnato' AND updated > ? ORDER BY updated DESC LIMIT 40",
+                         (uid, int(time.time()) - 45 * 86400)).fetchall()
+    rows = [r for r in rows if re.fullmatch(r"[A-Za-z0-9-]{5,50}", r["tracking"])]
+    new = [r for r in rows if not r["track_reg"]]
+    done = set()
+    if new:
+        d = await _track_post(key, "register", [{"number": r["tracking"]} for r in new])
+        done = {a.get("number") for a in d.get("accepted") or []}
+        done |= {x.get("number") for x in d.get("rejected") or [] if (x.get("error") or {}).get("code") == -18019901}   # già registrato
+        with db() as c:
+            c.executemany("UPDATE parcels SET track_reg = 1 WHERE id = ?", [(r["id"],) for r in new if r["tracking"] in done])
+    rows = [r for r in rows if r["track_reg"] or r["tracking"] in done]
+    if not rows:
+        return
+    d = await _track_post(key, "gettrackinfo", [{"number": r["tracking"]} for r in rows])
+    infos = {a.get("number"): a.get("track_info") or {} for a in d.get("accepted") or []}
+    for r in rows:
+        if infos.get(r["tracking"]):
+            _track_apply(uid, r, infos[r["tracking"]])
+
+
+async def parcel_track_loop():
+    await asyncio.sleep(120)
+    while True:
+        if 7 <= local_now().hour < 22:
+            with db() as c:
+                uids = [r["user_id"] for r in c.execute("SELECT DISTINCT user_id FROM parcels WHERE tracking != '' AND status != 'consegnato'").fetchall()]
+            for uid in uids:
+                try:
+                    await track_sync(uid)
+                except (ValueError, httpx.HTTPError, KeyError, TypeError) as e:   # il servizio giù non deve fermare niente
+                    print(f"Tracking: controllo non riuscito per l'utente {uid}: {type(e).__name__} {_clip(str(e), 100)}", flush=True)
+        await asyncio.sleep(TRACK_EVERY)
+
+
+class TrackKeyIn(BaseModel):
+    key: str
+
+
+@app.get("/api/tracking")
+async def tracking_status(user: dict = Depends(require_user)):
+    return {"linked": bool(_track_key())}
+
+
+@app.put("/api/tracking")
+async def tracking_link(body: TrackKeyIn, user: dict = Depends(require_user)):
+    key = body.key.strip()
+    if not re.fullmatch(r"[\w.-]{8,200}", key):
+        raise HTTPException(400, "Questa non sembra una chiave di 17TRACK")
+    try:   # chiedere lo stato di un numero qualsiasi non consuma quota: serve solo a provare la chiave
+        await _track_post(key, "gettrackinfo", [{"number": "RR123456789CN"}])
+    except ValueError as e:
+        raise HTTPException(400, f"17TRACK non accetta la chiave: {e}")
+    except httpx.HTTPError:
+        raise HTTPException(502, "17TRACK non risponde: riprova tra poco")
+    f = user_file("tracking.json")
+    f.write_text(json.dumps({"key": key}), encoding="utf-8")
+    os.chmod(f, 0o600)
+    asyncio.create_task(_track_first(user["id"]))
+    return {"linked": True}
+
+
+async def _track_first(uid: int):
+    try:
+        await track_sync(uid)
+    except (ValueError, httpx.HTTPError, KeyError, TypeError) as e:
+        print(f"Tracking: primo controllo non riuscito per l'utente {uid}: {type(e).__name__}", flush=True)
+
+
+@app.delete("/api/tracking")
+async def tracking_unlink(user: dict = Depends(require_user)):
+    user_file("tracking.json").unlink(missing_ok=True)
+    return {"linked": False}
 
 
 def deadlines_next(uid: int) -> list[dict]:
@@ -449,7 +586,8 @@ async def _tool_parcels(user: dict, args: dict, request: Request) -> dict:
         return {"content": "Nessun pacco in arrivo tra quelli che ho visto nelle mail.", "display": "Nessun pacco in arrivo"}
     lines = [f"- {p['title']}{' (' + p['shop'] + ')' if p['shop'] else ''}: {p['status']}"
              f"{', arrivo previsto ' + p['eta'] if p['eta'] and p['status'] != 'consegnato' else ''}"
-             f"{', ' + p['carrier'] if p['carrier'] else ''}{', tracciamento ' + p['tracking'] if p['tracking'] else ''}" for p in ps]
+             f"{', ' + p['carrier'] if p['carrier'] else ''}{', tracciamento ' + p['tracking'] if p['tracking'] else ''}"
+             f"{', ultima notizia del corriere: ' + p['event'] if p['event'] else ''}" for p in ps]
     return {"content": "Pacchi (dalle mail):\n" + "\n".join(lines), "display": f"Ha guardato i pacchi: {len(ps)}"}
 
 

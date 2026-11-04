@@ -449,6 +449,7 @@ async def lifespan(_app):
     voice_watch = asyncio.create_task(eleven_loop())
     tk_watch = asyncio.create_task(crm_watch_loop())
     tk_new = asyncio.create_task(crm_new_loop())
+    parcel_track = asyncio.create_task(parcel_track_loop())
     yield
     backfill.cancel()
     watcher.cancel()
@@ -460,6 +461,7 @@ async def lifespan(_app):
     voice_watch.cancel()
     tk_watch.cancel()
     tk_new.cancel()
+    parcel_track.cancel()
     await client.aclose()
 
 
