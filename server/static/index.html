@@ -382,6 +382,7 @@ button:disabled { cursor: default; }
   border: 1px solid var(--border-strong); color: var(--text-2); transition: all .15s;
 }
 .toggle:hover { background: var(--hover); color: var(--text); }
+#privBtn { width: 36px; padding: 0; justify-content: center; }
 .toggle[aria-pressed="true"] { background: var(--accent-soft); border-color: color-mix(in oklch, var(--accent) 45%, transparent); color: var(--accent); }
 .send {
   width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; background: var(--primary-bg); color: var(--primary-fg);
@@ -1308,6 +1309,7 @@ button.tool-card.link:hover { border-color: var(--accent); color: var(--text); }
   .seg button { height: 38px; }
   #scroller, #settings, #memoryView, #mailView, #agendaView, #chatList { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 }
+@media (min-width: 821px) { #newChatTop { display: none; } }
 @media (max-width: 400px) {
   .composer-bar .toggle { padding: 0 10px; }
   .mail-wrap .set-head h1 small { display: block; margin: 2px 0 0; }
@@ -2159,6 +2161,44 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
   #app.side-collapsed .foot-actions { padding: 0; justify-content: center; }
   #app.side-collapsed .acct { width: 40px; height: 40px; padding: 0; justify-content: center; flex: none; }
 }
+.stack { grid-template-columns: minmax(0, 1fr); }
+.tkp-fbtn { display: none; }
+/* telefono: prima le cose da leggere, gli strumenti non devono riempire lo schermo */
+@container tkview (max-width: 760px) {
+  .tkp-wrap { gap: 8px; }
+  .tkp-head h1 { display: none; }
+  .tkp-head .lb, .tkp-nav .lb { display: none; }
+  .tkp-head .tkp-ref { width: 32px; height: 32px; padding: 0; justify-content: center; }
+  .tkp-nav { flex-wrap: nowrap; }
+  .tkp-nav .btn { white-space: nowrap; }
+  .tkp-filters { gap: 8px; }
+  .tkp-chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -14px; padding-inline: 14px; }
+  .tkp-chips::-webkit-scrollbar { display: none; }
+  .tkp-chip { flex: none; white-space: nowrap; }
+  .tkp-fbtn { display: inline-flex; }
+  .tkp-fbtn[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+  .tkp-filters:not(.open) .tkp-tools { display: none; }
+}
+@media (max-width: 640px) {
+  .tool-card { border-radius: 14px; }
+  .tool-card .tc-undo { flex: none; }
+  .msg-actions .stats { display: none; }
+  .mail-wrap { padding: 10px 12px 32px; }
+  .mail-grid { gap: 10px; }
+  .mail-ai { padding: 12px 14px; }
+  .mail-ai.calm { display: none; }
+  .mail-search input { font-size: 16px; }
+  .mail-acts .btn { flex: 1 1 auto; justify-content: center; }
+  .mail-read { padding: 14px; }
+}
+@media (max-width: 820px) {
+  .cal-chip { border: 0; background: transparent; width: 40px; padding: 0; justify-content: center; margin-right: 0; }
+  .cc-day { padding: 0; }
+  .cc-day i { display: none; }
+  .cc-day.today b { display: grid; place-items: center; min-width: 26px; height: 26px; padding: 0 4px; font-size: 13.5px; }
+  .cc-day.has::after { display: none; }
+  .cc-count:not(:empty) { position: absolute; top: 2px; right: 0; margin: 0; }
+}
 </style>
 </head>
 <body>
@@ -2246,7 +2286,7 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
           <div class="composer-bar">
             <button type="button" class="icon-btn" id="attachBtn" title="Allega file o immagini" aria-label="Allega file" data-icon="clip"></button>
             <button type="button" class="toggle hidden" id="thinkBtn" aria-pressed="false"><span data-icon="bulb"></span>Ragiona</button>
-            <button type="button" class="toggle hidden" id="privBtn" aria-pressed="false" title="I dati personali partono coperti verso il modello e tornano veri qui"><span data-icon="shield"></span>Riservato</button>
+            <button type="button" class="toggle hidden" id="privBtn" aria-pressed="false" aria-label="Riservato" title="I dati personali partono coperti verso il modello e tornano veri qui"><span data-icon="shield"></span></button>
             <div class="grow"></div>
             <button type="button" class="icon-btn hidden" id="micBtn" title="Detta (parla e trascrivo)" aria-label="Detta un messaggio" data-icon="mic"></button>
             <button type="button" class="icon-btn hidden" id="voiceBtn" title="Conversa a voce con Aura" aria-label="Conversazione a voce" data-icon="waves"></button>

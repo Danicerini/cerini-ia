@@ -166,6 +166,13 @@ const activeModel = () => { const m = current()?.model || S.model; if (S.status?
   if (S.status && !S.status.online && S.status.cloud && !isCloudM(m)) return S.status.cloud;
   return isCloudM(m) && S.status?.cloud && m !== S.status.cloud ? S.status.cloud : m; };
 const isAdmin = () => S.me?.role === 'admin';
+const privOn = () => S.me?.private_mode !== false;   // modalità riservata: accesa se non l'ha spenta lui; decide il server
+async function privSet(on) {
+  try {
+    S.me.private_mode = (await (await api('/api/me/autonomy', { private_mode: on }, { method: 'PUT' })).json()).private_mode;
+    renderComposer(); toast(on ? 'Riservato acceso' : 'Riservato spento');
+  } catch (e) { toast(e.message); }
+}
 
 // I campi che iniziano con _ sono stato dell'interfaccia (streaming, ragionamento aperto) e non si salvano.
 // I salvataggi della stessa chat vanno in coda, cosi' non arrivano al server in ordine sbagliato.
@@ -1216,8 +1223,9 @@ function renderComposer() {
   tb.classList.toggle('hidden', !hasCap('thinking'));
   tb.setAttribute('aria-pressed', S.think);
   const pb = $('#privBtn');   // serve solo col cloud: col modello locale i dati non escono di casa
-  pb.classList.toggle('hidden', !isCloudM(m));
-  pb.setAttribute('aria-pressed', !!S.priv);
+  pb.classList.toggle('hidden', !isCloudM(m) || !isAdmin());
+  pb.setAttribute('aria-pressed', privOn());
+  pb.title = privOn() ? 'Riservato acceso: i dati personali partono coperti verso il modello' : 'Riservato spento: i dati partono in chiaro verso il modello';
   const att = $('#attachments');
   S.files = S.files || [];
   // i messaggi scritti mentre Aura risponde: partono uno alla volta, appena ha finito
@@ -1247,8 +1255,7 @@ function renderComposer() {
   if ($('#main').classList.contains('empty')) renderHero();
 }
 $('#thinkBtn').onclick = () => { S.think = !S.think; pref.set('think', S.think); renderComposer(); };
-S.priv = pref.get('riservato', false);
-$('#privBtn').onclick = () => { S.priv = !S.priv; pref.set('riservato', S.priv); renderComposer(); };
+$('#privBtn').onclick = () => privSet(!privOn());
 $('#attachBtn').onclick = () => $('#fileInput').click();
 $('#fileInput').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
 function pastedFiles(dt) {
@@ -1333,7 +1340,7 @@ comp.addEventListener('submit', (e) => {
   c.messages = c.messages.filter((m) => m.role !== 'error');
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
-  if (S.attachments.length && S.priv && isCloudM(activeModel())) toast('Con Riservato acceso le foto non vanno al modello');
+  if (S.attachments.length && privOn() && isCloudM(activeModel())) toast('Con Riservato acceso le foto non vanno al modello');
   if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
   if (S.stream) {   // sta ancora rispondendo: Invio non deve fermarlo
     S.stream.queue.push(msg);
@@ -1856,7 +1863,7 @@ async function refreshMailBadge() {
 const MAIL_BOXES = [['inbox', 'In arrivo'], ['unread', 'Non lette'], ['spam', 'Spam'], ['trash', 'Cestino']];
 function renderMailShell() {
   const root = $('#mailView');
-  const q = h('input', { type: 'search', placeholder: 'Cerca (come in Gmail, es. from:amazon)', 'aria-label': 'Cerca nella posta', value: M.q });
+  const q = h('input', { type: 'search', placeholder: 'Cerca nella posta', title: 'Come in Gmail, es. from:amazon', 'aria-label': 'Cerca nella posta', value: M.q });
   root.replaceChildren(h('div', { class: 'mail-wrap' },
     h('div', { class: 'set-head' }, h('h1', {}, 'Posta', h('small', { id: 'mailEmail', text: M.email })),
       h('div', { class: 'form-actions' },
@@ -2012,7 +2019,7 @@ function paintMailSide() {
   const groups = [...junk.reduce((g, x) => g.set(x.email, [...(g.get(x.email) || []), x]), new Map()).values()].sort((a, b) => b.length - a.length);
   const item = (x) => h('button', { class: 'mail-ai-item', onclick: () => openMailMessage(x.id) },
     h('b', { text: x.from }), h('span', { text: x.subject }), x.perche ? h('small', { text: x.perche }) : null);
-  side.replaceChildren(h('section', { class: 'card mail-ai' },
+  side.replaceChildren(h('section', { class: 'card mail-ai' + (imp.length || groups.length ? '' : ' calm') },
     h('div', { class: 'mail-ai-head' }, h('span', { html: icon('brain', 'sm') }), h('b', { text: 'Aura' })),
     h('p', { class: 'mail-ai-sum', text: t.summary || 'Ecco com\'è la posta.' }),
     imp.length ? h('div', { class: 'mail-ai-sec' }, h('h3', { text: 'Da guardare' }), ...imp.map(item)) : null,
@@ -2142,7 +2149,7 @@ function tkpList(main) {
   const title = h('h1', { text: TKP.all ? 'Tutto il CRM' : cur.nome });
   main.replaceChildren(
     h('div', { class: 'tkp-head' }, h('div', { class: 'tx' }, title, count),
-      h('button', { class: 'btn sm tkp-ref', html: icon('retry', 'sm') + 'Aggiorna', onclick: () => renderTickets(true) })),
+      h('button', { class: 'btn sm tkp-ref', 'aria-label': 'Aggiorna', html: icon('retry', 'sm') + '<span class="lb">Aggiorna</span>', onclick: () => renderTickets(true) })),
     h('div', { class: 'tkp-find' },
       h('div', { class: 'tkp-qbox' }, h('span', { class: 'tkp-qi', html: icon('search', 'sm') }), box, clear),
       h('div', { class: 'tkp-segs', role: 'group', 'aria-label': 'Dove cercare' }, scope(false, 'In questa lista'), scope(true, 'In tutto il CRM'))),
@@ -2215,8 +2222,11 @@ function tkpPaint(results, filters, count) {
     h('option', { value: '', text: label }), ...[...map.entries()].sort((a, b) => a[0].localeCompare(b[0], 'it')).map(([v, n]) => h('option', { value: v, selected: TKP.pick[key] === v ? true : null, text: `${v === 'te' ? 'Tu' : v} (${n})` }))); };
   const sortNow = TKP.q ? TKP.qsort : TKP.sort;
   const active = TKP.stato || TKP.sla || Object.values(TKP.pick).some(Boolean);
+  filters.classList.toggle('open', !!TKP.fopen);
   if (!all.length) filters.replaceChildren();
   else filters.replaceChildren(h('div', { class: 'tkp-chips' },
+    h('button', { class: 'tkp-chip tkp-fbtn', 'aria-expanded': String(!!TKP.fopen), onclick: () => { TKP.fopen = !TKP.fopen; again(); } },
+      'Filtri', Object.values(TKP.pick).some(Boolean) ? h('span', { class: 'tnum', text: String(Object.values(TKP.pick).filter(Boolean).length) }) : null),
     states.length > 1 ? chip('Tutti', all.length, !TKP.stato && !TKP.sla, '', () => { TKP.stato = ''; TKP.sla = ''; again(); }) : null,
     lateN ? chip('SLA scaduto', lateN, TKP.sla === 'late', 'late', () => { TKP.sla = TKP.sla === 'late' ? '' : 'late'; again(); }) : null,
     soonN ? chip('SLA in scadenza', soonN, TKP.sla === 'soon', 'amber', () => { TKP.sla = TKP.sla === 'soon' ? '' : 'soon'; again(); }) : null,
@@ -2321,7 +2331,7 @@ async function tkpDetail(main, no) {
   main.replaceChildren(
     h('div', { class: 'tkp-nav' }, h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('span', { class: 'grow' }),
       pos >= 0 && TKP.nav.length > 1 ? h('span', { class: 'tkp-pager' }, step(-1, 'Ticket precedente', '‹'), h('small', { class: 'tnum', text: `${pos + 1} di ${TKP.nav.length}` }), step(1, 'Ticket successivo', '›')) : null,
-      h('button', { class: 'btn sm', html: icon('retry', 'sm') + 'Aggiorna', onclick: () => tkpDetail(main, t.no) }),
+      h('button', { class: 'btn sm', 'aria-label': 'Aggiorna', html: icon('retry', 'sm') + '<span class="lb">Aggiorna</span>', onclick: () => tkpDetail(main, t.no) }),
       t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null),
     h('header', { class: 'tkp-top' },
       h('div', { class: 'tkp-tags' }, h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
@@ -3123,7 +3133,6 @@ function feedCard(it) {
     if (it.body) body.push(h('div', { class: 'au-text', text: it.body }));
     body.push(parcelTrack(p?.status || d.status));
     if (p?.tracking || p?.carrier) body.push(h('div', { class: 'au-sub mono', text: [p.carrier, p.tracking].filter(Boolean).join(' · ') }));
-    if (p && p.status !== 'consegnato' && !done) chips.push(chip('L\'ho ricevuto', 'check', () => feedAct(it, 'parcel_done')));
     if (link) chips.push(link);
   } else if (it.kind === 'checked') {
     const items = d.items || [];
@@ -4488,8 +4497,11 @@ async function run(chat) {
   let ended = 'ok';
   renderAll(); scrollToBottom(true);
 
-  // Al modello vanno solo i messaggi veri (utente, assistente, esiti degli strumenti), non le schede dell'interfaccia
-  const history = chat.messages.slice(0, -1).filter((m) => ['user', 'assistant', 'tool'].includes(m.role) || (m.role === 'feed' && S.feed?.[m.fid])).map((m) => {
+  // Al modello vanno solo i messaggi veri (utente, assistente, esiti degli strumenti), non le schede dell'interfaccia.
+  // Degli avvisi di «Da Aura» solo gli ultimi di oggi: per il resto ha gli strumenti. I codici e le pulizie della posta non gli servono mai.
+  const feedNow = new Set(chat.messages.filter((m) => { const it = m.role === 'feed' && S.feed?.[m.fid];
+    return it && !['code', 'trashed', 'checked', 'power'].includes(it.kind) && Date.now() / 1000 - it.at < 86400; }).slice(-5).map((m) => m.fid));
+  const history = chat.messages.slice(0, -1).filter((m) => ['user', 'assistant', 'tool'].includes(m.role) || (m.role === 'feed' && feedNow.has(m.fid))).map((m) => {
     if (m.role === 'feed') {
       const it = S.feed[m.fid], when = new Date(it.at * 1000).toLocaleString('it-IT', { weekday: 'long', hour: '2-digit', minute: '2-digit' });
       return { role: 'assistant', content: `[Messaggio che hai scritto tu per primo, ${when}] ${it.title}\n${it.body || ''}`.trim() };
@@ -4515,7 +4527,7 @@ async function run(chat) {
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
 
   try {
-    const r = await api('/api/chat', { model, messages: history, chat_id: chat.id, private: !!S.priv && isCloudM(model), think: hasCap('thinking') && S.think ? true : undefined,
+    const r = await api('/api/chat', { model, messages: history, chat_id: chat.id, think: hasCap('thinking') && S.think ? true : undefined,
       voice: Voice.on || undefined }, { signal: controller.signal });
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '';
@@ -4693,7 +4705,7 @@ function accountTab(body) {
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const content = {
     aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()],
-    model: () => [cloudCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
+    model: () => [cloudCard(), privCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
     links: () => [gmailCard(), crmCard(), whatsappCard()],
     usage: () => usageCards(),
     account: () => [hero(), securityCards(), lookCard()],
@@ -4977,6 +4989,13 @@ function voiceCard() {
     box.lastChild.replaceWith(h('div', { class: 'vc-body' }, ...parts));
   })();
   return box;
+}
+// Modalità riservata: da qui per tutti; gli amministratori hanno anche lo scudo nella riga di input
+function privCard() {
+  const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(privOn()), 'aria-label': 'Modalità riservata', onclick: async () => {
+    await privSet(!privOn()); sw.setAttribute('aria-checked', String(privOn())); } }, h('span'));
+  return h('section', { class: 'card row-card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Riservato' }),
+    h('p', { text: 'Con un modello nel cloud i dati personali partono coperti e tornano veri qui. Finché è acceso le foto non vanno al modello e non si creano immagini.' })), sw);
 }
 // Quale modello parte da solo quando apri l'app: Gemma sul PC di casa o il modello nel cloud
 function startModelCard() {

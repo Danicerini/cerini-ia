@@ -82,7 +82,6 @@ class ChatReq(BaseModel):
     think: bool | None = None
     chat_id: str | None = None   # la chat aperta: la memoria delle conversazioni cerca nelle ALTRE
     voice: bool = False          # modalita' conversazione: la risposta viene letta ad alta voce
-    private: bool = False        # scudo «Riservato»: i dati personali partono coperti (riservato.py)
 
 
 class ChatDoc(BaseModel):
@@ -218,7 +217,7 @@ async def me(user: dict = Depends(require_user)):
             "homebase": is_owner(user["id"]) and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]),
             "needs_provider": not is_owner(user["id"]) and not cloud_ready(),
             "autonomy": autonomy(user), "autonomy_groups": [g for g, d in AUTONOMY.items() if admin or not d["admin"]], "aura_chat": aura_chat_id(user["id"]),
-            "mem_display": _prefs(user).get("mem_display", "list"), "start_model": _prefs(user).get("start_model", "local")}
+            "mem_display": _prefs(user).get("mem_display", "list"), "start_model": _prefs(user).get("start_model", "local"), "private_mode": _prefs(user).get("private_mode") is not False}
 
 
 def _prefs(user: dict) -> dict:
@@ -255,6 +254,7 @@ class AutonomyIn(BaseModel):
     autonomy: dict[str, str] = {}
     mem_display: str | None = None   # "list" = elenco sotto la risposta, "icon" = solo un simbolo
     start_model: str | None = None   # "local" = Gemma sul PC di casa, "cloud" = il modello nel cloud
+    private_mode: bool | None = None   # scudo «Riservato»: acceso se l'utente non l'ha spento (riservato.py)
 
 
 class ActiveModelIn(BaseModel):
@@ -289,9 +289,11 @@ async def set_autonomy(body: AutonomyIn, user: dict = Depends(require_user)):
         prefs["mem_display"] = body.mem_display
     if body.start_model in ("local", "cloud"):
         prefs["start_model"] = body.start_model
+    if body.private_mode is not None:
+        prefs["private_mode"] = body.private_mode
     with db() as c:
         c.execute("UPDATE users SET prefs = ? WHERE id = ?", (json.dumps(prefs), user["id"]))
-    return {"autonomy": cur, "mem_display": prefs.get("mem_display", "list"), "start_model": prefs.get("start_model", "local")}
+    return {"autonomy": cur, "mem_display": prefs.get("mem_display", "list"), "start_model": prefs.get("start_model", "local"), "private_mode": prefs.get("private_mode") is not False}
 
 
 PERSONA_OPTS = {

@@ -549,6 +549,8 @@ ADMIN_TOOLS = {"elenco_utenti", "crea_invito"}
 TECH_TOPIC = re.compile(r"\b(subnet\w*|cidr|netmask|maschera|password|passphrase|confront\w*|differenz\w*|diff|strument\w*|tool)\b", re.I)
 ADMIN_TOPIC = re.compile(r"\b(utent[ei]|invit\w*|account)\b", re.I)
 CRM_TOPIC = re.compile(r"\b(ticket\w*|tiket\w*|tichet\w*|tk[-\s]?\d+|tk|crm)\b", re.I)
+PARCEL_TOPIC = re.compile(r"\b(pacc\w*|ordin\w*|spedi\w*|spedizion\w*|consegn\w*|corrier\w*|tracking|amazon|aliexpress|ups|brt|gls|dhl|sda|temu)\b", re.I)
+CLIENTI_TOPIC = re.compile(r"\b(clienti|vetrin\w*|siti|senza sito|attivit\w* della zona)\b", re.I)
 CONS_TOPIC = re.compile(r"\b(consuntiv\w*|ore lavorat\w*|riepilogo (delle ore|della giornata|di oggi|di ieri)|quante ore)\b", re.I)
 
 
@@ -557,6 +559,8 @@ def _tool_group(name: str) -> str:
         return "tech"
     if name in ADMIN_TOOLS:
         return "admin"
+    if name in ("pacchi", "clienti"):
+        return name
     if name.startswith("consuntivo"):
         return "cons"
     if name.startswith("ticket_"):
@@ -582,7 +586,7 @@ _GLUED_ARTICLE = re.compile(r"\b(?:l|un|dell|all|nell|sull|dall)(?=[aeiouàèé�
 def _text_topics(text: str) -> set:
     text = text + "\n" + _GLUED_ARTICLE.sub("", text)
     return {t for t, rx in (("mail", MAIL_TOPIC), ("site", SITE_TOPIC), ("cal", CAL_TOPIC), ("hb", HB_TOPIC), ("file", FILE_TOPIC),
-                            ("tech", TECH_TOPIC), ("admin", ADMIN_TOPIC), ("cons", CONS_TOPIC), ("crm", CRM_TOPIC)) if rx.search(text)}
+                            ("tech", TECH_TOPIC), ("admin", ADMIN_TOPIC), ("cons", CONS_TOPIC), ("crm", CRM_TOPIC), ("pacchi", PARCEL_TOPIC), ("clienti", CLIENTI_TOPIC)) if rx.search(text)}
 
 
 def _topics(messages: list[dict]) -> set:
@@ -609,9 +613,9 @@ def _topics(messages: list[dict]) -> set:
 # Ogni strumento mandato al modello costa token a ogni chiamata (tutti insieme ~15 mila). Se il messaggio non tocca un
 # argomento preciso partono solo quelli di base; gli altri il modello li chiede con strumenti_extra e li riceve al volo.
 EXTRA_GROUPS = {"posta": "mail", "agenda": "cal", "homebase": "hb", "sito": "site", "file": "file", "tecnici": "tech", "utenti": "admin",
-                "consuntivo": "cons", "ticket": "crm"}
+                "consuntivo": "cons", "ticket": "crm", "pacchi": "pacchi", "clienti": "clienti"}
 EXTRA_TOOLS_SPEC = _fn("strumenti_extra", "Se per la richiesta ti serve uno strumento che non vedi tra i tuoi (posta, agenda e promemoria, "
-                       "Homebase, sito del locale, file allegati, tecnici: subnet/password/confronto testi, utenti dell'app, ticket del CRM di lavoro), chiedilo qui: "
+                       "Homebase, sito del locale, file allegati, tecnici: subnet/password/confronto testi, utenti dell'app, ticket del CRM di lavoro, pacchi in arrivo, clienti dei siti vetrina), chiedilo qui: "
                        "te lo do subito e poi lo usi.",
                        {"argomento": {"type": "string", "enum": list(EXTRA_GROUPS)}}, ["argomento"])
 
@@ -695,10 +699,36 @@ CLOUD_HISTORY_CTX = int(os.environ.get("CLOUD_HISTORY_CTX", "24000"))   # col cl
 ACCOUNT_HISTORY_CTX = int(os.environ.get("ACCOUNT_HISTORY_CTX", "100000"))
 
 
-def _fit_history(messages: list[dict], fixed_chars: int, ctx: int = 0) -> list[dict]:
+AURA_HISTORY_CHARS = 16000   # «Da Aura» è una chat senza fine: basta il discorso in corso
+
+
+def _lean_history(messages: list[dict]) -> list[dict]:
+    """Al modello servono il turno in corso e quello prima: gli esiti vecchi degli strumenti e le foto vecchie restano
+    nella chat, ma non ripartono a ogni messaggio. Se gli servono di nuovo richiama lo strumento."""
+    users = [i for i, m in enumerate(messages) if m.get("role") == "user"]
+    if len(users) < 2:
+        return messages
+    short = lambda s: s if len(s) <= 120 else s[:120] + "…"
+    out = []
+    for i, m in enumerate(messages):
+        if i < users[-2]:
+            m = dict(m)
+            if m.get("role") == "tool":
+                m["content"] = "[Esito vecchio, tolto per non rimandarlo ogni volta: se ti serve richiama lo strumento.]"
+            if m.get("tool_calls"):
+                m["tool_calls"] = [{**c, "function": {**c.get("function", {}), "arguments": _mask_walk(_parse_args(c.get("function", {}).get("arguments")), short)}} for c in m["tool_calls"]]
+            if m.pop("images", None):
+                m["content"] = (m.get("content") or "") + "\n[Qui c'era una foto, non più allegata.]"
+        out.append(m)
+    return out
+
+
+def _fit_history(messages: list[dict], fixed_chars: int, ctx: int = 0, cap: int = 0) -> list[dict]:
     """Se la chat non ci sta nel contesto del modello, toglie i messaggi piu' vecchi (a turni interi).
     Senza questo Ollama taglierebbe da solo, a caso, anche a meta' di un messaggio."""
     budget = (ctx or NUM_CTX or 8192) * 3 - fixed_chars - 4000   # ~3 caratteri per token in italiano, piu' spazio per la risposta
+    if cap:
+        budget = min(budget, cap)
     size = lambda m: len(m.get("content") or "") + len(m.get("thinking") or "") + 800 * len(m.get("images") or []) + 40
     hist = list(messages)
     while len(hist) > 1 and sum(size(m) for m in hist) > budget:
@@ -797,7 +827,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
 
     async def stream():
         try:
-            private = body.private and is_cloud(body.model)
+            private = _prefs(user).get("private_mode") is not False and is_cloud(body.model)
             if private:
                 try:
                     ACT_MASK.set(mask_for(user, body.chat_id))
@@ -879,7 +909,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 sys_txt += MASK_PROMPT
             # con un abbonamento non si paga a token: un limite stretto farebbe solo dimenticare la chat
             hist_ctx = (ACCOUNT_HISTORY_CTX if is_account() else min(ctx, CLOUD_HISTORY_CTX)) if is_cloud(body.model) else ctx
-            msgs = [{"role": "system", "content": sys_txt}] + _fit_history(files_for_prompt(user, body.messages), len(sys_txt) + len(json.dumps(tools)), hist_ctx)
+            msgs = [{"role": "system", "content": sys_txt}] + _fit_history(_lean_history(files_for_prompt(user, body.messages)), len(sys_txt) + len(json.dumps(tools)), hist_ctx,
+                                                                           AURA_HISTORY_CHARS if body.chat_id == aura_chat_id(user["id"]) else 0)
             answered = False   # la risposta all'utente e' gia' scritta: i passaggi successivi sistemano solo i ricordi
             saved = False      # in questo turno ha chiamato davvero ricorda / aggiorna_ricordo
             retried = False    # risposta vuota gia' ritentata
