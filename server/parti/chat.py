@@ -506,7 +506,7 @@ MAIL_TOPIC = re.compile(r"\b(" + MAIL_WORD + r"|posta|gmail|inbox|casella|spam|n
                         r"disiscriv\w*|iscrizion\w*)\b", re.I)
 SITE_TOPIC = re.compile(r"\b(sito|men[uù]|piatt\w*|carta|propost\w* del giorno|event\w*|appuntament\w*|allergen\w*|"
                         r"categori\w*|prodott\w*|serat\w*|pranzo|cena del|baita)\b", re.I)
-CAL_TOPIC = re.compile(r"\b(da fare|programma|mattina|calendari\w*|agenda|ricordami|ricordarmi|avvisami|promemoria|impegn\w*|riunion\w*|"
+CAL_TOPIC = re.compile(r"\b(da fare|programma|briefing|calendari\w*|agenda|ricordami|ricordarmi|avvisami|promemoria|impegn\w*|riunion\w*|"
                        r"appuntamento|sveglia|scadenz\w*|dentista|medico|visita|alle \d{1,2}|stasera|domattina|"
                        r"settimana prossima|libero|occupat\w*)\b", re.I)
 HB_TOPIC = re.compile(r"\b(note?|nota|appunt\w*|segnat\w*|scratchpad|s\w{0,2}r?a\w{0,3}pa?d\w*|scrach\w*|scrat\w*|archiviat\w*|fogli[oe]?|homebase|dashboard|servizi?|rete|dispositiv\w*|router|switch|"
@@ -563,7 +563,7 @@ def _tool_group(name: str) -> str:
         return name
     if name.startswith("consuntivo"):
         return "cons"
-    if name == "mattina":
+    if name == "briefing":
         return "cal"
     if name.startswith("ticket_"):
         return "crm"
@@ -578,7 +578,7 @@ def _tool_group(name: str) -> str:
     return "site" if SITE_TOOL.match(name) else ""
 
 
-SHOWN_TOOLS = {"homebase_procedura_leggi", "homebase_nota", "mattina"}   # mostrano tutto su una scheda: riscriverlo sarebbe un doppione
+SHOWN_TOOLS = {"homebase_procedura_leggi", "homebase_nota", "briefing"}   # mostrano tutto su una scheda: riscriverlo sarebbe un doppione
 SEND_TO_RE = re.compile(r"\b(mand\w*|invi\w*|spedisc\w*|spedi\w*|inoltr\w*|scriv\w*gli|scriv\w*le|giralo|girala)\b", re.I)
 
 
@@ -837,8 +837,8 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 except ValueError:   # un giorno che non si capisce: ci pensa il modello
                     view = None
                 if view:
-                    yield ev(event="assistant_tool_calls", message={"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "mattina", "arguments": {"giorno": when}}}]})
-                    yield ev(event="tool_result", message={"role": "tool", "tool_name": "mattina", "content": morning_text(view)}, display="Il punto della giornata", view=view)
+                    yield ev(event="assistant_tool_calls", message={"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "briefing", "arguments": {"giorno": when}}}]})
+                    yield ev(event="tool_result", message={"role": "tool", "tool_name": "briefing", "content": morning_text(view)}, display="Il punto della giornata", view=view)
                     yield json.dumps({"message": {"role": "assistant", "content": morning_note(user, view)}, "done": False}, ensure_ascii=False) + "\n"
                     yield json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}) + "\n"
                     return

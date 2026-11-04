@@ -3009,7 +3009,7 @@ function consFill(v, missing) {
     h('small', { text: checks.length ? 'Le cose che fai spesso: spunta solo quelle fatte davvero quel giorno.' : 'Scrivi solo quello che hai fatto davvero quel giorno.' }),
     ...checks.map(([, l]) => l), other, out, h('div', { class: 'cons-fill-f' }, go));
 }
-// /mattina: agenda, cose da fare e quelle rimaste indietro; si spuntano da qui
+// /briefing: agenda, cose da fare e quelle rimaste indietro; si spuntano da qui
 function morningView(v, save) {
   const long = new Date(`${v.day}T12:00:00`).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
   const dd = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;

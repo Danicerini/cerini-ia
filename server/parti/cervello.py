@@ -1187,9 +1187,9 @@ BUILTIN_SKILLS = {
                    "2. The user already sees the table: answer in one or two sentences, NO table and NO list. Say how much is missing to 8 hours, never pad times.\n"
                    "3. Only work for the user's company and its clients goes in: personal projects, the assistant itself and friends' sites never.\n"
                    "4. Times are multiples of 30 minutes, at least 30 per item. If the user adds work, log it with lavoro_fatto and redo the table."),
-    "mattina": ("Mattina", "Il punto della giornata: agenda, cose da fare e quelle rimaste indietro. /mattina, oppure /mattina domani.", "punto della giornata, programma di oggi",
-                "mattina,calendario_,promemoria,diario_", False,
-                "1. Call mattina with the day (empty = today).\n2. The user already sees the card: answer in one sentence, NO list.\n"
+    "briefing": ("Briefing", "Il punto della giornata: agenda, cose da fare e quelle rimaste indietro. /briefing, oppure /briefing domani.", "punto della giornata, programma di oggi",
+                "briefing,calendario_,promemoria,diario_", False,
+                "1. Call briefing with the day (empty = today).\n2. The user already sees the card: answer in one sentence, NO list.\n"
                 "3. When the user says something is done, mark it: diario_fatto or promemoria_fatto."),
     "web": ("Web", "Cercare su internet e leggere le pagine.", "cerca su internet, cerca online, notizie, meteo",
             "web_", False, "1. Search with web_cerca, then read the best result with web_leggi.\n2. Answer citing the sources (site name)."),
@@ -2288,7 +2288,7 @@ async def _tool_diary_note(user: dict, args: dict, request: Request) -> dict:
             "display": f"Nel diario {when}" + (f" · {sec}" if sec.lower() != title.lower() else "") + f": «{title}»", "open": rel}
 
 
-# ---- /mattina: il punto della giornata, fatto direttamente dai dati (agenda e diario), senza passare dal modello
+# ---- /briefing: il punto della giornata, fatto direttamente dai dati (agenda e diario), senza passare dal modello
 MORNING_WORDS = re.compile(r"(?:(?:buongiorno|buondì|ciao|ehi|aura)[,!. ]+)*(?:cosa|che)(?: cosa)?(?: c'?è| ci sta| ho| devo| abbiamo)?(?: da)? fare(?: di bello)?"
                            r"(?P<when> oggi| stamattina| stamani| questa mattina| domani)?[\s?!.]*", re.I)
 
@@ -2296,7 +2296,7 @@ MORNING_WORDS = re.compile(r"(?:(?:buongiorno|buondì|ciao|ehi|aura)[,!. ]+)*(?:
 def morning_ask(messages: list[dict]) -> str | None:
     """Il giorno chiesto, o None. «Cosa devo fare?» da solo vale solo all'inizio di una chat: più avanti è una domanda su quello di cui si parla."""
     last = _last_user_text(messages).strip()
-    m = re.fullmatch(r"/mattina(?:\s+(.{1,30}))?", last, re.I)
+    m = re.fullmatch(r"/briefing(?:\s+(.{1,30}))?", last, re.I)
     if m:
         return (m.group(1) or "").strip()
     m = MORNING_WORDS.fullmatch(last)
@@ -2358,8 +2358,8 @@ async def _tool_morning(user: dict, args: dict, request: Request) -> dict:
     return {"content": morning_text(v), "display": "Il punto della giornata", "view": v}
 
 
-TOOLS["mattina"] = {"admin": False, "confirm": False, "run": _tool_morning, "spec": _fn(
-    "mattina", "Mostra all'utente il punto di un giorno su una scheda: agenda, cose da fare di quel giorno e quelle rimaste indietro. Usalo quando chiede cosa c'è da fare.",
+TOOLS["briefing"] = {"admin": False, "confirm": False, "run": _tool_morning, "spec": _fn(
+    "briefing", "Mostra all'utente il punto di un giorno su una scheda: agenda, cose da fare di quel giorno e quelle rimaste indietro. Usalo quando chiede cosa c'è da fare.",
     {"giorno": {"type": "string", "description": "Il giorno, es. «domani» o 2026-11-05; vuoto = oggi"}})}
 
 
