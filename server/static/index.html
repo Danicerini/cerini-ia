@@ -2176,7 +2176,9 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
 .au-dr-event { flex: 1 1 100%; order: 2; font-size: 12.5px; color: var(--text-2); }
 .au-strip-panel { width: min(560px, calc(100vw - 32px)); max-height: min(60vh, 460px); overflow-y: auto; padding: 8px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--raised); box-shadow: 0 10px 30px rgb(0 0 0 / .3); }
 .au-strip-panel .au-drawer { border-top: 0; padding-top: 0; }
-.au-prob { flex: 1 1 100%; order: 3; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; font-size: 13px; color: var(--err); background: color-mix(in oklch, var(--err) 10%, transparent); }
+.au-track-wrap { flex: 1 1 100%; order: 3; display: grid; gap: 6px; }
+.au-track-wrap .au-track { margin-bottom: 0; order: 0; }
+.au-prob { font-size: 12.5px; font-weight: 500; text-align: center; color: var(--err); }
 @media (max-width: 820px) { .au-strip-wrap { margin-bottom: -24px; } }
 @media (max-width: 480px) { .au-sc .lb { display: none; } .au-sc { padding: 0 8px 0 4px; } }
 .tk-rest { margin-top: 8px; }

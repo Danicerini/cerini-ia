@@ -2929,11 +2929,12 @@ function daySep(ts) {
   return h('div', { class: 'au-day', role: 'separator' }, h('span', { text: txt }));
 }
 // Il pacco: i quattro passaggi, con quello attuale acceso
-function parcelTrack(status) {
-  const k = PARCEL_STEPS.indexOf(status);
-  if (status === 'problema') return h('div', { class: 'au-prob', html: icon('bell', 'sm') + 'Problema con la consegna: guarda la mail' });
-  return h('div', { class: 'au-track', 'aria-label': 'Stato: ' + status },
+function parcelTrack(status, p) {
+  // con un problema i pallini restano dove era arrivato, in rosso: con un codice il pacco è almeno partito
+  const bad = status === 'problema', k = PARCEL_STEPS.indexOf(bad ? (p && !p.tracking && !p.event ? 'ordinato' : 'spedito') : status);
+  const track = h('div', { class: 'au-track' + (bad ? ' bad' : ''), 'aria-label': 'Stato: ' + status },
     ...PARCEL_STEPS.map((st, n) => h('div', { class: 'au-step' + (n <= k ? ' on' : '') + (n === k ? ' now' : '') }, h('i'), h('span', { text: st }))));
+  return bad ? h('div', { class: 'au-track-wrap' }, track, h('div', { class: 'au-prob', text: 'Problema con la consegna: guarda la mail' })) : track;
 }
 // ------------------------------------------------------------------ Homebase (amministrazione)
 // Le richieste della Homebase in «Da Aura» e le risposte degli strumenti admin in chat: con lo stile della Homebase
@@ -3151,7 +3152,7 @@ function feedCard(it) {
     const p = (S.feedInfo?.parcels || []).find((x) => x.id === d.parcel_id);
     body.push(h('div', { class: 'au-title', text: title }));
     if (it.body) body.push(h('div', { class: 'au-text', text: it.body }));
-    body.push(parcelTrack(p?.status || d.status));
+    body.push(parcelTrack(p?.status || d.status, p));
     if (p?.event) body.push(h('div', { class: 'au-sub', text: p.event }));
     if (p?.tracking || p?.carrier) body.push(h('div', { class: 'au-sub mono', text: [p.carrier, p.tracking].filter(Boolean).join(' · ') }));
     if (link) chips.push(link);
@@ -3198,7 +3199,7 @@ function auPanel(k) {
     const all = f.parcels || [];
     return h('div', { class: 'au-drawer' }, all.length ? all.map((p) => h('div', { class: 'au-dr-row' },
       h('div', { class: 'tx' }, h('b', { text: p.title }), h('small', { text: [p.shop, p.carrier, p.tracking, p.eta && p.status !== 'consegnato' ? 'arrivo ' + shortDay(p.eta) : ''].filter(Boolean).join(' · ') })),
-      p.event ? h('small', { class: 'au-dr-event', text: p.event }) : null, parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
+      p.event ? h('small', { class: 'au-dr-event', text: p.event }) : null, parcelTrack(p.status, p), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
       : h('div', { class: 'au-dr-empty', text: 'Quando nelle mail arriva un ordine o una spedizione, lo segno qui e ti dico quando arriva.' }));
   }
   if (k === 't-dead') {
