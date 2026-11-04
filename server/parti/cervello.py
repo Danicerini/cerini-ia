@@ -1187,6 +1187,10 @@ BUILTIN_SKILLS = {
                    "2. The user already sees the table: answer in one or two sentences, NO table and NO list. Say how much is missing to 8 hours, never pad times.\n"
                    "3. Only work for the user's company and its clients goes in: personal projects, the assistant itself and friends' sites never.\n"
                    "4. Times are multiples of 30 minutes, at least 30 per item. If the user adds work, log it with lavoro_fatto and redo the table."),
+    "mattina": ("Mattina", "Il punto della giornata: agenda, cose da fare e quelle rimaste indietro. /mattina, oppure /mattina domani.", "punto della giornata, programma di oggi",
+                "mattina,calendario_,promemoria,diario_", False,
+                "1. Call mattina with the day (empty = today).\n2. The user already sees the card: answer in one sentence, NO list.\n"
+                "3. When the user says something is done, mark it: diario_fatto or promemoria_fatto."),
     "web": ("Web", "Cercare su internet e leggere le pagine.", "cerca su internet, cerca online, notizie, meteo",
             "web_", False, "1. Search with web_cerca, then read the best result with web_leggi.\n2. Answer citing the sources (site name)."),
 }
@@ -2282,6 +2286,81 @@ async def _tool_diary_note(user: dict, args: dict, request: Request) -> dict:
             if asked and not pr else "")
     return {"content": f"Scritto nel diario {when} ({rel}), nella sezione «{sec}».{note}",
             "display": f"Nel diario {when}" + (f" · {sec}" if sec.lower() != title.lower() else "") + f": «{title}»", "open": rel}
+
+
+# ---- /mattina: il punto della giornata, fatto direttamente dai dati (agenda e diario), senza passare dal modello
+MORNING_WORDS = re.compile(r"(?:(?:buongiorno|buondì|ciao|ehi|aura)[,!. ]+)*(?:cosa|che)(?: cosa)?(?: c'?è| ci sta| ho| devo| abbiamo)?(?: da)? fare(?: di bello)?"
+                           r"(?P<when> oggi| stamattina| stamani| questa mattina| domani)?[\s?!.]*", re.I)
+
+
+def morning_ask(messages: list[dict]) -> str | None:
+    """Il giorno chiesto, o None. «Cosa devo fare?» da solo vale solo all'inizio di una chat: più avanti è una domanda su quello di cui si parla."""
+    last = _last_user_text(messages).strip()
+    m = re.fullmatch(r"/mattina(?:\s+(.{1,30}))?", last, re.I)
+    if m:
+        return (m.group(1) or "").strip()
+    m = MORNING_WORDS.fullmatch(last)
+    if not m or (not m.group("when") and sum(x.get("role") == "user" for x in messages) > 1):
+        return None
+    return "domani" if "domani" in (m.group("when") or "").lower() else ""
+
+
+async def morning_data(user: dict, when: str = "") -> dict:
+    uid = user["id"]
+    today = local_now().date()
+    d = _parse_day(when) if when and when.lower() != "oggi" else today
+    d = d.date() if hasattr(d, "date") else d
+    day = d.isoformat()
+    agenda = [{"id": e["id"], "title": e["title"], "time": e["time"], "end_time": e["end_time"], "kind": e["kind"], "location": e["location"], "done": e["done"]}
+              for e in await cal_events(uid, 1, start_day=d)]
+    midnight = _ts(d)
+    with db() as c:   # i promemoria passati e mai segnati come fatti
+        rows = c.execute("SELECT * FROM agenda WHERE user_id = ? AND kind = 'promemoria' AND done = 0 AND start_ts < ? AND start_ts > ? ORDER BY start_ts",
+                         (uid, midnight, midnight - 30 * 86400)).fetchall()
+    late = [{"id": e["id"], "text": e["title"], "day": e["day"]} for e in (_ev_out(uid, r) for r in rows)]
+    start = (d - timedelta(days=30)).isoformat()
+    todo, seen = [], set()
+    for e in sorted(diary_entries(user, start, day), key=lambda x: x["day"], reverse=True):   # dalla più recente: una cosa riscritta conta una volta
+        if e["dropped"]:
+            continue
+        for t in e["todo"]:
+            core = _todo_core(t).lower()
+            if core not in seen:
+                seen.add(core)
+                (todo if e["day"] == day else late).append({"path": e["path"], "text": t, "day": e["day"]})
+    late.sort(key=lambda x: x["day"])
+    return {"kind": "morning", "day": day, "today": d == today, "agenda": agenda, "todo": todo, "late": late}
+
+
+def morning_text(v: dict) -> str:
+    """Quello che resta al modello per le domande dopo."""
+    line = lambda x: f"- {x['day'][8:]}/{x['day'][5:7]}: {x['text']}"
+    return (f"Il punto del {v['day']}, già mostrato all'utente su una scheda: non riscriverlo.\nAgenda:\n"
+            + ("\n".join(f"- {e['time'] or 'tutto il giorno'} {e['title']}{' (fatto)' if e['done'] else ''}" for e in v["agenda"]) or "niente")
+            + "\nDa fare quel giorno:\n" + ("\n".join(f"- {t['text']}" for t in v["todo"]) or "niente")
+            + "\nRimaste indietro:\n" + ("\n".join(line(t) for t in v["late"]) or "niente"))
+
+
+def morning_note(user: dict, v: dict) -> str:
+    n = lambda k, one, many: f"{k} {one if k == 1 else many}"
+    ag = sum(not e["done"] for e in v["agenda"])
+    parts = [p for p in (n(ag, "impegno", "impegni") if ag else "", n(len(v["todo"]), "cosa da fare", "cose da fare") if v["todo"] else "",
+                         n(len(v["late"]), "rimasta indietro", "rimaste indietro") if v["late"] else "") if p]
+    what = (", ".join(parts[:-1]) + " e " + parts[-1] if len(parts) > 1 else parts[0]) if parts else ""
+    hello = (("Buongiorno" if local_now().hour < 13 else "Ciao") + f" {_nick(user)}! ").replace("  ", " ") if v["today"] else ""
+    if v["today"]:
+        return hello + (f"Oggi hai {what}." if what else "Oggi non hai niente in programma.")
+    return f"Quel giorno hai {what}." if what else "Quel giorno non hai niente in programma."
+
+
+async def _tool_morning(user: dict, args: dict, request: Request) -> dict:
+    v = await morning_data(user, str(args.get("giorno") or ""))
+    return {"content": morning_text(v), "display": "Il punto della giornata", "view": v}
+
+
+TOOLS["mattina"] = {"admin": False, "confirm": False, "run": _tool_morning, "spec": _fn(
+    "mattina", "Mostra all'utente il punto di un giorno su una scheda: agenda, cose da fare di quel giorno e quelle rimaste indietro. Usalo quando chiede cosa c'è da fare.",
+    {"giorno": {"type": "string", "description": "Il giorno, es. «domani» o 2026-11-05; vuoto = oggi"}})}
 
 
 async def _tool_diary_done(user: dict, args: dict, request: Request) -> dict:

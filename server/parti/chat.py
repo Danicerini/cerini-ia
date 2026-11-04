@@ -506,7 +506,7 @@ MAIL_TOPIC = re.compile(r"\b(" + MAIL_WORD + r"|posta|gmail|inbox|casella|spam|n
                         r"disiscriv\w*|iscrizion\w*)\b", re.I)
 SITE_TOPIC = re.compile(r"\b(sito|men[uù]|piatt\w*|carta|propost\w* del giorno|event\w*|appuntament\w*|allergen\w*|"
                         r"categori\w*|prodott\w*|serat\w*|pranzo|cena del|baita)\b", re.I)
-CAL_TOPIC = re.compile(r"\b(calendari\w*|agenda|ricordami|ricordarmi|avvisami|promemoria|impegn\w*|riunion\w*|"
+CAL_TOPIC = re.compile(r"\b(da fare|programma|mattina|calendari\w*|agenda|ricordami|ricordarmi|avvisami|promemoria|impegn\w*|riunion\w*|"
                        r"appuntamento|sveglia|scadenz\w*|dentista|medico|visita|alle \d{1,2}|stasera|domattina|"
                        r"settimana prossima|libero|occupat\w*)\b", re.I)
 HB_TOPIC = re.compile(r"\b(note?|nota|appunt\w*|segnat\w*|scratchpad|s\w{0,2}r?a\w{0,3}pa?d\w*|scrach\w*|scrat\w*|archiviat\w*|fogli[oe]?|homebase|dashboard|servizi?|rete|dispositiv\w*|router|switch|"
@@ -563,6 +563,8 @@ def _tool_group(name: str) -> str:
         return name
     if name.startswith("consuntivo"):
         return "cons"
+    if name == "mattina":
+        return "cal"
     if name.startswith("ticket_"):
         return "crm"
     if name.startswith("homebase_"):
@@ -576,6 +578,7 @@ def _tool_group(name: str) -> str:
     return "site" if SITE_TOOL.match(name) else ""
 
 
+SHOWN_TOOLS = {"homebase_procedura_leggi", "homebase_nota", "mattina"}   # mostrano tutto su una scheda: riscriverlo sarebbe un doppione
 SEND_TO_RE = re.compile(r"\b(mand\w*|invi\w*|spedisc\w*|spedi\w*|inoltr\w*|scriv\w*gli|scriv\w*le|giralo|girala)\b", re.I)
 
 
@@ -827,6 +830,18 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
 
     async def stream():
         try:
+            when = morning_ask(body.messages)
+            if when is not None:
+                try:
+                    view = await morning_data(user, when)
+                except ValueError:   # un giorno che non si capisce: ci pensa il modello
+                    view = None
+                if view:
+                    yield ev(event="assistant_tool_calls", message={"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "mattina", "arguments": {"giorno": when}}}]})
+                    yield ev(event="tool_result", message={"role": "tool", "tool_name": "mattina", "content": morning_text(view)}, display="Il punto della giornata", view=view)
+                    yield json.dumps({"message": {"role": "assistant", "content": morning_note(user, view)}, "done": False}, ensure_ascii=False) + "\n"
+                    yield json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}) + "\n"
+                    return
             private = _prefs(user).get("private_mode") is not False and is_cloud(body.model)
             if private:
                 try:
@@ -1041,6 +1056,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 failed = False
                 to_confirm = []   # [(name, args, summary, preview)]: tutte insieme in una sola scheda di conferma
                 asked = False     # ha fatto una domanda con le opzioni: si aspetta la risposta
+                shown, others = False, False   # ha aperto una scheda completa e nient'altro: il turno finisce lì, niente doppione nel testo
                 # L'ultima foto allegata di recente (anche se l'utente poi ha risposto "sì, crealo" senza riallegarla)
                 last_images = next((m.get("images") for m in reversed(body.messages[-8:]) if m.get("role") == "user" and m.get("images")), None) or []
                 for c in calls:
@@ -1051,6 +1067,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         close = difflib.get_close_matches(name, list(TOOLS), n=1, cutoff=0.8)
                         if close:
                             name = close[0]
+                    others = others or name not in SHOWN_TOOLS
                     if name == "chiedi_utente" and asked:
                         msgs.append({"role": "tool", "tool_name": name, "content": "Una domanda alla volta: questa non è stata mostrata."})
                         continue
@@ -1167,6 +1184,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         except Exception as e:
                             result = {"content": f"Errore: {e}", "display": f"Errore: {e}"}
                     asked = asked or (name == "chiedi_utente" and (result.get("view") or {}).get("kind") == "question")
+                    shown = shown or (name in SHOWN_TOOLS and bool(result.get("view")))
                     tool_msg = {"role": "tool", "tool_name": name, "content": result["content"]}
                     msgs.append(tool_msg)
                     seen_images += result.get("images") or []
@@ -1188,7 +1206,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     yield ev(event="confirm", id=pid, name=to_confirm[0][0], args=None, summary=summary,
                              view=_merge_views([v for _, _, _, v in to_confirm]))
                     return  # si riprende quando l'utente conferma o annulla
-                if asked:
+                if asked or (shown and not others):
                     yield json.dumps({"message": {"role": "assistant", "content": ""}, "done": True}) + "\n"
                     return  # la risposta è il prossimo messaggio dell'utente
                 if memory_only and (answered or content.strip()):

@@ -799,6 +799,7 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
         : m.view?.kind === 'wa' ? h('div', { class: 'wa-card read' }, waView(m.view))
         : m.view?.kind === 'hb_doc' ? hbDocView(m.view, () => saveChat(chat))
         : m.view?.kind === 'consuntivo' ? consView(m.view)
+        : m.view?.kind === 'morning' ? morningView(m.view, () => saveChat(chat))
         : m.view?.kind === 'tickets' ? tkListView(m.view) : m.view?.kind === 'ticket' ? tkCardView(m.view.ticket)
         : m.view?.kind === 'image' ? h('figure', { class: 'gen-img' },
             h('a', { href: `/api/files/${m.view.id}`, target: '_blank', rel: 'noopener', title: 'Apri a grandezza piena' }, h('img', { src: `/api/files/${m.view.id}`, alt: m.view.prompt || 'Immagine creata da Aura', loading: 'lazy' })),
@@ -3007,6 +3008,34 @@ function consFill(v, missing) {
   return h('div', { class: 'cons-fill' }, h('b', { text: `Mancano ${missing}: cos'altro hai fatto?` }),
     h('small', { text: checks.length ? 'Le cose che fai spesso: spunta solo quelle fatte davvero quel giorno.' : 'Scrivi solo quello che hai fatto davvero quel giorno.' }),
     ...checks.map(([, l]) => l), other, out, h('div', { class: 'cons-fill-f' }, go));
+}
+// /mattina: agenda, cose da fare e quelle rimaste indietro; si spuntano da qui
+function morningView(v, save) {
+  const long = new Date(`${v.day}T12:00:00`).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
+  const dd = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
+  const row = (x, lead, text, sub, tick) => {
+    const box = tick ? h('button', { class: 'bp-check mn-check' + (x.done ? ' on' : ''), type: 'button', 'aria-label': x.done ? 'Segna da fare' : 'Segna fatto', title: x.done ? 'Segna da fare' : 'Segna fatto',
+      html: x.done ? icon('check', 'sm') : '', onclick: async () => {
+        try {
+          await tick(!x.done); x.done = !x.done;
+          el.classList.toggle('done', x.done); box.classList.toggle('on', x.done); box.innerHTML = x.done ? icon('check', 'sm') : '';
+          box.setAttribute('aria-label', x.done ? 'Segna da fare' : 'Segna fatto'); box.title = box.getAttribute('aria-label');
+          save();
+        } catch (e) { toast(e.message); }
+      } }) : h('span', { class: 'mn-nocheck', html: icon('calendar', 'sm') });
+    const el = h('div', { class: 'mn-row' + (x.done ? ' done' : '') }, box, lead ? h('span', { class: 'mn-when tnum', text: lead }) : null,
+      h('div', { class: 'mn-tx' }, h('span', { text }), sub ? h('small', { text: sub }) : null));
+    return el;
+  };
+  const check = (x) => (done) => api('/api/brain/check', { path: x.path, item: x.text, done });
+  const remind = (x) => (done) => api(`/api/calendar/event/${encodeURIComponent(x.id)}/done`, { done });
+  const sec = (title, cls, rows, empty) => h('section', { class: 'mn-sec ' + cls }, h('h3', {}, title, rows.length ? h('span', { class: 'tnum', text: String(rows.length) }) : null),
+    rows.length ? h('div', { class: 'mn-list' }, ...rows) : h('p', { text: empty }));
+  return h('div', { class: 'mn-card' },
+    h('div', { class: 'mn-head' }, h('span', { class: 'mn-ic', html: icon('calendar', 'sm') }), h('b', { text: long })),
+    sec('In agenda', 'a', v.agenda.map((e) => row(e, e.time || 'Tutto il giorno', e.title, e.location, e.kind === 'promemoria' ? remind(e) : null)), 'Niente in agenda.'),
+    sec(v.today ? 'Da fare oggi' : 'Da fare quel giorno', 't', v.todo.map((t) => row(t, '', t.text, '', check(t))), 'Niente di segnato.'),
+    v.late.length ? sec('Rimaste indietro', 'l', v.late.map((t) => row(t, dd(t.day), t.text, '', t.path ? check(t) : remind(t))), '') : null);
 }
 function consView(v) {
   const hm = (m) => `${Math.floor(m / 60)}h${m % 60 ? String(m % 60).padStart(2, '0') : ''}`;
