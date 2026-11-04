@@ -183,7 +183,7 @@ class Mask:
         return "".join(out) + t[at:]
 
     def out(self, messages: list[dict]) -> list[dict]:
-        """I messaggi come partono verso il cloud. Le foto non si possono coprire: restano qui."""
+        """I messaggi come partono verso il cloud. Si copre il testo: le foto partono così come sono."""
         res = []
         for m in messages:
             m = dict(m)
@@ -193,8 +193,6 @@ class Mask:
                 m["thinking"] = self.text(m["thinking"])
             if m.get("tool_calls"):
                 m["tool_calls"] = _mask_walk(m["tool_calls"], self.text)
-            if m.pop("images", None):
-                m["content"] = (m.get("content") or "") + "\n[Le foto allegate qui non sono state mandate: modalità riservata.]"
             res.append(m)
         self.save()
         return res
@@ -229,8 +227,7 @@ def mask_for(user: dict, chat_id: str | None) -> Mask:
 MASK_PROMPT = ("\n\nMODALITÀ RISERVATA: i dati personali ti arrivano come etichette ([PERSONA_1], [AZIENDA_1], [TEL_1], [EMAIL_1]…). Sono segnaposto: nella risposta e negli strumenti "
                "scrivili identici, con le parentesi, l'app li sostituisce con quelli veri e l'utente vede i nomi. Non dire mai che sono nascosti, non chiedere chi sono, non provare a indovinarli. "
                "La stessa etichetta è sempre la stessa persona. Per cercare in memoria, nei ticket o in agenda passa l'etichetta allo strumento: funziona. "
-               "Le ricerche su internet invece vedono solo l'etichetta, quindi non cercare lì nomi di persone o aziende: dillo. In questa modalità non vedi le foto e non puoi creare immagini: "
-               "se servono, digli di spegnere lo scudo «Riservato».")
+               "Le ricerche su internet invece vedono solo l'etichetta, quindi non cercare lì nomi di persone o aziende: dillo.")
 # dove finirebbe il dato vero fuori da Aura: qui l'etichetta resta com'è
 _MASK_KEEP_TOOLS = {"web_cerca", "web_leggi"}
 

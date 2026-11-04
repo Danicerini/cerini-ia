@@ -858,8 +858,6 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             ctx = FREE_CTX if free else (CLOUD_CTX if is_cloud(body.model) else NUM_CTX)
             tools = tools_for(user) if not free and "tools" in await model_caps(body.model) else []
             tools = _topic_tools(tools, body.messages)
-            if private:   # la descrizione e le foto andrebbero al modello così come sono
-                tools = [t for t in tools if t["function"]["name"] != "immagine_crea"]
             if SMALLTALK_RE.fullmatch(next((m.get("content") or "" for m in reversed(body.messages) if m.get("role") == "user"), "").strip()):
                 tools = []   # un saluto non ha bisogno di strumenti (e delle loro istruzioni): ~1/3 dei token
             skill = slash_skill(user, body.messages) if tools else None

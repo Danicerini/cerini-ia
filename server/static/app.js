@@ -1358,7 +1358,6 @@ comp.addEventListener('submit', (e) => {
   c.messages = c.messages.filter((m) => m.role !== 'error');
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
-  if (S.attachments.length && privOn() && isCloudM(activeModel())) toast('Con Riservato acceso le foto non vanno al modello');
   if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
   if (S.stream) {   // sta ancora rispondendo: Invio non deve fermarlo
     S.stream.queue.push(msg);
@@ -5106,7 +5105,7 @@ function privCard() {
   const sw = h('button', { class: 'switch', role: 'switch', 'aria-checked': String(privOn()), 'aria-label': 'Modalità riservata', onclick: async () => {
     await privSet(!privOn()); sw.setAttribute('aria-checked', String(privOn())); } }, h('span'));
   return h('section', { class: 'card row-card' }, h('div', { class: 'card-head' }, h('h2', { text: 'Riservato' }),
-    h('p', { text: 'Con un modello nel cloud i dati personali partono coperti e tornano veri qui. Finché è acceso le foto non vanno al modello e non si creano immagini.' })), sw);
+    h('p', { text: 'Con un modello nel cloud i dati personali scritti nel testo partono coperti e tornano veri qui. Le foto partono così come sono.' })), sw);
 }
 // Quale modello parte da solo quando apri l'app: Gemma sul PC di casa o il modello nel cloud
 function startModelCard() {
