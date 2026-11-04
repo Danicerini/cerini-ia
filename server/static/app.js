@@ -823,6 +823,21 @@ function messageEl(chat, m, i, isLastAssist, isLast) {
   return el;
 }
 
+// Un turno può avere più messaggi di Aura (testo, strumento, altro testo): chiude quello dopo cui non ne viene un altro da mostrare
+function turnCloses(chat, m) {
+  const all = chat?.messages || [];
+  for (let i = all.indexOf(m) + 1; i > 0 && i < all.length; i++) {
+    const x = all[i];
+    if (x.role === 'user' || x.role === 'feed') return true;
+    if (x.role === 'assistant' && (x._streaming || x.content)) return false;
+  }
+  return true;
+}
+function turnMasked(chat, m) {   // l'ultimo giro ha ricoperto tutta la chat: basta il suo elenco
+  const all = chat?.messages || [];
+  for (let i = all.indexOf(m); i >= 0 && all[i].role !== 'user'; i--) if (all[i].masked) return all[i].masked;
+  return m.masked || null;
+}
 function paintAssistant(el, m, chat, isLastAssist) {
   const streaming = m._streaming;
   el.replaceChildren();
@@ -854,14 +869,16 @@ function paintAssistant(el, m, chat, isLastAssist) {
       return h('a', { class: 'src', href: s.url, target: '_blank', rel: 'noopener noreferrer', title: s.title, text: host }); })));
   if (!streaming && m._files?.length) el.append(h('div', { class: 'msg-files out' }, m._files.map((f) => fileChip(f))));
   if (!streaming && m._mem?.length) el.append(memoryNotesEl(chat, m));
-  if (!streaming && !(m.tool_calls?.length && !m.content)) {
+  const closes = turnCloses(chat, m);   // token e dati coperti una volta sola per risposta, in fondo
+  if (!streaming && !(m.tool_calls?.length && !m.content) && (closes || (m.content || '').length > 200)) {
     const copyB = h('button', { class: 'icon-btn sm', title: 'Copia', 'aria-label': 'Copia risposta', html: icon('copy', 'sm'), onclick: () => copyText(m.content, copyB) });
     const speakB = S.me?.homebase && m.content ? h('button', { class: 'icon-btn sm', title: 'Ascolta', 'aria-label': 'Ascolta la risposta', html: icon('sound', 'sm'), onclick: () => speak(m.content, speakB) }) : null;
     el.append(h('div', { class: 'msg-actions assist' }, copyB, speakB,
       isLastAssist ? h('button', { class: 'icon-btn sm', title: 'Rigenera', 'aria-label': 'Rigenera risposta', html: icon('retry', 'sm'), onclick: () => regenerate(chat) }) : null,
-      m.stats ? h('span', { class: 'stats tnum', text: m.stats }) : null));
-    if (m.masked) el.append(h('details', { class: 'mask-info' }, h('summary', { html: icon('shield', 'sm') + (m.masked.length ? `Riservato: ${m.masked.length === 1 ? 'un dato coperto' : m.masked.length + ' dati coperti'}` : 'Riservato: nessun dato riconosciuto') }),
-      m.masked.length ? h('ul', {}, ...m.masked.map((x) => h('li', {}, h('code', { text: x.label }), ` ${x.real}`))) : null));
+      closes && m.stats ? h('span', { class: 'stats tnum', text: m.stats }) : null));
+    const masked = closes ? turnMasked(chat, m) : null;
+    if (masked) el.append(h('details', { class: 'mask-info' }, h('summary', { html: icon('shield', 'sm') + (masked.length ? `Riservato: ${masked.length === 1 ? 'un dato coperto' : masked.length + ' dati coperti'}` : 'Riservato: nessun dato riconosciuto') }),
+      masked.length ? h('ul', {}, ...masked.map((x) => h('li', {}, h('code', { text: x.label }), ` ${x.real}`))) : null));
   }
 }
 
@@ -4518,7 +4535,7 @@ async function run(chat) {
   });
   // chat nata con un modello locale e PC spento: risponde il cloud
   const model = !S.status?.online && S.status?.cloud && !isCloudM(chat.model) ? S.status.cloud : chat.model || activeModel();
-  let frame = 0, t0 = performance.now(), thinkStart = 0;
+  let frame = 0, t0 = performance.now(), thinkStart = 0, turnTokens = 0;
   const paint = () => {
     frame = 0;
     if (S.currentId !== chat.id) return;
@@ -4581,7 +4598,8 @@ async function run(chat) {
         if (d.done) {
           const parts = [];
           if (d.eval_count && d.eval_duration) parts.push(`${(d.eval_count / (d.eval_duration / 1e9)).toFixed(1)} token/s`);
-          if (d.eval_count) parts.push(`${d.eval_count} token`);
+          turnTokens += d.eval_count || 0;   // i token di tutti i giri del turno
+          if (turnTokens) parts.push(`${turnTokens} token`);
           if (d.load_duration > 1.5e9) parts.push(`caricato in ${(d.load_duration / 1e9).toFixed(1)} s`);
           reply.stats = parts.join(' · ');
         }
