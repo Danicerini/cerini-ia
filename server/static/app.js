@@ -2275,6 +2275,8 @@ function tkpPaint(results, filters, count) {
 }
 
 // ---- il ticket aperto
+// La firma e gli avvisi tolti dal messaggio: chiusi, ma mai persi
+const tkRest = (text) => text ? h('details', { class: 'tk-rest' }, h('summary', { text: 'Firma e resto del messaggio' }), h('div', { class: 'tk-txt', text })) : null;
 async function tkpDetail(main, no) {
   const back = () => { TKP.sel = null; renderTickets(); };
   main.replaceChildren(tkpSkeleton(5));
@@ -2311,7 +2313,7 @@ async function tkpDetail(main, no) {
     ...shown.map((c, i) => { const who = c.me ? 'Tu' : c.who; return { at: c.at, el: h('li', { class: 'tkp-c' + (c.client ? ' client' : '') + (c.me ? ' me' : '') + (c.private ? ' priv' : '') },
       h('i', { class: 'tkp-av' + (c.me ? ' me' : ''), text: tkpInitials(who) }),
       h('div', { class: 'tkp-cb' }, h('div', { class: 'tk-com-h' }, h('span', {}, h('b', { text: who }), c.client ? h('span', { class: 'tkp-cl', text: 'cliente' }) : null, c.private ? h('span', { class: 'tk-com-priv', text: 'interna' }) : null), h('small', { class: 'tnum', text: when(c.at) })),
-        h('div', { class: 'tk-txt', text: c.text }), thread(c.earlier), boxes[i])) }; }),
+        h('div', { class: 'tk-txt', text: c.text }), tkRest(c.rest), thread(c.earlier), boxes[i])) }; }),
   ].sort((a, b) => (a.at || '').localeCompare(b.at || ''));
   const timeline = h('ol', { class: 'tkp-tl' });
   let newest = pref.get('tkNewest', false);
@@ -2350,7 +2352,7 @@ async function tkpDetail(main, no) {
     h('div', { class: 'tkp-grid' },
       h('div', { class: 'tkp-body' },
         h('section', { class: 'tkp-box' }, h('h2', { text: 'Richiesta' }),
-          h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), thread(t.desc_earlier), descBox),
+          h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), tkRest(t.description_rest), thread(t.desc_earlier), descBox),
         t.solution ? h('section', { class: 'tkp-box sol' }, h('h2', { text: 'Soluzione' }), h('div', { class: 'tk-txt', text: t.solution })) : null,
         docBox ? h('section', { class: 'tkp-box' }, h('h2', { text: `Documenti (${t.documents.length})` }), docBox) : null,
         h('section', { class: 'tkp-tlbox' }, h('div', { class: 'tkp-tlh' }, h('h2', { text: `Cronologia${shown.length ? ` · ${shown.length} comment${shown.length === 1 ? 'o' : 'i'}` : ''}` }), items.length > 2 ? order : null), timeline)),
@@ -4499,8 +4501,9 @@ async function run(chat) {
 
   // Al modello vanno solo i messaggi veri (utente, assistente, esiti degli strumenti), non le schede dell'interfaccia.
   // Degli avvisi di «Da Aura» solo gli ultimi di oggi: per il resto ha gli strumenti. I codici e le pulizie della posta non gli servono mai.
+  const askedTk = /\b(tick|tik|tk\b|tk-|crm)/i.test(chat.messages.filter((m) => m.role === 'user').at(-1)?.content || '');   // gli avvisi dei ticket solo se ne sta parlando
   const feedNow = new Set(chat.messages.filter((m) => { const it = m.role === 'feed' && S.feed?.[m.fid];
-    return it && !['code', 'trashed', 'checked', 'power'].includes(it.kind) && Date.now() / 1000 - it.at < 86400; }).slice(-5).map((m) => m.fid));
+    return it && !['code', 'trashed', 'checked', 'power'].includes(it.kind) && (it.kind !== 'ticket' || askedTk) && Date.now() / 1000 - it.at < 86400; }).slice(-5).map((m) => m.fid));
   const history = chat.messages.slice(0, -1).filter((m) => ['user', 'assistant', 'tool'].includes(m.role) || (m.role === 'feed' && feedNow.has(m.fid))).map((m) => {
     if (m.role === 'feed') {
       const it = S.feed[m.fid], when = new Date(it.at * 1000).toLocaleString('it-IT', { weekday: 'long', hour: '2-digit', minute: '2-digit' });

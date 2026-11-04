@@ -221,6 +221,7 @@ CRM_STATUS = {"Open": "Aperto", "In Progress": "In lavorazione", "Wait For Respo
 CRM_DONE = ("Closed", "Annullato")
 _CRM_SIGN = re.compile(r"^(?:(?:tel|cell|mob|fax|t|m)\.?\s*:?\s*)?\+?\d[\d .()/-]{7,}$|^\S+@\S+\.\w+$|^(?:https?://|www\.)\S+$|^(?:tel|cell|mob)\b\.?\s*:?\s*\+?\d[\d .()/-]{5,}|"
                        r"\bP\.?\s?IVA\b|\bC\.?F\.?\s*:|\bPEC\b", re.I)
+_CRM_BARE = re.compile(r"\+?\d[\d .()/-]{7,}|\S+@\S+\.\w+|(?:https?://|www\.)\S+", re.I)
 _CRM_S = _PerUser(lambda: {"s": "", "uid": "", "at": 0.0})
 _CRM_NAMES = _PerUser(dict)
 _CRM_FIELDS = _PerUser(dict)
@@ -293,6 +294,21 @@ def _crm_searchable(h: str) -> str:
     return "\n".join([_crm_clean(h, 20000), *(m["text"] for m in _crm_thread(h))])
 
 
+def _crm_asked_for(before: str, line: str) -> bool:
+    """Un indirizzo o un numero da solo subito dopo una frase fa parte del messaggio («…la mail a cui mandarle:»): la firma ha sopra nome, ruolo o indirizzo."""
+    return bool(_CRM_BARE.fullmatch(line)) and (len(before) >= 50 or before.endswith(":")) and not re.search(r"\d", before) and not _CRM_THANKS.search(before)
+
+
+def _crm_rest(h: str, n: int = 4000) -> str:
+    """Quello che la pulizia ha tolto dall'ultimo messaggio (firma, avvisi legali): la pagina del ticket lo tiene a portata di mano."""
+    t = _crm_plain(h)
+    m = _CRM_QUOTE.search(t)
+    t = t[:m.start()] if m else t
+    kept = _crm_body(t, 10 ** 7)
+    lines = [x.strip() for x in re.sub(r"[ \t]+", " ", t).split("\n") if x.strip()]
+    return "\n".join(lines[len(kept.split("\n")) if kept else 0:])[:n]
+
+
 def _crm_body(t: str, n: int) -> str:
     m = _CRM_CUT.search(t)
     # anche una risposta corta («Ok, grazie») si ferma qui; senza testo prima, si taglia solo se sotto c'è un messaggio citato
@@ -300,10 +316,10 @@ def _crm_body(t: str, n: int) -> str:
         t = t[:m.start()]
     lines = [x.strip() for x in re.sub(r"[ \t]+", " ", t).split("\n") if x.strip()]
     # la firma: dalla prima riga con telefono, mail, sito o partita IVA si taglia, insieme a nome e ruolo subito sopra
-    i = next((k for k, x in enumerate(lines) if k and len(x) < 120 and _CRM_SIGN.search(x)), None)   # le righe lunghe sono frasi vere, anche se dicono «PEC»
+    i = next((k for k, x in enumerate(lines) if k and len(x) < 120 and _CRM_SIGN.search(x) and not _crm_asked_for(lines[k - 1], x)), None)   # le righe lunghe sono frasi vere, anche se dicono «PEC»
     if i is not None:
         j = i
-        while j > 1 and i - j < 4 and len(lines[j - 1]) < 50 and not re.search(r"[.!?:,]$", lines[j - 1]):
+        while j > 1 and i - j < 4 and len(lines[j - 1]) < 50 and not re.search(r"[.!?:,]$", lines[j - 1]) and not _CRM_BARE.fullmatch(lines[j - 1]):
             j -= 1
         lines = lines[:j]
     t = "\n".join(lines)
@@ -596,7 +612,7 @@ async def crm_detail(ref: str, more: bool = False) -> dict:
             _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
         who = await _crm_name(cust) if cust else await _crm_name(author)
         comments.append({"who": who or ("cliente" if cust else "un collega"), "client": bool(cust), "me": not cust and uid in (c.get("creator"), c.get("assigned_user_id")),
-                         "at": _crm_local(c.get("createdtime")), "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), "earlier": _crm_thread(c.get("commentcontent"), 6000 if more else 1500), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
+                         "at": _crm_local(c.get("createdtime")), "text": _crm_clean(c.get("commentcontent"), 8000 if more else 1200), **({"rest": _crm_rest(c.get("commentcontent"))} if more else {}), "earlier": _crm_thread(c.get("commentcontent"), 6000 if more else 1500), "private": str(c.get("is_private") or "0") not in ("0", "", "false"), "files": files_of.get(c.get("id")) or []})
     # lo stesso messaggio citato torna in ogni risposta della mail: si tiene solo la prima volta, e mai se è già un commento
     same = lambda text: re.sub(r"\W+", "", text.lower())[:160]
     desc_earlier = _crm_thread(t.get(CRM_DESC), 6000 if more else 1500)
@@ -610,7 +626,7 @@ async def crm_detail(ref: str, more: bool = False) -> dict:
         c["earlier"] = fresh(c["earlier"])
     r.update(desc_earlier=desc_earlier, contact=await _crm_name(t.get("contact_id")), owner="te" if r["mine"] else (await _crm_name(t.get("assigned_user_id")) or "un collega"),
              category=t.get("ticketcategories", ""), kind=t.get("tipo_intervento", ""),
-             taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 20000 if more else 2500),
+             taken=t.get("data_presa_in_carico", ""), description=_crm_clean(t.get(CRM_DESC), 20000 if more else 2500), **({"description_rest": _crm_rest(t.get(CRM_DESC))} if more else {}),
              solution=_crm_clean(t.get(CRM_SOLUTION), 20000 if more else 2000), comments=comments, documents=documents,
              desc_images=[re.sub(r"@.*", "", x) for x in re.findall(r"""src=["']cid:([^"']+)""", t.get(CRM_DESC) or "", re.I)], assigned=t.get("assigned_user_id", ""),
              other_person=not r["mine"] and str(t.get("assigned_user_id", "")).startswith(uid.split("x")[0] + "x"),
