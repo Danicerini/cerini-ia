@@ -481,10 +481,18 @@ def _track_apply(uid: int, r, info: dict):
     eta = eta if re.fullmatch(r"\d{4}-\d\d-\d\d", eta) else r["eta"]
     new = _TRACK_STATES.get((info.get("latest_status") or {}).get("status"))
     status = _parcel_next(r["status"], new) if new else r["status"]
+    # la mail che segnala il problema è più recente dell'ultima notizia del corriere: il problema resta finché non c'è una notizia nuova
+    try:
+        stale = datetime.fromisoformat(str(ev.get("time_utc")).replace("Z", "+00:00")).timestamp() < r["updated"]
+    except ValueError:
+        stale = False
+    if r["status"] == "problema" and stale and status != "consegnato":
+        status = "problema"
     if (status, eta, line) == (r["status"], r["eta"], r["last_event"]):
         return
     with db() as c:
-        c.execute("UPDATE parcels SET status = ?, eta = ?, last_event = ?, updated = ? WHERE id = ?", (status, eta, line, int(time.time()), r["id"]))
+        c.execute("UPDATE parcels SET status = ?, eta = ?, last_event = ?, updated = ? WHERE id = ?",
+                  (status, eta, line, r["updated"] if status == "problema" == r["status"] else int(time.time()), r["id"]))
     if status != r["status"]:
         say = "è di nuovo in viaggio" if r["status"] == "problema" and status == "spedito" else PARCEL_SAY[status]
         feed_add(uid, "parcel", f"📦 {r['title']}", f"Il tuo pacco {say}." + (f" {line}" if line else ""),
@@ -509,6 +517,8 @@ async def track_sync(uid: int):
         done |= {x.get("number") for x in d.get("rejected") or [] if (x.get("error") or {}).get("code") == -18019901}   # già registrato
         with db() as c:
             c.executemany("UPDATE parcels SET track_reg = 1 WHERE id = ?", [(r["id"],) for r in new if r["tracking"] in done])
+        if done:   # appena registrato il servizio non ha ancora niente: ci mette un paio di minuti
+            asyncio.create_task(_track_first(uid, 180))
     rows = [r for r in rows if r["track_reg"] or r["tracking"] in done]
     if not rows:
         return
@@ -560,8 +570,9 @@ async def tracking_link(body: TrackKeyIn, user: dict = Depends(require_user)):
     return {"linked": True}
 
 
-async def _track_first(uid: int):
+async def _track_first(uid: int, wait: int = 0):
     try:
+        await asyncio.sleep(wait)
         await track_sync(uid)
     except (ValueError, httpx.HTTPError, KeyError, TypeError) as e:
         print(f"Tracking: primo controllo non riuscito per l'utente {uid}: {type(e).__name__}", flush=True)
