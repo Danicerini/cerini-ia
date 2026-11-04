@@ -2333,10 +2333,10 @@ async function tkpDetail(main, no) {
         h('div', { class: 'tk-txt', text: c.text }), tkRest(c.rest), thread(c.earlier), boxes[i])) }; }),
   ].sort((a, b) => (a.at || '').localeCompare(b.at || ''));
   const timeline = h('ol', { class: 'tkp-tl' });
-  let newest = pref.get('tkNewest', false);
+  let newest = pref.get('tkNewestFirst', true);   // i messaggi nuovi in alto
   const paintTl = () => timeline.replaceChildren(...(newest ? [...items].reverse() : items).map((x) => x.el));
   paintTl();
-  const order = h('button', { class: 'tkp-off', text: newest ? 'Dai più vecchi' : 'Dai più recenti', onclick: (e) => { newest = !newest; pref.set('tkNewest', newest); e.target.textContent = newest ? 'Dai più vecchi' : 'Dai più recenti'; paintTl(); } });
+  const order = h('button', { class: 'tkp-off', text: newest ? 'Dai più vecchi' : 'Dai più recenti', onclick: (e) => { newest = !newest; pref.set('tkNewestFirst', newest); e.target.textContent = newest ? 'Dai più vecchi' : 'Dai più recenti'; paintTl(); } });
   // altri ticket dello stesso cliente: si chiedono dopo, non fanno aspettare la pagina
   const related = h('section', { class: 'tkp-card', hidden: true });
   if (t.client_id || t.contact_id) api('/api/crm/related?' + new URLSearchParams({ no: t.no, client: t.client_id || t.contact_account || '', contact: t.contact_id || '' })).then((r) => r.json()).then((d) => {
@@ -3709,7 +3709,7 @@ function tkFilesFill(t, descBox, boxes, docBox) {
 function tkDetail(t) {
   const meta = (label, val) => val ? h('div', { class: 'tk-m' }, h('small', { text: label }), h('span', { text: val })) : null;
   const sec = (label, txt, cls) => txt ? h('div', { class: 'tk-sec ' + (cls || '') }, h('div', { class: 'tk-sec-h', text: label }), h('div', { class: 'tk-txt', text: txt })) : null;
-  const shown = (t.comments || []).slice(-3);
+  const shown = (t.comments || []).slice(-3).reverse();
   return h('div', { class: 'tk-detail' },
     h('div', { class: 'tk-head' },
       h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
