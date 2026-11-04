@@ -365,6 +365,27 @@ async def _deadline_found(user: dict, info: dict, sc: dict):
     feed_add(uid, "deadline", f"📅 Scadenza: {sc['cosa']}", body, data, push=days <= 3)
 
 
+def _parcel_next(old: str, new: str) -> str:
+    """Lo stato va solo avanti (una mail vecchia letta dopo non riporta indietro un pacco); dopo un problema vale quello che dice la mail nuova."""
+    order = list(PARCEL_STATES)
+    if old == "consegnato":
+        return old
+    if new == "problema" or old == "problema" or old not in order:
+        return new
+    return new if order.index(new) >= order.index(old) else old
+
+
+def _parcel_merge(uid: int, keep, drop) -> dict:
+    """Due righe che sono lo stesso pacco: resta il nome vero (keep), con tracciamento, corriere e arrivo dell'altra; le notifiche passano a quella che resta."""
+    status = _parcel_next(keep["status"], drop["status"])
+    with db() as c:
+        c.execute("UPDATE parcels SET status = ?, carrier = COALESCE(NULLIF(carrier, ''), ?), tracking = COALESCE(NULLIF(tracking, ''), ?), eta = COALESCE(NULLIF(eta, ''), ?), "
+                  "mid = ?, updated = ? WHERE id = ?", (status, drop["carrier"], drop["tracking"], drop["eta"], drop["mid"], max(keep["updated"], drop["updated"]), keep["id"]))
+        c.execute("UPDATE aura_feed SET data = json_set(data, '$.parcel_id', ?) WHERE user_id = ? AND kind = 'parcel' AND json_extract(data, '$.parcel_id') = ?", (keep["id"], uid, drop["id"]))
+        c.execute("DELETE FROM parcels WHERE id = ? AND user_id = ?", (drop["id"], uid))
+        return c.execute("SELECT * FROM parcels WHERE id = ?", (keep["id"],)).fetchone()
+
+
 def _parcel_found(uid: int, info: dict, sp: dict):
     """Un ordine o un pacco: si aggiorna lo stesso pacco (stesso tracciamento, o stesso negozio e stessa cosa), non se ne crea un altro."""
     now = int(time.time())
@@ -373,11 +394,13 @@ def _parcel_found(uid: int, info: dict, sp: dict):
     same = next((r for r in rows if sp["tracking"] and r["tracking"] == sp["tracking"]), None) or next(
         (r for r in rows if r["status"] != "consegnato" and (not sp["negozio"] or not r["shop"] or sp["negozio"].lower() == r["shop"].lower())
          and _same_thing(r["title"], sp["cosa"])), None)
-    order = list(PARCEL_STATES)
+    if same and sp["tracking"] and sp["negozio"]:   # il corriere scrive con il suo nome: il negozio ora dice che quel tracciamento è di un suo ordine
+        twins = [r for r in rows if r["id"] != same["id"] and r["status"] != "consegnato" and not r["tracking"] and (r["shop"] or "").lower() == sp["negozio"].lower()]
+        if len(twins) == 1 and (same["shop"] or "").lower() != sp["negozio"].lower():
+            same = _parcel_merge(uid, twins[0], same)
     with db() as c:
         if same:
-            # lo stato va solo avanti (una mail vecchia letta dopo non riporta indietro un pacco gia' consegnato)
-            status = sp["stato"] if sp["stato"] == "problema" or order.index(sp["stato"]) >= order.index(same["status"] if same["status"] in order else "ordinato") else same["status"]
+            status = _parcel_next(same["status"], sp["stato"])
             changed = status != same["status"]
             c.execute("UPDATE parcels SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking = COALESCE(NULLIF(?, ''), tracking), "
                       "eta = COALESCE(NULLIF(?, ''), eta), mid = ?, updated = ? WHERE id = ?",
@@ -403,12 +426,14 @@ def _parcel_found(uid: int, info: dict, sp: dict):
 
 
 def parcels_active(uid: int) -> list[dict]:
-    """I pacchi in arrivo, piu' quelli consegnati negli ultimi 2 giorni."""
+    """I pacchi in arrivo, piu' quelli consegnati negli ultimi 2 giorni. Uno con l'arrivo passato da una settimana e nessuna notizia non si mostra più."""
+    late = (local_now() - timedelta(days=7)).strftime("%Y-%m-%d")
     with db() as c:
         rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND (status != 'consegnato' OR updated > ?) AND updated > ? ORDER BY updated DESC",
                          (uid, int(time.time()) - 2 * 86400, int(time.time()) - 30 * 86400)).fetchall()
     return [{"id": r["id"], "title": r["title"], "shop": r["shop"], "carrier": r["carrier"], "tracking": r["tracking"], "status": r["status"],
-             "eta": r["eta"], "link": _mail_link(r["mid"]) if r["mid"] else ""} for r in rows]
+             "eta": r["eta"], "link": _mail_link(r["mid"]) if r["mid"] else ""} for r in rows
+            if not (r["eta"] and r["eta"] < late and r["updated"] < time.time() - 7 * 86400)]
 
 
 def deadlines_next(uid: int) -> list[dict]:

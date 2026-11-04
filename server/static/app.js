@@ -613,7 +613,7 @@ function renderThread() {
   input.placeholder = aura ? 'Rispondi ad Aura…' : 'Scrivi ad Aura';
   thread.replaceChildren();
   if (empty) { renderHero(); return; }
-  if (aura) thread.append(auraBanner());
+  if (aura) { const banner = auraBanner(); thread.append(auStrip(banner), banner); }
   const lastAssist = c.messages.map((m) => m.role).lastIndexOf('assistant');
   groupMemoryNotes(c.messages);
   // i passaggi intermedi di un turno (strumenti usati, ragionamenti tra uno e l'altro) finiscono in una riga sola, apribile
@@ -2930,8 +2930,9 @@ function daySep(ts) {
 }
 // Il pacco: i quattro passaggi, con quello attuale acceso
 function parcelTrack(status) {
-  const k = PARCEL_STEPS.indexOf(status), bad = status === 'problema';
-  return h('div', { class: 'au-track' + (bad ? ' bad' : ''), 'aria-label': 'Stato: ' + status },
+  const k = PARCEL_STEPS.indexOf(status);
+  if (status === 'problema') return h('div', { class: 'au-prob', html: icon('bell', 'sm') + 'Problema con la consegna: guarda la mail' });
+  return h('div', { class: 'au-track', 'aria-label': 'Stato: ' + status },
     ...PARCEL_STEPS.map((st, n) => h('div', { class: 'au-step' + (n <= k ? ' on' : '') + (n === k ? ' now' : '') }, h('i'), h('span', { text: st }))));
 }
 // ------------------------------------------------------------------ Homebase (amministrazione)
@@ -3189,6 +3190,57 @@ function feedCard(it) {
     h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span')),
     h('div', { class: 'au-bubble' }, h('span', { class: 'au-badge', 'aria-hidden': 'true', html: icon(kic, 'sm') }), h('div', { class: 'au-body' }, ...body)));
 }
+// Il dettaglio di pacchi e scadenze: nel riepilogo in cima e nella striscia
+function auPanel(k) {
+  const f = S.feedInfo || {}, dls = f.deadlines || [];
+  if (k === 't-parcels') {
+    const all = f.parcels || [];
+    return h('div', { class: 'au-drawer' }, all.length ? all.map((p) => h('div', { class: 'au-dr-row' },
+      h('div', { class: 'tx' }, h('b', { text: p.title }), h('small', { text: [p.shop, p.carrier, p.tracking, p.eta && p.status !== 'consegnato' ? 'arrivo ' + shortDay(p.eta) : ''].filter(Boolean).join(' · ') })),
+      parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
+      : h('div', { class: 'au-dr-empty', text: 'Quando nelle mail arriva un ordine o una spedizione, lo segno qui e ti dico quando arriva.' }));
+  }
+  if (k === 't-dead') {
+    return h('div', { class: 'au-drawer' }, dls.length ? dls.map((x) => { const left = daysTo(x.due);
+      return h('div', { class: 'au-dr-row' },
+        h('div', { class: 'au-cal sm' + (left <= 2 ? ' soon' : '') }, h('small', { text: new Date(x.due + 'T12:00:00').toLocaleDateString('it-IT', { month: 'short' }) }), h('b', { class: 'tnum', text: String(new Date(x.due + 'T12:00:00').getDate()) })),
+        h('div', { class: 'tx' }, h('b', { text: x.title }), h('small', { text: [x.amount, left === 0 ? 'oggi' : left === 1 ? 'domani' : `tra ${left} giorni`].filter(Boolean).join(' · ') })),
+        h('a', { class: 'au-chip sm', href: x.link, target: '_blank', rel: 'noopener', text: 'Mail' })); })
+      : h('div', { class: 'au-dr-empty', text: 'Bollette, fatture e rinnovi che arrivano per mail: li segno qui e ti metto un promemoria il giorno prima.' }));
+  }
+  return null;
+}
+// La striscia che resta in alto quando il riepilogo è fuori dallo schermo: i numeri sempre a portata, senza risalire la chat
+function auStrip(banner) {
+  const f = S.feedInfo || {}, w = f.watch || {}, today = S.today || [], mt = f.mail_today || {};
+  const parcels = (f.parcels || []).filter((p) => p.status !== 'consegnato'), dls = f.deadlines || [];
+  const box = h('div', { class: 'au-strip-panel' });
+  const chips = [];
+  const paint = () => {
+    chips.forEach((c) => c.setAttribute('aria-expanded', String(S.auStrip === c.dataset.k)));
+    const panel = auPanel(S.auStrip);
+    box.replaceChildren(...(panel ? [panel] : []));
+  };
+  const chip = (k, ic, label, value, onclick) => { const c = h('button', { class: 'au-sc ' + k, type: 'button', title: label, 'aria-label': `${label}: ${value}`, 'data-k': k, onclick },
+    h('span', { class: 'au-tile-ic', html: icon(ic, 'sm') }), h('span', { class: 'lb', text: label }), h('b', { class: 'tnum', text: value })); chips.push(c); return c; };
+  const toggle = (k) => () => { S.auStrip = S.auStrip === k ? null : k; paint(); };
+  const bar = h('div', { class: 'au-strip-bar' },
+    chip('t-agenda', 'calendar', 'Agenda', String(today.length), openAgenda),
+    w.gmail ? chip('t-mail', 'mail', 'Mail', String(mt.total || 0), openAuraSettings) : null,
+    w.gmail ? chip('t-parcels', 'box', 'In arrivo', String(parcels.length), toggle('t-parcels')) : null,
+    w.gmail ? chip('t-dead', 'bell', 'Scadenze', dls[0] ? shortDay(dls[0].due) : '—', toggle('t-dead')) : null);
+  const wrap = h('div', { class: 'au-strip-wrap' }, h('div', { class: 'au-strip' }, bar, box));
+  paint();
+  S.auStripObs?.disconnect();
+  S.auStripObs = new IntersectionObserver(([e]) => {
+    wrap.classList.toggle('show', !e.isIntersecting);
+    if (e.isIntersecting && S.auStrip) { S.auStrip = null; paint(); }
+  }, { root: $('#scroller') });
+  S.auStripObs.observe(banner);
+  S.auStripClose = () => { if (S.auStrip) { S.auStrip = null; paint(); } };
+  return wrap;
+}
+document.addEventListener('pointerdown', (e) => { if (!e.target.closest?.('.au-strip')) S.auStripClose?.(); });
 // In cima a «Da Aura»: il saluto, cosa sta guardando Aura e quattro riquadri (agenda, posta, pacchi, scadenze)
 function auraBanner() {
   const f = S.feedInfo || {}, w = f.watch || {}, today = S.today || [], mt = f.mail_today || {};
@@ -3209,28 +3261,13 @@ function auraBanner() {
     w.gmail ? tile('t-parcels', 'box', 'In arrivo', String(parcels.length), parcels.length ? `${parcels[0].title} · ${parcels[0].status}` : 'Nessuno in viaggio', drawer('t-parcels')) : null,
     w.gmail ? tile('t-dead', 'bell', 'Scadenze', dls[0] ? shortDay(dls[0].due) : '—', dls[0] ? dls[0].title + (dls[0].amount ? ' · ' + dls[0].amount : '') : 'Nessuna in vista', drawer('t-dead')) : null,
   ].filter(Boolean);
-  let panel = null;
-  if (S.auDrawer === 't-parcels') {
-    const all = f.parcels || [];
-    panel = h('div', { class: 'au-drawer' }, all.length ? all.map((p) => h('div', { class: 'au-dr-row' },
-      h('div', { class: 'tx' }, h('b', { text: p.title }), h('small', { text: [p.shop, p.carrier, p.eta && p.status !== 'consegnato' ? 'arrivo ' + shortDay(p.eta) : ''].filter(Boolean).join(' · ') })),
-      parcelTrack(p.status), p.link ? h('a', { class: 'au-chip sm', href: p.link, target: '_blank', rel: 'noopener', text: 'Mail' }) : null))
-      : h('div', { class: 'au-dr-empty', text: 'Quando nelle mail arriva un ordine o una spedizione, lo segno qui e ti dico quando arriva.' }));
-  } else if (S.auDrawer === 't-dead') {
-    panel = h('div', { class: 'au-drawer' }, dls.length ? dls.map((x) => { const left = daysTo(x.due);
-      return h('div', { class: 'au-dr-row' },
-        h('div', { class: 'au-cal sm' + (left <= 2 ? ' soon' : '') }, h('small', { text: new Date(x.due + 'T12:00:00').toLocaleDateString('it-IT', { month: 'short' }) }), h('b', { class: 'tnum', text: String(new Date(x.due + 'T12:00:00').getDate()) })),
-        h('div', { class: 'tx' }, h('b', { text: x.title }), h('small', { text: [x.amount, left === 0 ? 'oggi' : left === 1 ? 'domani' : `tra ${left} giorni`].filter(Boolean).join(' · ') })),
-        h('a', { class: 'au-chip sm', href: x.link, target: '_blank', rel: 'noopener', text: 'Mail' })); })
-      : h('div', { class: 'au-dr-empty', text: 'Bollette, fatture e rinnovi che arrivano per mail: li segno qui e ti metto un promemoria il giorno prima.' }));
-  }
   return h('div', { class: 'au-banner' },
     h('div', { class: 'au-glow', 'aria-hidden': 'true' }),
     h('div', { class: 'au-head' },
       h('div', { class: 'au-avatar', 'aria-hidden': 'true' }, h('span')),
       h('div', { class: 'au-who' }, h('b', { text: `${hi}, sono Aura` }), h('small', { class: w.error ? 'err' : '', text: status })),
       h('button', { class: 'icon-btn', title: 'Impostazioni', 'aria-label': 'Impostazioni di Aura', html: icon('settings'), onclick: openAuraSettings })),
-    h('div', { class: 'au-tiles' + (tiles.length < 4 ? ' few' : '') }, ...tiles), panel);
+    h('div', { class: 'au-tiles' + (tiles.length < 4 ? ' few' : '') }, ...tiles), auPanel(S.auDrawer));
 }
 // Accensione automatica del PC (ESP32): ora, giorni e interruttore
 function powerRow(p, after) {
