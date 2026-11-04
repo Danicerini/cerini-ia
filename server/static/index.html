@@ -2164,27 +2164,27 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
 }
 .stack { grid-template-columns: minmax(0, 1fr); }
 .tkp-fbtn { display: none; }
-/* /mattina: il punto della giornata */
-.mn-card { --k: var(--accent); display: grid; gap: 14px; width: 100%; max-width: 620px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 18px; background: var(--raised); }
-.mn-head { display: flex; align-items: center; gap: 10px; }
-.mn-head b { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
-.mn-head b::first-letter { text-transform: uppercase; }
-.mn-ic { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); flex: none; }
-.mn-sec { display: grid; gap: 6px; }
-.mn-sec h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); }
-.mn-sec h3 span { font-weight: 600; color: var(--text-2); }
-.mn-sec p { margin: 0; font-size: 13.5px; color: var(--text-3); }
-.mn-sec.l h3, .mn-sec.l h3 span { color: var(--warn); }
-.mn-list { display: grid; }
-.mn-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 14px; }
-.mn-row:first-child { border-top: 0; }
-.mn-row.done .mn-tx span { text-decoration: line-through; color: var(--text-3); }
-.mn-check { width: 20px; height: 20px; border-radius: 6px; }
-.mn-nocheck { width: 20px; flex: none; display: grid; place-items: center; color: var(--text-3); }
-.mn-when { flex: none; font-size: 12.5px; color: var(--text-2); }
-.mn-tx { min-width: 0; flex: 1; display: grid; overflow-wrap: anywhere; }
-.mn-tx small { font-size: 12px; color: var(--text-3); }
-@media (pointer: coarse) { .mn-check { width: 24px; height: 24px; } }
+/* /briefing: il punto della giornata */
+.brf-card { --k: var(--accent); display: grid; gap: 14px; width: 100%; max-width: 620px; padding: 16px 18px; border: 1px solid var(--border); border-radius: 18px; background: var(--raised); }
+.brf-head { display: flex; align-items: center; gap: 10px; }
+.brf-head b { font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.brf-head b::first-letter { text-transform: uppercase; }
+.brf-ic { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); flex: none; }
+.brf-sec { display: grid; gap: 6px; }
+.brf-sec h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); }
+.brf-sec h3 span { font-weight: 600; color: var(--text-2); }
+.brf-sec p { margin: 0; font-size: 13.5px; color: var(--text-3); }
+.brf-sec.l h3, .brf-sec.l h3 span { color: var(--warn); }
+.brf-list { display: grid; }
+.brf-row { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 14px; }
+.brf-row:first-child { border-top: 0; }
+.brf-row.done .brf-tx span { text-decoration: line-through; color: var(--text-3); }
+.brf-check { width: 20px; height: 20px; border-radius: 6px; }
+.brf-nocheck { width: 20px; flex: none; display: grid; place-items: center; color: var(--text-3); }
+.brf-when { flex: none; font-size: 12.5px; color: var(--text-2); }
+.brf-tx { min-width: 0; flex: 1; display: grid; overflow-wrap: anywhere; }
+.brf-tx small { font-size: 12px; color: var(--text-3); }
+@media (pointer: coarse) { .brf-check { width: 24px; height: 24px; } }
 /* Da Aura: i numeri del riepilogo restano in alto quando il riepilogo è fuori schermo */
 .au-strip-wrap { position: sticky; top: 6px; height: 0; z-index: 6; margin-bottom: -28px; pointer-events: none; }
 .au-strip { display: none; flex-direction: column; gap: 6px; width: fit-content; max-width: 100%; margin: 0 auto; pointer-events: auto; }

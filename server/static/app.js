@@ -3014,7 +3014,7 @@ function morningView(v, save) {
   const long = new Date(`${v.day}T12:00:00`).toLocaleDateString('it-IT', { weekday: 'long', day: 'numeric', month: 'long' });
   const dd = (d) => `${d.slice(8)}/${d.slice(5, 7)}`;
   const row = (x, lead, text, sub, tick) => {
-    const box = tick ? h('button', { class: 'bp-check mn-check' + (x.done ? ' on' : ''), type: 'button', 'aria-label': x.done ? 'Segna da fare' : 'Segna fatto', title: x.done ? 'Segna da fare' : 'Segna fatto',
+    const box = tick ? h('button', { class: 'bp-check brf-check' + (x.done ? ' on' : ''), type: 'button', 'aria-label': x.done ? 'Segna da fare' : 'Segna fatto', title: x.done ? 'Segna da fare' : 'Segna fatto',
       html: x.done ? icon('check', 'sm') : '', onclick: async () => {
         try {
           await tick(!x.done); x.done = !x.done;
@@ -3022,17 +3022,17 @@ function morningView(v, save) {
           box.setAttribute('aria-label', x.done ? 'Segna da fare' : 'Segna fatto'); box.title = box.getAttribute('aria-label');
           save();
         } catch (e) { toast(e.message); }
-      } }) : h('span', { class: 'mn-nocheck', html: icon('calendar', 'sm') });
-    const el = h('div', { class: 'mn-row' + (x.done ? ' done' : '') }, box, lead ? h('span', { class: 'mn-when tnum', text: lead }) : null,
-      h('div', { class: 'mn-tx' }, h('span', { text }), sub ? h('small', { text: sub }) : null));
+      } }) : h('span', { class: 'brf-nocheck', html: icon('calendar', 'sm') });
+    const el = h('div', { class: 'brf-row' + (x.done ? ' done' : '') }, box, lead ? h('span', { class: 'brf-when tnum', text: lead }) : null,
+      h('div', { class: 'brf-tx' }, h('span', { text }), sub ? h('small', { text: sub }) : null));
     return el;
   };
   const check = (x) => (done) => api('/api/brain/check', { path: x.path, item: x.text, done });
   const remind = (x) => (done) => api(`/api/calendar/event/${encodeURIComponent(x.id)}/done`, { done });
-  const sec = (title, cls, rows, empty) => h('section', { class: 'mn-sec ' + cls }, h('h3', {}, title, rows.length ? h('span', { class: 'tnum', text: String(rows.length) }) : null),
-    rows.length ? h('div', { class: 'mn-list' }, ...rows) : h('p', { text: empty }));
-  return h('div', { class: 'mn-card' },
-    h('div', { class: 'mn-head' }, h('span', { class: 'mn-ic', html: icon('calendar', 'sm') }), h('b', { text: long })),
+  const sec = (title, cls, rows, empty) => h('section', { class: 'brf-sec ' + cls }, h('h3', {}, title, rows.length ? h('span', { class: 'tnum', text: String(rows.length) }) : null),
+    rows.length ? h('div', { class: 'brf-list' }, ...rows) : h('p', { text: empty }));
+  return h('div', { class: 'brf-card' },
+    h('div', { class: 'brf-head' }, h('span', { class: 'brf-ic', html: icon('calendar', 'sm') }), h('b', { text: long })),
     sec('In agenda', 'a', v.agenda.map((e) => row(e, e.time || 'Tutto il giorno', e.title, e.location, e.kind === 'promemoria' ? remind(e) : null)), 'Niente in agenda.'),
     sec(v.today ? 'Da fare oggi' : 'Da fare quel giorno', 't', v.todo.map((t) => row(t, '', t.text, '', check(t))), 'Niente di segnato.'),
     v.late.length ? sec('Rimaste indietro', 'l', v.late.map((t) => row(t, dd(t.day), t.text, '', t.path ? check(t) : remind(t))), '') : null);
