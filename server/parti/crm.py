@@ -679,6 +679,7 @@ async def _tool_crm_search(user: dict, args: dict, request: Request) -> dict:
 
 TICKET_PHOTO_ASK = re.compile(r"\b(fot[oi]\w*|immagin\w*|screen\w*|schermat\w*|allegat\w*|guard\w*|vedi|vedere|analizz\w*|file|document\w*|pdf|excel|word|mail|e-mail|legg\w*|apri\w*|contenuto|dentro|scaric\w*)\b", re.I)
 TICKET_PHOTO_MIN = 4096   # sotto ci sono le icone di firme e avvisi automatici
+TICKET_ICON_MAX = 120     # pixel: sotto è un'icona, anche se il file pesa
 
 
 def _ticket_photo_jpeg(data: bytes) -> str:
@@ -788,7 +789,9 @@ def _crm_inner_photo(name: str, data: bytes) -> bool:
     except Exception:
         return True   # non si capisce: la decide il modello, se si apre
     f = {"id": "", "name": name, "size": len(data), "mime": "image/", "data": data, "w": w_, "h": h_, "exact": exact, "bits": bits}
-    return _crm_mark_for(f) == "photo" or not crm_is_logo(f)
+    if _crm_mark_for(f) == "photo":
+        return True
+    return max(w_, h_) >= TICKET_ICON_MAX and not crm_is_logo(f)   # le icone dei social nelle firme sono quadrate e piccole
 
 
 async def _tool_crm_files(user: dict, args: dict, request: Request) -> dict:
@@ -810,7 +813,7 @@ async def _tool_crm_files(user: dict, args: dict, request: Request) -> dict:
             continue
         seen.add((f["name"], f["size"]))
         if f["mime"].startswith("image/"):
-            if (f["size"] >= TICKET_PHOTO_MIN or _crm_mark_for(f) == "photo") and not crm_is_logo(f):
+            if _crm_mark_for(f) == "photo" or (f["size"] >= TICKET_PHOTO_MIN and max(f.get("w") or 999, f.get("h") or 999) >= TICKET_ICON_MAX and not crm_is_logo(f)):
                 photos.append(f)
             else:
                 skipped += 1
