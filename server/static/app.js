@@ -2316,7 +2316,7 @@ function tkpTimeline(t, shown, boxes) {
     ...shown.map((c, i) => { const who = c.me ? 'Tu' : c.who; return { at: c.at, el: h('li', { class: 'tkp-c' + (c.client ? ' client' : '') + (c.me ? ' me' : '') + (c.private ? ' priv' : '') },
       h('i', { class: 'tkp-av' + (c.me ? ' me' : ''), text: tkpInitials(who) }),
       h('div', { class: 'tkp-cb' }, h('div', { class: 'tk-com-h' }, h('span', {}, h('b', { text: who }), c.client ? h('span', { class: 'tkp-cl', text: 'cliente' }) : null, c.private ? h('span', { class: 'tk-com-priv', text: 'interna' }) : null), h('small', { class: 'tnum', text: when(c.at) })),
-        h('div', { class: 'tk-txt', text: c.text }), tkRest(c.rest), thread(c.earlier), boxes[i])) }; }),
+        h('div', { class: 'tk-txt', text: c.text }), boxes[i], tkRest(c.rest), thread(c.earlier))) }; }),
   ].sort((a, b) => (a.at || '').localeCompare(b.at || ''));
   const timeline = h('ol', { class: 'tkp-tl' });
   let newest = pref.get('tkNewestFirst', true);   // i messaggi nuovi in alto
@@ -2382,7 +2382,7 @@ async function tkpDetail(main, no) {
     h('div', { class: 'tkp-grid' },
       h('div', { class: 'tkp-body' },
         h('section', { class: 'tkp-box' }, h('h2', { text: 'Richiesta' }),
-          h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), tkRest(t.description_rest), thread(t.desc_earlier), descBox),
+          h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), descBox, tkRest(t.description_rest), thread(t.desc_earlier)),
         t.solution ? h('section', { class: 'tkp-box sol' }, h('h2', { text: 'Soluzione' }), h('div', { class: 'tk-txt', text: t.solution })) : null,
         docBox ? h('section', { class: 'tkp-box' }, h('h2', { text: `Documenti (${t.documents.length})` }), docBox) : null,
         h('section', { class: 'tkp-tlbox' }, h('div', { class: 'tkp-tlh' }, h('h2', { text: `Cronologia${shown.length ? ` · ${shown.length} comment${shown.length === 1 ? 'o' : 'i'}` : ''}` }), items.length > 2 ? order : null), timeline)),
@@ -2451,7 +2451,7 @@ async function soloRender(root, no) {
   const stepNo = h('button', { class: 'ts-no mono', title: 'Copia il numero', text: t.no, onclick: () => navigator.clipboard?.writeText(t.no).then(() => toast('Numero copiato')).catch(() => {}) });
   const panes = {
     chat: h('div', { class: 'ts-pane' },
-      h('section', { class: 'tkp-box' }, h('h2', { text: 'Richiesta' }), h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), tkRest(t.description_rest), tkThread(t.desc_earlier), descBox),
+      h('section', { class: 'tkp-box' }, h('h2', { text: 'Richiesta' }), h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), descBox, tkRest(t.description_rest), tkThread(t.desc_earlier)),
       t.solution ? h('section', { class: 'tkp-box sol' }, h('h2', { text: 'Soluzione' }), h('div', { class: 'tk-txt', text: t.solution })) : null,
       h('section', { class: 'tkp-tlbox' }, h('div', { class: 'tkp-tlh' }, h('h2', { text: 'Cronologia' }), items.length > 2 ? order : null), timeline)),
     info: h('div', { class: 'ts-pane ts-cards' },
