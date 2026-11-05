@@ -2265,7 +2265,7 @@ function tkpPaint(results, filters, count) {
     const sub = [r.client, r.contact].filter(Boolean);
     const subEl = h('small', { class: 'tkp-sub' });
     tkpMark(subEl, sub.join(' · ') || 'Cliente non indicato', TKP.words);
-    return h('button', { class: `tkp-row t-${tone}${r.done ? ' done' : ''}`, onclick: () => { TKP.sel = r.no; TKP.scroll = $('#ticketsView').scrollTop; renderTickets(); } },
+    return h('button', { class: `tkp-row t-${tone}${r.done ? ' done' : ''}`, 'data-ticket': r.no, onclick: () => { TKP.sel = r.no; TKP.scroll = $('#ticketsView').scrollTop; renderTickets(); } },
       h('span', { class: 'tkp-no tnum', text: tkNum(r.no) }),
       h('span', { class: 'tkp-t' }, tkpMark(h('b', {}), r.title, TKP.words), subEl,
         r.snippet ? h('span', { class: 'tkp-snip' }, h('em', { text: r.match === 'soluzione' ? 'Soluzione: ' : 'Richiesta: ' }), tkpMark(h('span', {}), r.snippet, TKP.words)) : null),
@@ -2342,7 +2342,7 @@ async function tkpDetail(main, no) {
   if (t.client_id || t.contact_id) api('/api/crm/related?' + new URLSearchParams({ no: t.no, client: t.client_id || t.contact_account || '', contact: t.contact_id || '' })).then((r) => r.json()).then((d) => {
     if (!d.rows?.length) return;
     related.hidden = false;
-    related.replaceChildren(h('h3', { text: 'Altri ticket del cliente' }), ...d.rows.map((r) => h('button', { class: 'tkp-rel t-' + tkTone(r.status), title: r.status_it, onclick: () => { TKP.nav = []; open(r.no); } },
+    related.replaceChildren(h('h3', { text: 'Altri ticket del cliente' }), ...d.rows.map((r) => h('button', { class: 'tkp-rel t-' + tkTone(r.status), 'data-ticket': r.no, title: r.status_it, onclick: () => { TKP.nav = []; open(r.no); } },
       h('i', { class: 'tk-dot' }), h('span', { class: 'tkp-relt' }, h('b', { text: r.title }), h('small', { class: 'tnum', text: `${tkNum(r.no)} · ${r.status_it} · ${tkDay(r.modified)}` })))));
   }).catch(() => {});
   const used = Number(con?.used), total = Number(con?.total);
@@ -2385,7 +2385,7 @@ async function tkpDetail(main, no) {
         h('section', { class: 'tkp-card' }, h('h3', { text: 'Gestione' }), manage),
         card('Date e lavoro', row('Ricevuto', when(t.received)), row('Creato', when(t.created)), row('Preso in carico', when(t.taken_at)), row('Chiuso', when(t.closed_at)),
           row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''),
-          t.parent_ticket?.no ? row('Ticket padre', h('button', { class: 'tkp-linkbtn', text: t.parent_ticket.no, title: t.parent_ticket.title, onclick: () => { TKP.nav = []; open(t.parent_ticket.no); } })) : null),
+          t.parent_ticket?.no ? row('Ticket padre', h('button', { class: 'tkp-linkbtn', 'data-ticket': t.parent_ticket.no, text: t.parent_ticket.no, title: t.parent_ticket.title, onclick: () => { TKP.nav = []; open(t.parent_ticket.no); } })) : null),
         related)));
 }
 
@@ -2814,7 +2814,7 @@ function tkAlert(items) {
       one ? h('div', { class: 'tt', text: one.title || '' }) : h('div', { class: 'tt', text: items.slice(0, 3).map((i) => i.data?.no).join(' · ') + (items.length > 3 ? ' …' : '') }),
       one?.client ? h('small', { text: [one.client, one.priority].filter(Boolean).join(' · ') }) : null,
       h('div', { class: 'tk-alert-f' },
-        h('button', { class: 'btn sm primary', text: one ? 'Apri' : 'Vedi i ticket', onclick: () => tkOpenFromAlert(one?.no) }),
+        h('button', { class: 'btn sm primary', 'data-ticket': one?.no, text: one ? 'Apri' : 'Vedi i ticket', onclick: () => tkOpenFromAlert(one?.no) }),
         one && !one.mine ? h('button', { class: 'btn sm', text: 'Prendi in carico', onclick: async (e) => {
           e.currentTarget.disabled = true;
           if (await tkTakeFromAlert(one.no)) { const it = items[0]; api(`/api/aura/feed/${it.id}/act`, { action: 'ticket_taken' }).catch(() => {}); close(); } else if (e.target.isConnected) e.target.disabled = false; } }) : null)));
@@ -3167,12 +3167,13 @@ function feedCard(it) {
     const letters = who.split(/\s+/).filter((w) => /^[\p{L}\p{N}]/u.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
     body.length = 0;
     body.push(h('div', { class: 'tkn-top' }, h('span', { class: 'tkn-new', text: d.mine ? 'Nuovo, assegnato a te' : 'Nuovo ticket' }), h('span', { class: 'tkn-no mono', text: d.no || '' }), h('span', { class: 'au-time tnum', text: hhmm(it.at) })),
-      h('button', { type: 'button', class: 'tkn-title', text: d.title || title, title: 'Apri il ticket', onclick: open }),
+      h('button', { type: 'button', class: 'tkn-title', 'data-ticket': d.no, text: d.title || title, title: 'Apri il ticket', onclick: open }),
       h('div', { class: 'tkn-who' }, who ? h('span', { class: 'tkn-mono', 'aria-hidden': 'true', text: letters || '?' }) : null, who ? h('span', { class: 'tkn-client', text: who }) : null,
         d.priority ? h('span', { class: 'tkn-prio' + (/urg|alt|high|crit/i.test(d.priority) ? ' hot' : ''), text: d.priority }) : null),
       h('div', { class: 'tkn-tear', 'aria-hidden': 'true' }));
     if (take) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }, true));
     chips.push(chip('Apri il ticket', 'ticket', open, !take));
+    if (d.no) chips.at(-1).dataset.ticket = d.no;
   } else if (it.kind === 'deadline') {
     const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
     body.push(h('div', { class: 'au-due' },
@@ -3474,7 +3475,7 @@ function sideHead() {
     h('button', { class: 'icon-btn sm', title: 'Chiudi', 'aria-label': 'Chiudi il pannello', html: icon('x', 'sm'), onclick: () => toggleBrain(false) }));
 }
 function tkItem(r, showClient) {
-  return h('button', { class: 'tk-item', title: `${r.no} · ${r.status_it}`, onclick: () => openTicket(r.no) },
+  return h('button', { class: 'tk-item', 'data-ticket': r.no, title: `${r.no} · ${r.status_it}`, onclick: () => openTicket(r.no) },
     h('i', { class: 'tk-dot t-' + tkTone(r.status) }),
     h('span', { class: 'tk-no tnum', text: tkNum(r.no) }),
     h('span', { class: 'tk-t' }, h('span', { text: r.title }), showClient && r.client ? h('small', { text: r.client }) : null),
@@ -3920,6 +3921,11 @@ function tkDetail(t) {
 }
 const _clipTxt = (s, n) => !s || s.length <= n ? s : s.slice(0, n).replace(/\s\S*$/, '') + '…';
 function openTicket(ref) { TKP.sel = ref; TKP.nav = []; return openTickets(); }
+// Rotella o Ctrl+clic su un ticket: si apre in un'altra scheda del browser, come un link. Vale per tutto ciò che ha data-ticket
+const tkNewTab = (el) => window.open('/?ticket=' + encodeURIComponent(el.dataset.ticket), '_blank');
+document.addEventListener('mousedown', (e) => { if (e.button === 1 && e.target.closest?.('[data-ticket]')) e.preventDefault(); });   // niente scorrimento automatico
+document.addEventListener('auxclick', (e) => { const el = e.button === 1 && e.target.closest?.('[data-ticket]'); if (el) { e.preventDefault(); tkNewTab(el); } });
+document.addEventListener('click', (e) => { const el = (e.ctrlKey || e.metaKey) && e.target.closest?.('[data-ticket]'); if (el) { e.preventDefault(); e.stopPropagation(); tkNewTab(el); } }, true);
 // in chat: elenco di ticket (ticket_elenco, ticket_cerca) e un ticket aperto (ticket_dettaglio)
 function tkListView(v) {
   const rows = v.rows || [];
@@ -3931,7 +3937,7 @@ function tkListView(v) {
 function tkCardView(t) {
   return h('div', { class: 'cs-card tk-card' },
     h('div', { class: 'cs-head' }, h('b', { html: icon('ticket', 'sm') + t.title }),
-      h('button', { class: 'cs-copy', html: 'Apri ' + icon('chevron', 'sm'), title: 'Apri il ticket intero', onclick: () => openTicket(t.no) })),
+      h('button', { class: 'cs-copy', 'data-ticket': t.no, html: 'Apri ' + icon('chevron', 'sm'), title: 'Apri il ticket intero', onclick: () => openTicket(t.no) })),
     tkDetail(t));
 }
 
