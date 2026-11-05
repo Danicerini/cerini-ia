@@ -217,16 +217,17 @@ async function showApp() {
   $('#clientiBtn').classList.toggle('hidden', !isAdmin());
   $('#ticketsBtn').classList.toggle('hidden', !S.me?.crm);
   refreshAuraBadge();
-  if (new URLSearchParams(location.search).get('aura')) { history.replaceState(null, '', '/'); openAura(); }
+  if (new URLSearchParams(location.search).get('aura')) { history.replaceState(history.state, '', '/'); openAura(); }
   const fromPush = new URLSearchParams(location.search);
-  if (fromPush.get('ticket') || fromPush.get('tickets')) { history.replaceState(null, '', '/'); setTimeout(() => tkOpenFromAlert(fromPush.get('ticket')), 300); }
+  if (fromPush.get('ticket') || fromPush.get('tickets')) { history.replaceState(history.state, '', '/'); setTimeout(() => tkOpenFromAlert(fromPush.get('ticket')), 300); }
   if (!isMobile() && pref.get('brainPanel', true)) toggleBrain(true);
   try { S.chats = await Store.list(); } catch (e) { S.chats = []; toast('Non riesco a leggere le chat: ' + e.message); }
   renderAll(); refresh(); focusInput();
   migrateLegacy();
   const gm = new URLSearchParams(location.search).get('gmail');
+  navStart();
   if (gm) {
-    history.replaceState(null, '', '/');
+    history.replaceState(history.state, '', '/');
     toast({ ok: 'Google collegato', annullato: 'Collegamento a Gmail annullato', scaduto: 'Il collegamento è scaduto: riprova',
       permessi: 'Serve il permesso di gestire le mail: riprova e lascia la spunta su Gmail' }[gm] || 'Collegamento a Gmail non riuscito');
     if (gm === 'ok' || gm === 'permessi') { S.accSec = 'links'; openSettings(); }
@@ -497,10 +498,12 @@ async function openChat(id) {
   S.currentId = id; S.editing = null; S.attachments = [];
   if (c.model) loadCaps(c.model);
   closeSide(); renderAll(); scrollToBottom(true);
+  navSync();
 }
 function newChat() {
   S.currentId = null; S.editing = null; S.attachments = [];
   closeViews(); closeSide(); renderAll(); focusInput();
+  navSync();
 }
 $('#newChat').onclick = newChat; $('#newChatTop').onclick = newChat;
 
@@ -1355,6 +1358,7 @@ comp.addEventListener('submit', (e) => {
   if (!c) {
     c = { id: uid(), title: 'Nuova chat', created: Date.now(), updated: Date.now(), model: activeModel(), messages: [] };
     S.chats.unshift(c); S.currentId = c.id;
+    if (history.state?.nav && !history.state.nav.v) history.replaceState({ ...history.state, nav: { ...history.state.nav, c: c.id } }, '', location.href);   // la chat appena nata prende il posto di quella vuota
   }
   c.model = c.model || activeModel();
   c.messages = c.messages.filter((m) => m.role !== 'error');
@@ -2127,6 +2131,7 @@ async function renderTickets(reloadFolders) {
   const main = h('div', { class: 'tkp-main' });
   root.replaceChildren(h('div', { class: 'tkp-wrap' }, h('aside', { class: 'tkp-side' }, ...group('personale', 'LISTA PERSONALE'), ...group('condivisa', 'LISTA CONDIVISA')),
     h('div', { class: 'tkp-col' }, TKP.sel ? null : h('div', { class: 'tkp-pickbox' }, pick), main)));
+  navSync();
   if (TKP.sel) return tkpDetail(main, TKP.sel);
   return tkpList(main);
 }
@@ -2326,7 +2331,7 @@ async function tkpDetail(main, no) {
   let t;
   try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(no))).json(); }
   catch (e) { main.replaceChildren(h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('div', { class: 'cl-empty', text: e.message })); return; }
-  const open = (n) => { TKP.sel = n; tkpDetail(main, n); $('#ticketsView').scrollTop = 0; };
+  const open = (n) => { TKP.sel = n; navSync(); tkpDetail(main, n); $('#ticketsView').scrollTop = 0; };
   // tasti
   const ask = (text) => { closeTickets(); input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit(); };
   const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => ask(text) });
@@ -5601,6 +5606,54 @@ async function showInvite(token) {
   };
 }
 
+// =============================================================== indietro
+// Il tasto Indietro del browser (o del mouse, o Alt+freccia) torna alla pagina di prima dentro l'app: ogni cambio di vista è un passo della cronologia.
+// Anche Ctrl+Z, quando non si sta scrivendo in una casella
+const NAV = { on: false, busy: false, timer: 0, i: 0 };
+const NAV_OPEN = { tickets: () => openTickets(), memory: () => openMemory(), mail: () => openMail(), agenda: () => openAgenda(), clienti: () => openClienti(), settings: () => openSettings(), aura: () => openAuraSettings(), brain: () => closeViews() };   // brain: una scheda del cervello non si riapre da qui, si torna alla chat
+const navNow = () => {
+  const v = Object.keys(NAV_OPEN).find((k) => $('#main').classList.contains(k + '-open')) || null;
+  return { v, t: v === 'tickets' ? TKP.sel || null : null, c: v ? null : S.currentId || null };
+};
+const navSame = (a, b) => !!a && !!b && a.v === b.v && a.t === b.t && a.c === b.c;
+function navPush() {
+  if (!NAV.on || NAV.busy) return;
+  const now = navNow();
+  if (navSame(history.state?.nav, now)) return;
+  // da una vista si torna alla chat di prima: quella resta dov'era, la vista non la cambia
+  history.pushState({ nav: now, i: ++NAV.i }, '', location.pathname === '/' ? '/' : location.href);
+}
+function navSync() { if (NAV.on) { clearTimeout(NAV.timer); NAV.timer = setTimeout(navPush, 0); } }
+function navStart() {
+  if (NAV.on) return;
+  NAV.on = true;
+  // il punto di partenza è sempre la pagina principale, anche se l'app si è aperta su un ticket da una notifica
+  const now = navNow();
+  history.replaceState({ nav: { v: null, t: null, c: S.currentId || null }, i: 0 }, '', location.href);
+  if (now.v) navPush();
+  new MutationObserver(navSync).observe($('#main'), { attributes: true, attributeFilter: ['class'] });
+}
+window.addEventListener('popstate', async (e) => {
+  const to = e.state?.nav;
+  if (!NAV.on || !to) return;
+  NAV.busy = true; NAV.i = e.state.i || 0;
+  try {
+    if (to.v === 'tickets') {
+      TKP.sel = to.t;
+      if ($('#main').classList.contains('tickets-open')) await renderTickets(); else await openTickets();
+    } else if (to.v) await NAV_OPEN[to.v]();
+    else if (to.c && to.c === S.me?.aura_chat) await openAura();
+    else if (to.c && S.chats?.some((x) => x.id === to.c)) await openChat(to.c);
+    else { closeViews(); S.currentId = null; closeSide(); renderAll(); }   // la pagina principale, o una chat che non c'è più
+  } finally { setTimeout(() => { NAV.busy = false; }, 0); }
+});
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey || e.key.toLowerCase() !== 'z') return;
+  const el = e.target;
+  if (el?.matches?.('input, textarea, select, [contenteditable], [contenteditable] *') && !(el === input && !el.value)) return;   // lì Ctrl+Z annulla il testo
+  if (location.pathname.startsWith('/t/')) { if (history.length > 1) { e.preventDefault(); history.back(); } return; }
+  if (NAV.on && history.state?.i > 0) { e.preventDefault(); history.back(); }
+});
 // =============================================================== shortcuts
 document.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'o') { e.preventDefault(); newChat(); }
