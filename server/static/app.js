@@ -209,6 +209,8 @@ async function showApp() {
   } catch { return; }
   // chi non e' il proprietario sceglie prima il suo fornitore: senza non si entra
   if (S.me.needs_provider) { showProviderGate(); return; }
+  const soloNo = location.pathname.match(/^\/t\/([^/]+)$/)?.[1];
+  if (soloNo) { soloOpen(decodeURIComponent(soloNo)); return; }
   S.currentId = null; closeViews(); refreshMemoryCount();
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
@@ -2265,7 +2267,7 @@ function tkpPaint(results, filters, count) {
     const sub = [r.client, r.contact].filter(Boolean);
     const subEl = h('small', { class: 'tkp-sub' });
     tkpMark(subEl, sub.join(' · ') || 'Cliente non indicato', TKP.words);
-    return h('button', { class: `tkp-row t-${tone}${r.done ? ' done' : ''}`, 'data-ticket': r.no, onclick: () => { TKP.sel = r.no; TKP.scroll = $('#ticketsView').scrollTop; renderTickets(); } },
+    return h('a', { class: `tkp-row t-${tone}${r.done ? ' done' : ''}`, href: tkSoloUrl(r.no), 'data-ticket': r.no, onclick: (e) => { e.preventDefault(); TKP.sel = r.no; TKP.scroll = $('#ticketsView').scrollTop; renderTickets(); } },
       h('span', { class: 'tkp-no tnum', text: tkNum(r.no) }),
       h('span', { class: 'tkp-t' }, tkpMark(h('b', {}), r.title, TKP.words), subEl,
         r.snippet ? h('span', { class: 'tkp-snip' }, h('em', { text: r.match === 'soluzione' ? 'Soluzione: ' : 'Richiesta: ' }), tkpMark(h('span', {}), r.snippet, TKP.words)) : null),
@@ -2294,36 +2296,15 @@ function tkpPaint(results, filters, count) {
 // ---- il ticket aperto
 // La firma e gli avvisi tolti dal messaggio: chiusi, ma mai persi
 const tkRest = (text) => text ? h('details', { class: 'tk-rest' }, h('summary', { text: 'Firma e resto del messaggio' }), h('div', { class: 'tk-txt', text })) : null;
-async function tkpDetail(main, no) {
-  const back = () => { TKP.sel = null; renderTickets(); };
-  main.replaceChildren(tkpSkeleton(5));
-  let t;
-  try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(no))).json(); }
-  catch (e) { main.replaceChildren(h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('div', { class: 'cl-empty', text: e.message })); return; }
-  const open = (n) => { TKP.sel = n; tkpDetail(main, n); $('#ticketsView').scrollTop = 0; };
-  // tasti
-  const ask = (text) => { closeTickets(); input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit(); };
-  const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => ask(text) });
-  const pos = TKP.nav.indexOf(t.no);
-  const step = (d, label, glyph) => { const n = TKP.nav[pos + d]; return h('button', { class: 'btn sm tkp-step', 'aria-label': label, title: label, text: glyph, disabled: n ? null : true, onclick: () => open(n) }); };
-  const sla = t.sla || {}, risk = tkpSla(sla.state, t.done), con = t.contract, info = t.contact_info || {};
-  const row = (label, val) => val ? h('div', { class: 'tkp-kv' }, h('dt', { text: label }), h('dd', {}, val)) : null;
-  const card = (title, ...kids) => { const body = kids.flat().filter(Boolean); return body.length ? h('section', { class: 'tkp-card' }, h('h3', { text: title }), h('dl', {}, ...body)) : null; };
-  const link = (href, text) => h('a', { href, text });
-  // i messaggi citati sotto l'ultimo di una mail: chiusi, ma si vede quanti sono
-  const thread = (list) => (list?.length ? h('details', { class: 'tkp-thread' }, h('summary', { text: list.length === 1 ? 'Messaggio precedente' : `${list.length} messaggi precedenti` }),
-    ...list.map((m) => h('div', { class: 'tkp-q1' }, h('div', { class: 'tk-com-h' }, h('b', { text: m.who }), h('small', { class: 'tnum', text: m.when })), h('div', { class: 'tk-txt', text: m.text })))) : null);
-  // i file stanno nei commenti: si riempiono dopo, come sempre
-  const descBox = h('div', { class: 'tk-files' });
-  const shown = t.comments || [];
-  const boxes = shown.map(() => h('div', { class: 'tk-files' }));
-  const docBox = t.documents?.length ? h('div', { class: 'tk-files' }) : null;
-  setTimeout(() => tkFilesFill(t, descBox, boxes, docBox), 0);
-  // gestione: in sola lettura finché il CRM non è aperto alla scrittura, poi tkActions mette i campi da cambiare
-  const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.priority_it), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
-  const actions = tkActions(t, () => tkpDetail(main, t.no), manage);
-  // la cronologia: i commenti e i passaggi del ticket, in ordine di tempo
-  const when = (s) => (s ? `${tkDay(s)} ${s.slice(11, 16)}`.trim() : '');
+const tkRow = (label, val) => (val ? h('div', { class: 'tkp-kv' }, h('dt', { text: label }), h('dd', {}, val)) : null);
+const tkCard = (title, ...kids) => { const body = kids.flat().filter(Boolean); return body.length ? h('section', { class: 'tkp-card' }, h('h3', { text: title }), h('dl', {}, ...body)) : null; };
+const tkWhen = (s) => (s ? `${tkDay(s)} ${s.slice(11, 16)}`.trim() : '');
+// i messaggi citati sotto l'ultimo di una mail: chiusi, ma si vede quanti sono
+const tkThread = (list) => (list?.length ? h('details', { class: 'tkp-thread' }, h('summary', { text: list.length === 1 ? 'Messaggio precedente' : `${list.length} messaggi precedenti` }),
+  ...list.map((m) => h('div', { class: 'tkp-q1' }, h('div', { class: 'tk-com-h' }, h('b', { text: m.who }), h('small', { class: 'tnum', text: m.when })), h('div', { class: 'tk-txt', text: m.text })))) : null);
+// la cronologia: i commenti e i passaggi del ticket, in ordine di tempo
+function tkpTimeline(t, shown, boxes) {
+  const when = tkWhen, thread = tkThread;
   const events = [[t.received || t.created, 'Ticket aperto' + (t.source ? ` (${t.source})` : '')], [t.taken_at, 'Preso in carico'], [t.closed_at, 'Ticket chiuso']].filter((x) => x[0]);
   const items = [
     ...events.map(([at, text]) => ({ at, el: h('li', { class: 'tkp-ev' }, h('span', { text }), h('small', { class: 'tnum', text: when(at) })) })),
@@ -2337,6 +2318,32 @@ async function tkpDetail(main, no) {
   const paintTl = () => timeline.replaceChildren(...(newest ? [...items].reverse() : items).map((x) => x.el));
   paintTl();
   const order = h('button', { class: 'tkp-off', text: newest ? 'Dai più vecchi' : 'Dai più recenti', onclick: (e) => { newest = !newest; pref.set('tkNewestFirst', newest); e.target.textContent = newest ? 'Dai più vecchi' : 'Dai più recenti'; paintTl(); } });
+  return { timeline, order, items };
+}
+async function tkpDetail(main, no) {
+  const back = () => { TKP.sel = null; renderTickets(); };
+  main.replaceChildren(tkpSkeleton(5));
+  let t;
+  try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(no))).json(); }
+  catch (e) { main.replaceChildren(h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('div', { class: 'cl-empty', text: e.message })); return; }
+  const open = (n) => { TKP.sel = n; tkpDetail(main, n); $('#ticketsView').scrollTop = 0; };
+  // tasti
+  const ask = (text) => { closeTickets(); input.value = text; autosize(); renderComposer(); $('#composer').requestSubmit(); };
+  const q = (label, text) => h('button', { class: 'tk-q', text: label, onclick: () => ask(text) });
+  const pos = TKP.nav.indexOf(t.no);
+  const step = (d, label, glyph) => { const n = TKP.nav[pos + d]; return h('button', { class: 'btn sm tkp-step', 'aria-label': label, title: label, text: glyph, disabled: n ? null : true, onclick: () => open(n) }); };
+  const sla = t.sla || {}, risk = tkpSla(sla.state, t.done), con = t.contract, info = t.contact_info || {};
+  const row = tkRow, card = tkCard, link = (href, text) => h('a', { href, text }), thread = tkThread;
+  // i file stanno nei commenti: si riempiono dopo, come sempre
+  const descBox = h('div', { class: 'tk-files' });
+  const shown = t.comments || [];
+  const boxes = shown.map(() => h('div', { class: 'tk-files' }));
+  const docBox = t.documents?.length ? h('div', { class: 'tk-files' }) : null;
+  setTimeout(() => tkFilesFill(t, descBox, boxes, docBox), 0);
+  // gestione: in sola lettura finché il CRM non è aperto alla scrittura, poi tkActions mette i campi da cambiare
+  const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.priority_it), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
+  const actions = tkActions(t, () => tkpDetail(main, t.no), manage);
+  const when = tkWhen, { timeline, order, items } = tkpTimeline(t, shown, boxes);
   // altri ticket dello stesso cliente: si chiedono dopo, non fanno aspettare la pagina
   const related = h('section', { class: 'tkp-card', hidden: true });
   if (t.client_id || t.contact_id) api('/api/crm/related?' + new URLSearchParams({ no: t.no, client: t.client_id || t.contact_account || '', contact: t.contact_id || '' })).then((r) => r.json()).then((d) => {
@@ -2351,6 +2358,7 @@ async function tkpDetail(main, no) {
     h('div', { class: 'tkp-nav' }, h('button', { class: 'btn sm tkp-back', html: '‹ Torna ai ticket', onclick: back }), h('span', { class: 'grow' }),
       pos >= 0 && TKP.nav.length > 1 ? h('span', { class: 'tkp-pager' }, step(-1, 'Ticket precedente', '‹'), h('small', { class: 'tnum', text: `${pos + 1} di ${TKP.nav.length}` }), step(1, 'Ticket successivo', '›')) : null,
       h('button', { class: 'btn sm', 'aria-label': 'Aggiorna', html: icon('retry', 'sm') + '<span class="lb">Aggiorna</span>', onclick: () => tkpDetail(main, t.no) }),
+      h('a', { class: 'btn sm', href: tkSoloUrl(t.no), target: '_blank', rel: 'noopener', text: 'Pagina del ticket' }),
       t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null),
     h('header', { class: 'tkp-top' },
       h('div', { class: 'tkp-tags' }, h('span', { class: 'tk-tag t-' + tkTone(t.status), text: t.status_it }),
@@ -2387,6 +2395,130 @@ async function tkpDetail(main, no) {
           row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''),
           t.parent_ticket?.no ? row('Ticket padre', h('button', { class: 'tkp-linkbtn', 'data-ticket': t.parent_ticket.no, text: t.parent_ticket.no, title: t.parent_ticket.title, onclick: () => { TKP.nav = []; open(t.parent_ticket.no); } })) : null),
         related)));
+}
+
+// ================================================================== la pagina di un ticket solo (/t/<numero>)
+// Si apre con la rotella, senza il resto dell'app. Stati in alto come nel CRM, tasti, schede a sinistra e i dati fissi a destra.
+const SOLO = { tab: 'chat' };
+const SOLO_STATI = ['Open', 'In Progress', 'Attesa verifica interna', 'Wait For Response', 'Attesa risposta esterna', 'Attività programmata', 'Annullato', 'Closed'];
+function soloOpen(no) {
+  $('#app').classList.add('hidden');
+  let root = $('#solo');
+  if (!root) { root = h('div', { id: 'solo' }); document.body.append(root); }
+  if (!S.me?.crm) { root.replaceChildren(h('div', { class: 'ts-empty', text: 'Il CRM non è collegato: fallo in Impostazioni → Collegamenti.' })); return; }
+  soloRender(root, no);
+}
+async function soloRender(root, no) {
+  const bar = (...kids) => h('header', { class: 'ts-bar' }, h('a', { class: 'ts-home', href: '/', title: 'Torna ad Aura', 'aria-label': 'Torna ad Aura' }, h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span'))), ...kids);
+  if (!root.firstChild) root.replaceChildren(bar(h('b', { class: 'ts-crumb', text: no })), h('main', { class: 'ts-wrap' }, tkpSkeleton(5)));
+  let t;
+  try { t = await (await api('/api/crm/ticket/' + encodeURIComponent(no))).json(); }
+  catch (e) { root.replaceChildren(bar(h('b', { class: 'ts-crumb', text: no })), h('div', { class: 'ts-empty', text: e.message })); return; }
+  document.title = `${t.no} · ${t.title}`;
+  const again = () => soloRender(root, t.no);
+  const sla = t.sla || {}, risk = tkpSla(sla.state, t.done), con = t.contract, info = t.contact_info || {};
+  const row = tkRow, card = tkCard, when = tkWhen, link = (href, text) => h('a', { href, text });
+  const shown = t.comments || [], descBox = h('div', { class: 'tk-files' }), boxes = shown.map(() => h('div', { class: 'tk-files' }));
+  const docBox = t.documents?.length ? h('div', { class: 'tk-files' }) : null;
+  setTimeout(() => tkFilesFill(t, descBox, boxes, docBox), 0);
+
+  // gli stati, come la fila del CRM. Si cambiano da qui; «Chiuso» chiede il testo di chiusura
+  const flow = h('nav', { class: 'ts-flow', 'aria-label': 'Stato del ticket' });
+  let ctl = null, statusList = [];
+  const paintFlow = () => {
+    const known = new Map(statusList.map((x) => [x.value, x.label]));
+    const list = [...SOLO_STATI.filter((v) => known.has(v)), ...statusList.map((x) => x.value).filter((v) => !SOLO_STATI.includes(v))];
+    if (!list.includes(t.status)) list.push(t.status);
+    flow.replaceChildren(...list.map((v) => { const cur = v === t.status, label = known.get(v) || (cur ? t.status_it : v);
+      return h('button', { type: 'button', class: 'ts-step' + (cur ? ' on' : ''), 'aria-current': cur ? 'step' : null, disabled: !ctl || cur ? true : null, text: label, title: cur ? 'Stato attuale' : `Passa a «${label}»`, onclick: (e) => {
+        if (v === 'Closed') { ctl.open('close'); return; }
+        if (v === 'Annullato' && !confirm(`Annullo il ticket ${t.no}?`)) return;
+        if (t.done && !confirm(`Il ticket ${t.no} è chiuso. Lo riapri in «${label}»?`)) return;
+        ctl.act(e.currentTarget, () => ctl.patch({ ticketstatus: v }), `Stato: ${label}`); } }); }));
+  };
+  paintFlow();
+
+  const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.priority_it), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
+  // quello che esiste solo come tasto del CRM non si finge: si apre lì
+  const inCrm = t.link ? h('a', { class: 'btn sm ts-crm', href: t.link, target: '_blank', rel: 'noopener', title: 'Questi tasti lavorano dentro il CRM: da fuori non si possono comandare', text: 'Inoltra, Scarta, NPS: nel CRM ↗' }) : null;
+  const actions = tkActions(t, again, manage, { extra: inCrm || h('span'), onOptions: (o) => { statusList = o.picks?.ticketstatus || []; paintFlow(); }, onReady: (c) => { ctl = c; paintFlow(); } });
+
+  // le schede
+  const { timeline, order, items } = tkpTimeline(t, shown, boxes);
+  const stepNo = h('button', { class: 'ts-no mono', title: 'Copia il numero', text: t.no, onclick: () => navigator.clipboard?.writeText(t.no).then(() => toast('Numero copiato')).catch(() => {}) });
+  const panes = {
+    chat: h('div', { class: 'ts-pane' },
+      h('section', { class: 'tkp-box' }, h('h2', { text: 'Richiesta' }), h('div', { class: 'tk-txt', text: t.description || (t.desc_images?.length ? '' : 'Nessun testo nella richiesta.') }), tkRest(t.description_rest), tkThread(t.desc_earlier), descBox),
+      t.solution ? h('section', { class: 'tkp-box sol' }, h('h2', { text: 'Soluzione' }), h('div', { class: 'tk-txt', text: t.solution })) : null,
+      h('section', { class: 'tkp-tlbox' }, h('div', { class: 'tkp-tlh' }, h('h2', { text: 'Cronologia' }), items.length > 2 ? order : null), timeline)),
+    info: h('div', { class: 'ts-pane ts-cards' },
+      h('section', { class: 'tkp-card' }, h('h3', { text: 'Gestione' }), manage),
+      card('Date e lavoro', row('Ricevuto', when(t.received)), row('Creato', when(t.created)), row('Preso in carico', when(t.taken_at)), row('Chiuso', when(t.closed_at)),
+        row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''))),
+    docs: docBox ? h('div', { class: 'ts-pane' }, h('section', { class: 'tkp-box' }, docBox)) : null,
+    stati: h('div', { class: 'ts-pane' }), ore: h('div', { class: 'ts-pane' }), email: h('div', { class: 'ts-pane' }), rel: h('div', { class: 'ts-pane' }), nps: h('div', { class: 'ts-pane' }),
+  };
+  const tabs = [['chat', 'Conversazione', shown.length], ['info', 'Dettagli'], ['docs', 'Documenti', t.documents?.length || 0], ['stati', 'Storico stati'], ['ore', 'Consuntivi'], ['email', 'Email'], ['rel', 'Collegati'], ['nps', 'NPS']];
+  const tabBar = h('div', { class: 'ts-tabs', role: 'tablist' }), paneBox = h('div', {});
+  const counts = { docs: t.documents?.length || 0 }, extraReady = { v: false };
+  const paintTabs = () => {
+    // una scheda vuota non si mostra: resta solo quello che in questo ticket c'è davvero
+    const seen = tabs.filter(([k]) => k === 'chat' || k === 'info' || counts[k] > 0);
+    if (!seen.some(([k]) => k === SOLO.tab) && extraReady.v) SOLO.tab = 'chat';
+    if (!panes[SOLO.tab] || !seen.some(([k]) => k === SOLO.tab)) { paneBox.replaceChildren(panes.chat); } else paneBox.replaceChildren(panes[SOLO.tab]);
+    const cur = seen.some(([k]) => k === SOLO.tab) ? SOLO.tab : 'chat';
+    tabBar.replaceChildren(...seen.map(([k, label]) => { const n = k === 'chat' ? shown.length : counts[k];
+      return h('button', { type: 'button', role: 'tab', class: 'ts-tab' + (k === cur ? ' on' : ''), 'aria-selected': String(k === cur), onclick: () => { SOLO.tab = k; paintTabs(); } }, label, n ? h('small', { class: 'tnum', text: String(n) }) : null); }));
+  };
+  paintTabs();
+
+  // quello che chiede altre letture arriva dopo, non fa aspettare la pagina
+  const related = h('section', { class: 'tkp-card', hidden: true });
+  const relRow = (r) => h('a', { class: 'tkp-rel t-' + tkTone(r.status), href: tkSoloUrl(r.no), title: r.status_it }, h('i', { class: 'tk-dot' }), h('span', { class: 'tkp-relt' }, h('b', { text: r.title }), h('small', { class: 'tnum', text: [tkNum(r.no), r.status_it, tkDay(r.modified)].filter(Boolean).join(' · ') })));
+  if (t.client_id || t.contact_id) api('/api/crm/related?' + new URLSearchParams({ no: t.no, client: t.client_id || t.contact_account || '', contact: t.contact_id || '' })).then((r) => r.json()).then((d) => {
+    if (!d.rows?.length) return;
+    related.hidden = false;
+    related.replaceChildren(h('h3', { text: 'Altri ticket del cliente' }), ...d.rows.map(relRow));
+  }).catch(() => {});
+  api('/api/crm/ticket/' + encodeURIComponent(t.no) + '/extra').then((r) => r.json()).then((x) => {
+    const parent = t.parent_ticket?.no ? { no: t.parent_ticket.no, title: t.parent_ticket.title || t.parent_ticket.no } : null;
+    Object.assign(counts, { stati: x.stati.length, ore: x.consuntivi.length, email: x.email.length, nps: x.nps.length, rel: x.figli.length + (parent ? 1 : 0) });
+    panes.stati.replaceChildren(h('ol', { class: 'ts-hist' }, ...[...x.stati].reverse().map((v, i) => h('li', { class: i === 0 ? 'on' : '' }, h('b', { text: v.status_it }), h('span', { class: 'tnum', text: when(v.at) }),
+      h('small', { text: [v.who, Number(v.hours) ? `${String(v.hours).replace(/\.?0+$/, '').replace('.', ',')} ore prima` : ''].filter(Boolean).join(' · ') })))));
+    panes.ore.replaceChildren(h('div', { class: 'ts-list' }, ...x.consuntivi.map((v) => h('div', { class: 'ts-item' }, h('div', { class: 'ts-item-h' }, h('b', { text: v.kind || 'Attività' }), h('span', { class: 'tnum', text: [tkDay(v.day), v.from && v.to ? `${v.from}–${v.to}` : '', v.hours].filter(Boolean).join(' · ') })),
+      v.text ? h('div', { class: 'tk-txt', text: v.text }) : null, v.who ? h('small', { text: v.who }) : null))));
+    panes.email.replaceChildren(h('div', { class: 'ts-list' }, ...x.email.map((v) => h('div', { class: 'ts-item' }, h('div', { class: 'ts-item-h' }, h('b', { text: v.subject }), h('span', { class: 'tnum', text: [tkDay(v.day), v.time].filter(Boolean).join(' ') }))))));
+    panes.rel.replaceChildren(h('section', { class: 'tkp-card' }, parent ? h('h3', { text: 'Ticket padre' }) : null, parent ? relRow({ ...parent, status: '', status_it: '', modified: '' }) : null,
+      x.figli.length ? h('h3', { text: 'Ticket figli' }) : null, ...x.figli.map(relRow)));
+    panes.nps.replaceChildren(h('div', { class: 'ts-list' }, ...x.nps.map((v) => h('div', { class: 'ts-item' }, h('div', { class: 'ts-item-h' }, h('b', { text: `Esperienza ${Number(v.overall) || '–'}/5 · Servizio ${Number(v.service) || '–'}/5` }), h('span', { class: 'tnum', text: when(v.at) })), v.text ? h('div', { class: 'tk-txt', text: v.text }) : null))));
+    extraReady.v = true;
+    paintTabs();
+  }).catch(() => {});
+
+  const used = Number(con?.used), total = Number(con?.total), conOver = !!con?.end && con.end < new Date().toISOString().slice(0, 10);
+  root.replaceChildren(
+    bar(h('a', { class: 'ts-crumb', href: '/?tickets=1', text: 'Ticket' }), h('span', { class: 'ts-sep', text: '/' }), stepNo, h('span', { class: 'grow' }),
+      h('button', { class: 'btn sm', html: icon('retry', 'sm') + '<span class="lb">Aggiorna</span>', 'aria-label': 'Aggiorna', onclick: again }),
+      t.link ? h('a', { class: 'btn sm', href: t.link, target: '_blank', rel: 'noopener', text: 'Apri nel CRM' }) : null),
+    h('main', { class: 'ts-wrap' },
+      h('div', { class: 'ts-head' },
+        h('h1', { text: t.title }),
+        h('p', { class: 'tkp-who', text: [t.client, t.contact].filter(Boolean).join(' · ') }),
+        h('div', { class: 'tkp-tags' }, risk ? h('span', { class: 'tk-tag ' + (risk === 'late' ? 't-late' : 't-amber'), text: sla.state }) : null,
+          t.priority_it && !/^(normal|normale)/i.test(t.priority_it) ? h('span', { class: 'tk-tag t-gray', text: t.priority_it }) : null)),
+      flow, actions,
+      h('div', { class: 'ts-grid' },
+        h('div', { class: 'ts-main' }, tabBar, paneBox),
+        h('aside', { class: 'ts-side' },
+          card('In breve', row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner), row('Gruppo', t.group), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Priorità', t.priority_it)),
+          card('Cliente', row('Azienda', t.client), row('Contatto', t.contact), row('Ruolo', info.mansione), info.email ? row('Email', link('mailto:' + info.email, info.email)) : null,
+            info.phone ? row('Telefono', link('tel:' + info.phone.replace(/\s/g, ''), info.phone)) : null, info.mobile ? row('Cellulare', link('tel:' + info.mobile.replace(/\s/g, ''), info.mobile)) : null,
+            row('In copia', t.cc), row('Sede', t.place), row('Prodotto', t.product)),
+          card('SLA', sla.state ? row('Stato SLA', h('span', { class: risk ? 'tkp-due ' + risk : '', text: sla.state })) : null, row('Tipo SLA', sla.type), row('Data scadenza', when(t.due)), row('Priorità SLA', sla.name), sla.in_time != null ? row('Chiuso', sla.in_time ? 'Entro lo SLA' : 'Fuori SLA') : null),
+          con ? card('Contratto', row('Nome', con.name), row('Numero', con.no), row('Tipo', con.type), row('Stato', con.status),
+            total > 0 ? row('Unità', h('span', { class: 'tkp-units' }, h('span', { class: 'tnum', text: `${used || 0} su ${total}` }), h('i', { class: 'tkp-bar' + (used > total ? ' over' : '') }, h('b', { style: `width:${Math.min(100, Math.round((used || 0) / total * 100))}%` })))) : null,
+            con.end ? row('Scade', h('span', { class: conOver ? 'tkp-due late' : '', text: tkDay(con.end) })) : null) : null,
+          related))));
 }
 
 // ================================================================== clienti (siti vetrina)
@@ -3475,7 +3607,7 @@ function sideHead() {
     h('button', { class: 'icon-btn sm', title: 'Chiudi', 'aria-label': 'Chiudi il pannello', html: icon('x', 'sm'), onclick: () => toggleBrain(false) }));
 }
 function tkItem(r, showClient) {
-  return h('button', { class: 'tk-item', 'data-ticket': r.no, title: `${r.no} · ${r.status_it}`, onclick: () => openTicket(r.no) },
+  return h('a', { class: 'tk-item', href: tkSoloUrl(r.no), 'data-ticket': r.no, title: `${r.no} · ${r.status_it}`, onclick: (e) => { e.preventDefault(); openTicket(r.no); } },
     h('i', { class: 'tk-dot t-' + tkTone(r.status) }),
     h('span', { class: 'tk-no tnum', text: tkNum(r.no) }),
     h('span', { class: 'tk-t' }, h('span', { text: r.title }), showClient && r.client ? h('small', { text: r.client }) : null),
@@ -3727,7 +3859,7 @@ function ticketActConfirmEl(chat, m) {
   return h('div', { class: 'msg' }, card);
 }
 // nella sezione Ticket: i tasti. Quelli piccoli agiscono subito, risposta e chiusura aprono la scheda
-function tkActions(t, reload, manage) {
+function tkActions(t, reload, manage, opts = {}) {
   const box = h('div', { class: 'tkb' }, h('div', { class: 'tkb-off', text: 'Carico le azioni…' }));
   const url = '/api/crm/ticket/' + encodeURIComponent(t.no);
   const after = async (msg) => {
@@ -3740,7 +3872,8 @@ function tkActions(t, reload, manage) {
   (async () => {
     let o;
     try { o = await (await api('/api/crm/options')).json(); } catch (e) { box.replaceChildren(h('div', { class: 'tkb-off', text: e.message })); return; }
-    if (!o.write) { box.replaceChildren(h('div', { class: 'tkb-off', text: 'Per usare i tasti di questo ticket attiva la scrittura in Impostazioni → Collegamenti → CRM.' })); return; }
+    opts.onOptions?.(o);
+    if (!o.write) { box.replaceChildren(h('div', { class: 'tkb-off', text: 'Per usare i tasti di questo ticket attiva la scrittura in Impostazioni → Collegamenti → CRM.' }), ...(opts.extra ? [opts.extra] : [])); return; }
     const form = h('div');
     const act = async (btn, fn, msg) => {
       box.querySelectorAll('button, select, input').forEach((x) => { x.disabled = true; });
@@ -3771,11 +3904,11 @@ function tkActions(t, reload, manage) {
       act(e.currentTarget, () => api(url + '/take', {}), 'Ticket preso in carico'); }) : null;
     const starred = ['1', 'true'].includes(String(t.fields?.starred));
     const row = h('div', { class: 'tkb-row' }, take,
-      t.done ? null : btn('Rispondi', 'reply', () => open('reply')),
-      btn('Nota interna', '', () => open('note')),
+      t.done ? null : btn(opts.extra ? 'Rispondi al cliente' : 'Rispondi', 'reply', () => open('reply')),
+      btn(opts.extra ? 'Commento interno' : 'Nota interna', '', () => open('note')),
       t.done ? null : btn('Chiudi ticket', 'close', () => open('close')),
       o.known.includes('starred') ? h('button', { class: 'btn sm tkb-star', title: starred ? 'Togli dai preferiti' : 'Metti nei preferiti', 'aria-label': 'Preferito', 'aria-pressed': String(starred), text: starred ? '★' : '☆',
-        onclick: (e) => act(e.currentTarget, () => patch({ starred: starred ? 0 : 1 }), starred ? 'Tolto dai preferiti' : 'Messo nei preferiti') }) : null);
+        onclick: (e) => act(e.currentTarget, () => patch({ starred: starred ? 0 : 1 }), starred ? 'Tolto dai preferiti' : 'Messo nei preferiti') }) : null, opts.extra || null);
     const field = (label, control) => h('label', {}, label, control);
     const pick = (label, name, value) => {
       const list = o.picks[name];
@@ -3805,6 +3938,7 @@ function tkActions(t, reload, manage) {
       edit('Nota', o.note_field, t.fields?.[o.note_field]), edit('Titolo', 'ticket_title', t.title));
     manage.replaceChildren(fields);
     box.replaceChildren(row, form);
+    opts.onReady?.({ open, act, patch });
   })();
   return box;
 }
@@ -3921,8 +4055,9 @@ function tkDetail(t) {
 }
 const _clipTxt = (s, n) => !s || s.length <= n ? s : s.slice(0, n).replace(/\s\S*$/, '') + '…';
 function openTicket(ref) { TKP.sel = ref; TKP.nav = []; return openTickets(); }
-// Rotella o Ctrl+clic su un ticket: si apre in un'altra scheda del browser, come un link. Vale per tutto ciò che ha data-ticket
-const tkNewTab = (el) => window.open('/?ticket=' + encodeURIComponent(el.dataset.ticket), '_blank');
+// Rotella o Ctrl+clic su un ticket: la sua pagina (soloOpen) in un'altra scheda del browser. Vale per tutto ciò che ha data-ticket
+const tkSoloUrl = (no) => '/t/' + encodeURIComponent(no);
+const tkNewTab = (el) => window.open(tkSoloUrl(el.dataset.ticket), '_blank');
 document.addEventListener('mousedown', (e) => { if (e.button === 1 && e.target.closest?.('[data-ticket]')) e.preventDefault(); });   // niente scorrimento automatico
 document.addEventListener('auxclick', (e) => { const el = e.button === 1 && e.target.closest?.('[data-ticket]'); if (el) { e.preventDefault(); tkNewTab(el); } });
 document.addEventListener('click', (e) => { const el = (e.ctrlKey || e.metaKey) && e.target.closest?.('[data-ticket]'); if (el) { e.preventDefault(); e.stopPropagation(); tkNewTab(el); } }, true);

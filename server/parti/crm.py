@@ -575,22 +575,26 @@ async def _crm_more(t: dict) -> dict:
     }
 
 
+async def _crm_ticket_raw(ref: str) -> dict:
+    """Il ticket com'è nel CRM, dal suo id o dal numero (TK-2026-005819 o 5819)."""
+    ref = str(ref or "").strip()
+    if re.fullmatch(r"\d+x\d+", ref):
+        return await _crm_get("retrieve", id=ref)
+    m = re.search(r"(?:TK-?)?(\d{4})?-?0*(\d{1,6})\s*$", ref.upper())
+    if not m:
+        raise ValueError("numero di ticket non valido (es. TK-2026-005819 o 5819)")
+    year, num = m.group(1), m.group(2)
+    pat = f"TK-{year}-{int(num):06d}" if year else f"%-{int(num):06d}"
+    res = await _crm_get("query", query=f"SELECT * FROM HelpDesk WHERE ticket_no LIKE '{pat}' ORDER BY createdtime DESC LIMIT 1;")
+    if not res:
+        raise ValueError(f"ticket {ref} non trovato nel CRM")
+    return res[0]
+
+
 async def crm_detail(ref: str, more: bool = False) -> dict:
     """Un ticket intero: dati, descrizione, soluzione e tutti i commenti in ordine. «more» per la pagina: testi interi e dati in più."""
     _, uid = await _crm_sess()
-    ref = str(ref or "").strip()
-    if re.fullmatch(r"\d+x\d+", ref):
-        t = await _crm_get("retrieve", id=ref)
-    else:
-        m = re.search(r"(?:TK-?)?(\d{4})?-?0*(\d{1,6})\s*$", ref.upper())
-        if not m:
-            raise ValueError("numero di ticket non valido (es. TK-2026-005819 o 5819)")
-        year, num = m.group(1), m.group(2)
-        pat = f"TK-{year}-{int(num):06d}" if year else f"%-{int(num):06d}"
-        res = await _crm_get("query", query=f"SELECT * FROM HelpDesk WHERE ticket_no LIKE '{pat}' ORDER BY createdtime DESC LIMIT 1;")
-        if not res:
-            raise ValueError(f"ticket {ref} non trovato nel CRM")
-        t = res[0]
+    t = await _crm_ticket_raw(ref)
     r = await _crm_row(t, uid)
     try:   # le foto stanno nei commenti: la query non da' questo campo, il «related» si'
         rel = await _crm_get("retrieve_related", id=t["id"], relatedType="ModComments", relatedLabel="ModComments")
@@ -751,6 +755,51 @@ async def crm_tickets_api(stato: str = "aperti", q: str = "", cliente: str = "",
                 "on": True}
     except ValueError as e:
         raise HTTPException(502, str(e))
+
+
+async def crm_ticket_extra(ref: str) -> dict:
+    """Le schede in più della pagina del ticket: solo lettura. Un modulo che questo CRM non ha o non fa leggere resta vuoto, non blocca le altre."""
+    tid = _crm_q((await _crm_ticket_raw(ref))["id"])
+
+    async def rows(sql: str) -> list[dict]:
+        try:
+            return await _crm_get("query", query=sql) or []
+        except Exception:
+            return []
+
+    stati, ore, nps, figli = await asyncio.gather(
+        rows(f"SELECT createdtime,ticketstatus,ore_trascorse,assigned_user_id FROM StoricoStatiTicket WHERE ticket='{tid}' ORDER BY createdtime LIMIT 100;"),
+        rows(f"SELECT date_start,time_start,time_end,sum_time,name,comment,assigned_user_id FROM GreenTimeControl WHERE helpdeskid='{tid}' ORDER BY date_start DESC LIMIT 100;"),
+        rows(f"SELECT createdtime,overall_experience,service_experience,feedback FROM NPSM WHERE relation_ticket_no='{tid}' ORDER BY createdtime DESC LIMIT 10;"),
+        rows(f"SELECT ticket_no,ticket_title,ticketstatus,modifiedtime FROM HelpDesk WHERE ticket_principale='{tid}' ORDER BY createdtime DESC LIMIT 50;"))
+    try:
+        mails = await _crm_get("retrieve_related", id=tid, relatedType="Emails", relatedLabel="Emails") or []
+    except Exception:
+        mails = []
+    try:
+        labels = {v["value"]: v["label"] for v in (await crm_options())["picks"].get("ticketstatus", [])}
+    except ValueError:
+        labels = {}
+    return {
+        "stati": [{"at": _crm_local(x.get("createdtime")), "status": x.get("ticketstatus") or "", "status_it": labels.get(x.get("ticketstatus"), x.get("ticketstatus") or ""),
+                   "hours": x.get("ore_trascorse") or "", "who": await _crm_name(x.get("assigned_user_id"))} for x in stati],
+        "consuntivi": [{"day": x.get("date_start") or "", "from": (x.get("time_start") or "")[:5], "to": (x.get("time_end") or "")[:5], "hours": x.get("sum_time") or "", "kind": x.get("name") or "",
+                        "text": _crm_text(x.get("comment"), 600), "who": await _crm_name(x.get("assigned_user_id"))} for x in ore],
+        "nps": [{"at": _crm_local(x.get("createdtime")), "overall": x.get("overall_experience") or "", "service": x.get("service_experience") or "", "text": _crm_text(x.get("feedback"), 1000)} for x in nps],
+        "figli": [{"no": x.get("ticket_no") or "", "title": _html.unescape(x.get("ticket_title") or ""), "status": x.get("ticketstatus") or "", "status_it": labels.get(x.get("ticketstatus"), x.get("ticketstatus") or ""),
+                   "modified": _crm_local(x.get("modifiedtime"))} for x in figli],
+        "email": [{"subject": _html.unescape(str(x.get("subject") or "(senza oggetto)")), "day": x.get("date_start") or "", "time": (x.get("time_start") or "")[:5]} for x in mails[:50]],
+    }
+
+
+@app.get("/api/crm/ticket/{ref}/extra")
+async def crm_ticket_extra_api(ref: str, _: dict = Depends(require_user)):
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        return await crm_ticket_extra(ref)
+    except ValueError as e:
+        raise HTTPException(404 if "non trovato" in str(e) else 502, str(e))
 
 
 @app.get("/api/crm/ticket/{ref}")

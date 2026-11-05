@@ -117,6 +117,7 @@ def _version(path: Path) -> str:
 
 
 @app.get("/")
+@app.get("/t/{ticket}")   # la pagina di un ticket solo: stessa app, la sceglie app.js dall'indirizzo
 async def index():
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     html = html.replace('src="/static/app.js"', f'src="/static/app.js?v={_version(STATIC / "app.js")}"')
