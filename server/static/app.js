@@ -1251,17 +1251,17 @@ function renderComposer() {
   pb.title = privOn() ? 'Riservato acceso: i dati personali partono coperti verso il modello' : 'Riservato spento: i dati partono in chiaro verso il modello';
   const att = $('#attachments');
   S.files = S.files || [];
-  // i messaggi scritti mentre Aura lavora: stanno sopra la casella. Partono da soli quando ha finito, oppure subito con «Invia ora», senza fermarla
+  // i messaggi scritti mentre Aura lavora: partono subito, senza fermarla, e stanno qui come bolle finché non li legge. Poi entrano nella chat al punto giusto.
+  // Se il turno è già finito (sent spento) aspettano il prossimo, e solo allora si possono togliere o correggere
   let queued = $('#queued');
   if (!queued) { queued = h('div', { id: 'queued' }); $('#composer').before(queued); }
-  const waiting = S.stream?.queue || [], nudgeChat = S.stream?.chatId;
+  const waiting = S.stream?.queue || [];
   queued.replaceChildren(...waiting.map((q) => h('div', { class: 'qm' + (q.sent ? ' sent' : '') },
-    h('button', { type: 'button', class: 'qm-t', disabled: q.sent ? true : null, title: q.sent ? '' : 'Tocca per correggerlo', text: q.content || (q.files?.length ? q.files[0].name : 'Allegato'), onclick: () => {
+    h('button', { type: 'button', class: 'qm-t', disabled: q.sent ? true : null, title: q.sent ? 'Aura lo legge al primo passaggio libero' : 'Tocca per correggerlo', text: q.content || (q.files?.length ? q.files[0].name : 'Allegato'), onclick: () => {
       waiting.splice(waiting.indexOf(q), 1);
       input.value = q.content + (input.value ? '\n' + input.value : ''); S.attachments = q.images || []; S.files = q.files || []; autosize(); renderComposer(); input.focus(); } }),
-    q.sent ? h('span', { class: 'qm-s' }, h('span', { class: 'spinner' }), 'La legge appena può')
-      : h('button', { type: 'button', class: 'qm-now', text: 'Invia ora', title: 'Aura lo legge mentre lavora, senza fermarsi', onclick: () => nudgeSend(nudgeChat, q) }),
-    q.sent ? null : h('button', { type: 'button', class: 'qm-x', 'aria-label': 'Togli dalla coda', html: icon('x', 'sm'), onclick: () => { waiting.splice(waiting.indexOf(q), 1); renderComposer(); } }))));
+    q.sent ? h('span', { class: 'spinner', title: 'Aura lo legge al primo passaggio libero' })
+      : h('button', { type: 'button', class: 'qm-x', 'aria-label': 'Togli dalla coda', html: icon('x', 'sm'), onclick: () => { waiting.splice(waiting.indexOf(q), 1); renderComposer(); } }))));
   att.classList.toggle('hidden', !S.attachments.length && !S.files.length);
   att.replaceChildren(...S.attachments.map((src, i) => h('div', { class: 'att' }, h('img', { src, alt: '' }),
     h('button', { type: 'button', 'aria-label': 'Rimuovi immagine', html: icon('x'), onclick: () => { S.attachments.splice(i, 1); const im = S.files.filter((f) => f.image)[i]; if (im) S.files.splice(S.files.indexOf(im), 1); renderComposer(); } }))),
@@ -1370,9 +1370,11 @@ comp.addEventListener('submit', (e) => {
   const msg = { role: 'user', content: text };
   if (S.attachments.length) msg.images = S.attachments.slice();
   if (S.files.length) msg.files = S.files.map((f) => ({ id: f.id, name: f.name, size: f.size, mime: f.mime, ...(f.image ? { image: true } : {}) }));
-  if (S.stream) {   // sta ancora rispondendo: Invio non deve fermarlo
+  if (S.stream) {   // sta ancora lavorando: il messaggio parte subito e lei lo legge senza fermarsi
+    const chatId = S.stream.chatId;
     S.stream.queue.push(msg);
     input.value = ''; S.attachments = []; S.files = []; autosize(); renderComposer();
+    nudgeSend(chatId, msg);
     return;
   }
   c.messages.push(msg);
@@ -4897,7 +4899,7 @@ function regenerate(chat) {
   run(chat);
 }
 
-// «Invia ora»: entra nel turno in corso. Se il turno è già finito, o qualcosa va storto, resta in coda e parte come messaggio normale
+// Un messaggio scritto mentre lavora entra nel turno in corso. Se il turno è già finito, o qualcosa va storto, resta in coda e parte come messaggio normale
 async function nudgeSend(chatId, q) {
   q.sent = true; q.nid = q.nid || uid(); renderComposer();
   try {
@@ -5056,8 +5058,10 @@ async function run(chat) {
   saveChat(chat);
   const rest = entry.queue;
   run(chat);
-  S.streams.get(chat.id)?.queue.push(...rest);
+  const fresh = S.streams.get(chat.id);
+  fresh?.queue.push(...rest);
   renderComposer();
+  if (fresh) rest.forEach((q) => nudgeSend(chat.id, q));
 }
 function friendlyError(msg) {
   if (/network error|Failed to fetch|NetworkError|\b52[2-4]\b/i.test(msg)) return 'La connessione si è interrotta prima della risposta. Riprova: se un’azione era partita, controlla prima se è già stata fatta.';
