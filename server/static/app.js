@@ -2439,9 +2439,7 @@ async function soloRender(root, no) {
   paintFlow();
 
   const manage = h('dl', {}, row('Stato', t.status_it), row('Priorità', t.priority_it), row('Categoria', t.category_it), row('Tipo intervento', t.kind_it), row('Gruppo', t.group), row('Assegnato a', t.owner === 'te' ? 'Tu' : t.owner));
-  // quello che esiste solo come tasto del CRM non si finge: si apre lì
-  const inCrm = t.link ? h('a', { class: 'btn sm ts-crm', href: t.link, target: '_blank', rel: 'noopener', title: 'Questi tasti lavorano dentro il CRM: da fuori non si possono comandare', text: 'Inoltra, Scarta, NPS: nel CRM ↗' }) : null;
-  const actions = tkActions(t, again, manage, { extra: inCrm || h('span'), onOptions: (o) => { statusList = o.picks?.ticketstatus || []; paintFlow(); }, onReady: (c) => { ctl = c; paintFlow(); } });
+  const actions = tkActions(t, again, manage, { solo: true, onOptions: (o) => { statusList = o.picks?.ticketstatus || []; paintFlow(); }, onReady: (c) => { ctl = c; paintFlow(); } });
 
   // le schede
   const { timeline, order, items } = tkpTimeline(t, shown, boxes);
@@ -3281,7 +3279,7 @@ async function openHbDoc(o) {
 function feedCard(it) {
   if (it.kind === 'homebase') return hbCard(it);
   const d = it.data || {};
-  const done = { keep: 'Segnato come interessante', junk: 'Non ti interessa: d\'ora in poi le cestino', restored: 'Rimesse nella posta in arrivo',
+  const done = { keep: 'Segnato come interessante', junk: 'Non ti interessa: le mail su questa cosa le cestino', restored: 'Rimesse nella posta in arrivo',
     dismissed: 'Fatto', snoozed: 'Te lo ricordo tra 10 minuti', added: 'Promemoria messo', delivered: 'Consegnato', taken: 'Preso in carico' }[it.status];
   const chip = (txt, ic, fn, primary) => h('button', { class: 'au-chip' + (primary ? ' primary' : ''), html: (ic ? icon(ic, 'sm') : '') + txt, onclick: fn });
   const link = d.link ? h('a', { class: 'au-chip', href: d.link, target: '_blank', rel: 'noopener', html: icon('mail', 'sm') + 'Apri la mail' }) : null;
@@ -3306,6 +3304,10 @@ function feedCard(it) {
     if (take) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }, true));
     chips.push(chip('Apri il ticket', 'ticket', open, !take));
     if (d.no) chips.at(-1).dataset.ticket = d.no;
+    if (!done) chips.push(chip('Scarta', 'trash', async () => {
+      if (!confirm(`Scarto il ticket ${d.no}? Passa ad «Annullato».`)) return;
+      try { await api('/api/crm/ticket/' + encodeURIComponent(d.no), { fields: { ticketstatus: 'Annullato' } }, { method: 'PATCH' }); TKP.key = ''; TKP.folders = null; TK.folders = null; toast(`Ticket ${d.no} scartato`); feedAct(it, 'ticket_taken'); }
+      catch (e) { toast(e.message); } }));
   } else if (it.kind === 'deadline') {
     const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
     body.push(h('div', { class: 'au-due' },
@@ -3347,6 +3349,7 @@ function feedCard(it) {
     if (items.filter((t) => !t.restored).length > 1) chips.push(chip('Ripristina tutte', null, () => feedAct(it, 'restore')));
   } else if ((it.kind === 'mail' || it.kind === 'suspect') && !done) {
     if (it.kind === 'mail') chips.push(chip('Interessante', 'check', () => feedAct(it, 'keep'), true));
+    chips.push(chip('Visto', 'eye', () => feedAct(it, 'seen')));
     chips.push(chip('Non mi interessa', 'trash', () => feedAct(it, 'junk')));
     if (link) chips.push(link);
   } else if (it.kind === 'reminder' && !done) {
@@ -3698,9 +3701,49 @@ function tkaEditor(v, label) {
     const t = c.textContent.replace(/\s+/g, ' ').trim().replace(/\]/g, ')');
     return c.dataset.bare ? c.textContent : t ? `[${t}](${c.getAttribute('href')})` : '';
   }).join('');
+  const paint = (s) => el.replaceChildren(...tkaParts(String(s || '')).map((p) => (typeof p === 'string' ? p : mk(p))));
+  // Ctrl+Z e Ctrl+Y: i link rifatti da script rompono l'annulla del browser, quindi la casella ha il suo. Le lettere scritte di fila sono un passo solo
+  const past = [];
+  let at = -1, lastAt = 0;
+  const caretGet = () => {
+    const s = getSelection();
+    if (!s.rangeCount || !el.contains(s.focusNode)) return null;
+    const r = document.createRange(); r.selectNodeContents(el); r.setEnd(s.focusNode, s.focusOffset);
+    return r.toString().length;
+  };
+  const caretSet = (pos) => {
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), s = getSelection();
+    let left = pos ?? Infinity, last = null;
+    while (walk.nextNode()) { last = walk.currentNode; if (left <= last.length) { s.collapse(last, left); return; } left -= last.length; }
+    if (last) s.collapse(last, last.length); else s.collapse(el, 0);
+  };
+  const remember = (merge) => {
+    const text = read(el), now = Date.now();
+    if (past[at]?.text === text) { past[at].caret = caretGet(); return; }
+    past.length = at + 1;
+    if (merge && at > 0 && now - lastAt < 1200) past[at] = { text, caret: caretGet() };
+    else { past.push({ text, caret: caretGet() }); if (past.length > 200) past.shift(); at = past.length - 1; }
+    lastAt = now;
+  };
+  const travel = (d) => {
+    if (!past[at + d]) return;
+    at += d; lastAt = 0;
+    paint(past[at].text); v.text = read(el);
+    if (document.activeElement === el) caretSet(past[at].caret);
+  };
+  el.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); travel(e.shiftKey ? 1 : -1); }
+    if (k === 'y') { e.preventDefault(); travel(1); }
+  });
+  el.addEventListener('beforeinput', (e) => {   // dal menu del tasto destro o dalla tastiera del telefono
+    if (e.inputType === 'historyUndo') { e.preventDefault(); travel(-1); }
+    if (e.inputType === 'historyRedo') { e.preventDefault(); travel(1); }
+  });
   Object.defineProperty(el, 'value', {
     get: () => read(el),
-    set: (s) => { el.replaceChildren(...tkaParts(String(s || '')).map((p) => (typeof p === 'string' ? p : mk(p)))); },
+    set: (s) => { paint(s); remember(false); },
   });
   const caretAfter = (a) => {
     // sempre uno spazio dopo un link in fondo al testo: quello che scrivi dopo non si attacca all'indirizzo
@@ -3735,8 +3778,9 @@ function tkaEditor(v, label) {
     if (!e.isComposing) { syncBare(); linkify(/^insertFrom/.test(e.inputType || '')); }
     if (!el.textContent.trim() && !el.querySelector('a')) el.replaceChildren();   // così torna la scritta di aiuto
     v.text = el.value;
+    if (!e.isComposing) remember(e.inputType === 'insertText' && e.data && !/\s/.test(e.data));
   });
-  el.addEventListener('blur', () => { linkify(true); v.text = el.value; });
+  el.addEventListener('blur', () => { linkify(true); v.text = el.value; remember(false); });
   // Il tasto Link: mette, cambia o toglie il link nel punto salvato. Senza testo selezionato scrive l'indirizzo
   el.linkAt = (range, url) => {
     const open = (range.commonAncestorContainer.nodeType === 3 ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer).closest?.('a');
@@ -3749,7 +3793,7 @@ function tkaEditor(v, label) {
       const a = mk({ label: picked || url, href: url });
       range.insertNode(a); el.focus(); caretAfter(a);
     }
-    el.normalize(); v.text = el.value;
+    el.normalize(); v.text = el.value; remember(false);
   };
   el.value = v.text || '';
   return el;
@@ -3873,7 +3917,7 @@ function tkActions(t, reload, manage, opts = {}) {
     let o;
     try { o = await (await api('/api/crm/options')).json(); } catch (e) { box.replaceChildren(h('div', { class: 'tkb-off', text: e.message })); return; }
     opts.onOptions?.(o);
-    if (!o.write) { box.replaceChildren(h('div', { class: 'tkb-off', text: 'Per usare i tasti di questo ticket attiva la scrittura in Impostazioni → Collegamenti → CRM.' }), ...(opts.extra ? [opts.extra] : [])); return; }
+    if (!o.write) { box.replaceChildren(h('div', { class: 'tkb-off', text: 'Per usare i tasti di questo ticket attiva la scrittura in Impostazioni → Collegamenti → CRM.' })); return; }
     const form = h('div');
     const act = async (btn, fn, msg) => {
       box.querySelectorAll('button, select, input').forEach((x) => { x.disabled = true; });
@@ -3904,11 +3948,13 @@ function tkActions(t, reload, manage, opts = {}) {
       act(e.currentTarget, () => api(url + '/take', {}), 'Ticket preso in carico'); }) : null;
     const starred = ['1', 'true'].includes(String(t.fields?.starred));
     const row = h('div', { class: 'tkb-row' }, take,
-      t.done ? null : btn(opts.extra ? 'Rispondi al cliente' : 'Rispondi', 'reply', () => open('reply')),
-      btn(opts.extra ? 'Commento interno' : 'Nota interna', '', () => open('note')),
+      t.done ? null : btn(opts.solo ? 'Rispondi al cliente' : 'Rispondi', 'reply', () => open('reply')),
+      btn(opts.solo ? 'Commento interno' : 'Nota interna', '', () => open('note')),
+      t.done || !o.picks?.ticketstatus?.some((x) => x.value === 'Annullato') ? null : btn('Scarta', 'discard', (e) => {
+        if (confirm(`Scarto il ticket ${t.no}? Passa ad «Annullato».`)) act(e.currentTarget, () => patch({ ticketstatus: 'Annullato' }), `Ticket ${t.no} scartato`); }),
       t.done ? null : btn('Chiudi ticket', 'close', () => open('close')),
       o.known.includes('starred') ? h('button', { class: 'btn sm tkb-star', title: starred ? 'Togli dai preferiti' : 'Metti nei preferiti', 'aria-label': 'Preferito', 'aria-pressed': String(starred), text: starred ? '★' : '☆',
-        onclick: (e) => act(e.currentTarget, () => patch({ starred: starred ? 0 : 1 }), starred ? 'Tolto dai preferiti' : 'Messo nei preferiti') }) : null, opts.extra || null);
+        onclick: (e) => act(e.currentTarget, () => patch({ starred: starred ? 0 : 1 }), starred ? 'Tolto dai preferiti' : 'Messo nei preferiti') }) : null);
     const field = (label, control) => h('label', {}, label, control);
     const pick = (label, name, value) => {
       const list = o.picks[name];
