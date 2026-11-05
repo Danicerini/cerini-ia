@@ -1,0 +1,43 @@
+plugins {
+    id "com.android.application"
+}
+
+// Indirizzo del server e chiave di firma arrivano dall'ambiente della compilazione: nel repo non c'è niente di personale.
+def env = System.getenv()
+def serverUrl = (env["AURA_URL"] ?: "").replace('"', '')
+def run = (env["GITHUB_RUN_NUMBER"] ?: "1") as int
+
+android {
+    namespace "ceri.aura"
+    compileSdk 34
+    defaultConfig {
+        applicationId "ceri.aura"
+        minSdk 29
+        targetSdk 34
+        versionCode run
+        versionName "1.${run}"
+        buildConfigField "String", "SERVER_URL", "\"${serverUrl}\""
+    }
+    buildFeatures { buildConfig true }
+    signingConfigs {
+        release {
+            if (env["AURA_KEYSTORE"]) {
+                storeFile file(env["AURA_KEYSTORE"])
+                storeType "PKCS12"
+                storePassword env["AURA_KEY_PASS"]
+                keyAlias "aura"
+                keyPassword env["AURA_KEY_PASS"]
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

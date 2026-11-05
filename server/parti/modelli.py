@@ -130,6 +130,31 @@ async def app_version():
     return JSONResponse({"v": _version(STATIC / "app.js")}, headers={"Cache-Control": "no-store"})
 
 
+# L'app Android: l'APK sta tra i dati del server (tools/publish_android.sh), non nel codice
+def _android_apk() -> Path:
+    return DATA_DIR / "app" / "aura.apk"
+
+
+@app.get("/api/app/android/info")
+async def android_info(_: dict = Depends(require_user)):
+    f = _android_apk()
+    if not f.exists():
+        return {"available": False}
+    try:
+        version = int((f.parent / "aura.version").read_text().strip())
+    except (OSError, ValueError):
+        version = 0
+    return {"available": True, "size": f.stat().st_size, "version": version, "at": int(f.stat().st_mtime)}
+
+
+@app.get("/api/app/android")
+async def android_download(_: dict = Depends(require_user)):
+    f = _android_apk()
+    if not f.exists():
+        raise HTTPException(404, "L'app non è ancora pronta")
+    return FileResponse(f, media_type="application/vnd.android.package-archive", filename="Aura.apk", headers={"Cache-Control": "no-store"})
+
+
 @app.get("/privacy")
 async def privacy_page():
     page = (STATIC / "privacy.html").read_text(encoding="utf-8")

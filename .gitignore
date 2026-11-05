@@ -22,3 +22,15 @@ node_modules/
 token.txt
 vapid_private.pem
 venv/
+# app Android: si compila su GitHub
+android/.gradle/
+android/build/
+android/app/build/
+*.apk
+*.p12
+# app Android: si compila su GitHub
+android/.gradle/
+android/build/
+android/app/build/
+*.apk
+*.p12

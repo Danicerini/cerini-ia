@@ -5112,7 +5112,7 @@ function accountTab(body) {
       h('div', { class: 'p-sub', text: S.me.email || 'Nessuna email collegata' })),
     h('button', { class: 'btn sm acc-out', html: icon('logout', 'sm') + 'Esci', onclick: () => $('#logoutBtn').click() }));
   const content = {
-    aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard()],
+    aura: () => [personaCard(), S.me?.eleven ? voiceCard() : null, autonomyCard(), androidCard()],
     model: () => [cloudCard(), privCard(), S.me?.owner ? startModelCard() : null, S.me?.owner && S.me?.power ? pcCard() : null],
     links: () => [gmailCard(), trackCard(), crmCard(), whatsappCard()],
     usage: () => usageCards(),
@@ -5606,6 +5606,43 @@ async function showInvite(token) {
   };
 }
 
+// =============================================================== app Android
+// La scheda per scaricarla (l'APK sta sul server) e «Condividi con Aura»: quello che arriva finisce nella casella, non parte niente da solo
+const ANDROID_APP = Number(navigator.userAgent.match(/AuraAndroid\/(\d+)/)?.[1] || 0);
+function androidCard() {
+  const box = h('section', { class: 'card row-card', hidden: true });
+  api('/api/app/android/info').then((r) => r.json()).then((d) => {
+    if (!d.available) return;
+    const old = ANDROID_APP && d.version > ANDROID_APP;
+    if (ANDROID_APP && !old) return;   // sei già dentro l'app, ed è l'ultima
+    box.hidden = false;
+    box.append(h('div', { class: 'card-head' }, h('h2', { text: old ? 'Aggiornamento dell\'app' : 'App per Android' })),
+      h('p', { class: 'muted', text: (old ? `C'è la versione ${d.version}, tu hai la ${ANDROID_APP}. ` : 'Aura come app sul telefono, e «Condividi con Aura» da qualunque altra app. ') +
+        'Dopo averla scaricata, aprila dalle notifiche o dai Download: la prima volta Android chiede il permesso di installare app da questa fonte.' }),
+      h('div', { class: 'form-actions' }, h('a', { class: 'btn primary', href: '/api/app/android', download: 'Aura.apk', html: icon('down', 'sm') + `Scarica${d.version ? ` la versione ${d.version}` : ''} · ${tkSize(d.size)}` })));
+  }).catch(() => {});
+  return box;
+}
+function shareApply(d) {
+  closeViews(); closeSide();
+  if (d.text) { input.value = (input.value ? input.value + '\n' : '') + d.text; autosize(); renderComposer(); }
+  const files = (d.files || []).map((f) => new File([Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0))], f.name || 'file', { type: f.type || 'application/octet-stream' }));
+  if (files.length) addFiles(files);
+  focusInput();
+}
+window.auraShared = (json) => {
+  if (location.pathname !== '/') {   // dalla pagina di un ticket si torna alla chat, e il contenuto la segue
+    try { sessionStorage.setItem('auraShare', json); location.href = '/'; } catch { toast('Troppo grande da aggiungere da questa pagina: apri prima la chat'); }
+    return;
+  }
+  if (NAV.on) shareApply(JSON.parse(json)); else NAV.share = json;
+};
+function sharePending() {
+  let json = NAV.share;
+  try { json = json || sessionStorage.getItem('auraShare'); sessionStorage.removeItem('auraShare'); } catch {}
+  NAV.share = null;
+  if (json) shareApply(JSON.parse(json));
+}
 // =============================================================== indietro
 // Il tasto Indietro del browser (o del mouse, o Alt+freccia) torna alla pagina di prima dentro l'app: ogni cambio di vista è un passo della cronologia.
 // Anche Ctrl+Z, quando non si sta scrivendo in una casella
@@ -5631,6 +5668,7 @@ function navStart() {
   const now = navNow();
   history.replaceState({ nav: { v: null, t: null, c: S.currentId || null }, i: 0 }, '', location.href);
   if (now.v) navPush();
+  sharePending();
   new MutationObserver(navSync).observe($('#main'), { attributes: true, attributeFilter: ['class'] });
 }
 window.addEventListener('popstate', async (e) => {
