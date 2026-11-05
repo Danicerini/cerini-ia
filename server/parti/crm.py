@@ -1704,6 +1704,31 @@ async def _crm_note_field() -> str:
         return ""
 
 
+async def _crm_people() -> list[dict]:
+    """I colleghi a cui si può riassegnare. L'elenco utenti del CRM non si può leggere: si guarda chi ha lavorato sugli ultimi ticket e il nome si impara dalla firma dei suoi commenti.
+    Chi non ha mai firmato non c'è: meglio un nome in meno che un nome inventato."""
+    try:
+        _, me = await _crm_sess()
+        seen = set()
+        for off in (0, 100, 200):
+            rows = await _crm_get("query", query=f"SELECT assigned_user_id,modifiedby FROM HelpDesk ORDER BY modifiedtime DESC LIMIT {off},100;")
+            for t in rows:
+                seen.update(str(t.get(k) or "") for k in ("assigned_user_id", "modifiedby"))
+        prefix = me.split("x")[0] + "x"
+        seen = {x for x in seen if x.startswith(prefix)} - {me}
+        coms = await _crm_get("query", query="SELECT creator,assigned_user_id,customer,commentcontent FROM ModComments ORDER BY createdtime DESC LIMIT 100;")
+        for c in coms:
+            author = c.get("creator") or c.get("assigned_user_id")
+            if str(c.get("customer") or "").strip("0x"):
+                seen.discard(author)   # l'utente con cui il CRM registra le mail dei clienti: non è una persona
+            elif author in seen and not _CRM_NAMES.get(author):
+                _crm_learn(author, _crm_signer(_crm_clean(c.get("commentcontent"), 3000)))
+        known = _crm_file().get("colleghi") or {}
+        return sorted(({"id": x, "name": _CRM_NAMES.get(x) or known.get(x)} for x in seen if _CRM_NAMES.get(x) or known.get(x)), key=lambda p: p["name"].lower())
+    except ValueError:
+        return []
+
+
 async def crm_options() -> dict:
     """Cosa si può scrivere in questo CRM: i valori dei campi a scelta e i gruppi. Ogni CRM ha i suoi."""
     if "opts" in _CRM_LISTS and time.time() - _CRM_LISTS["opts_at"] < 3600:
@@ -1732,7 +1757,7 @@ async def crm_options() -> dict:
                          key=lambda x: order.get(x["label"].lower(), 9))
         except ValueError:
             sla = []   # non tutti gli utenti possono leggerlo: si prende in carico come prima
-    opts = {"picks": picks, "groups": groups, "known": [f.get("name") for f in fields], "note_field": note, "sla": sla}
+    opts = {"picks": picks, "groups": groups, "known": [f.get("name") for f in fields], "note_field": note, "sla": sla, "people": await _crm_people()}
     _CRM_LISTS.update(opts=opts, opts_at=time.time())
     return opts
 
@@ -1824,8 +1849,8 @@ async def _ticket_clean(fields: dict) -> dict:
             if v not in [x["id"] for x in o.get("sla") or []]:
                 raise ValueError("priorità non valida")
         elif k == "assigned_user_id":
-            if v != uid and v not in [g["id"] for g in o["groups"]]:
-                raise ValueError("si può assegnare solo a te o a un gruppo")
+            if v != uid and v not in [g["id"] for g in o["groups"]] and v not in [x["id"] for x in o.get("people") or []]:
+                raise ValueError("si può assegnare solo a te, a un collega o a un gruppo")
         elif k == "ticket_title":
             if not v or len(v) > 255:
                 raise ValueError("il titolo non può essere vuoto")
@@ -1899,6 +1924,8 @@ async def crm_take_api(ref: str, body: TicketTake, user: dict = Depends(require_
 @app.patch("/api/crm/ticket/{ref}")
 async def crm_patch_api(ref: str, body: TicketPatch, user: dict = Depends(require_user)):
     async def act(t):
+        if "assigned_user_id" in body.fields and not t["mine"]:
+            raise ValueError("per riassegnare un ticket prima devi prenderlo in carico")
         await _ticket_revise(user, t["id"], await _ticket_clean(body.fields))
     return await _ticket_api(user, ref, act)
 

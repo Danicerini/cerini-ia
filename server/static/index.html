@@ -752,6 +752,15 @@ button:disabled { cursor: default; }
 .tkp-av { flex: none; display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--hover); box-shadow: inset 0 0 0 1px var(--border); color: var(--text-2); font-size: 10.5px; font-style: normal; font-weight: 650; }
 .tkp-av.me { background: var(--accent-soft); box-shadow: none; color: var(--accent); }
 .tkp-when { font-size: 12px; color: var(--text-3); text-align: right; }
+/* su schermi larghi i dati stanno al centro delle loro colonne; il titolo resta allineato a sinistra, per leggerlo */
+@container (min-width: 901px) {
+  .tkp-thead > span:not(:nth-child(2)), .tkp-no, .tkp-when, .tkp-sla, .tkp-pair { text-align: center; }
+  .tkp-thead span:last-child { text-align: center; }
+  .tkp-st { align-items: center; }
+  .tkp-own { justify-content: center; }
+  .tkp-sla { width: 100%; }
+}
+.tkb-ro { min-height: 34px; display: flex; align-items: center; color: var(--text-2); font-size: 14px; }
 /* il ticket aperto */
 .tkp-nav { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .tkp-nav .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }

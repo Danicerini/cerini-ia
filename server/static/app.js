@@ -2593,14 +2593,14 @@ async function soloRender(root, no) {
       card('Date e lavoro', row('Ricevuto', when(t.received)), row('Creato', when(t.created)), row('Preso in carico', when(t.taken_at)), row('Chiuso', when(t.closed_at)),
         row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''))),
     docs: docBox ? h('div', { class: 'ts-pane' }, h('section', { class: 'tkp-box' }, docBox)) : null,
-    stati: h('div', { class: 'ts-pane' }), head: h('div', { class: 'ts-pane' }), ore: h('div', { class: 'ts-pane' }), email: h('div', { class: 'ts-pane' }), rel: h('div', { class: 'ts-pane' }), nps: h('div', { class: 'ts-pane' }),
+    stati: h('div', { class: 'ts-pane' }), head: h('div', { class: 'ts-pane' }, h('div', { class: 'cl-empty', text: 'Cerco le mail originali…' })), ore: h('div', { class: 'ts-pane' }), email: h('div', { class: 'ts-pane' }), rel: h('div', { class: 'ts-pane' }), nps: h('div', { class: 'ts-pane' }),
   };
   const tabs = [['chat', 'Conversazione', shown.length], ['info', 'Dettagli'], ['docs', 'Documenti', t.documents?.length || 0], ['stati', 'Storico stati'], ['head', 'Intestazioni'], ['ore', 'Consuntivi'], ['email', 'Email'], ['rel', 'Collegati'], ['nps', 'NPS']];
   const tabBar = h('div', { class: 'ts-tabs', role: 'tablist' }), paneBox = h('div', {});
   const counts = { docs: t.documents?.length || 0 }, extraReady = { v: false };
   const paintTabs = () => {
     // una scheda vuota non si mostra: resta solo quello che in questo ticket c'è davvero
-    const seen = tabs.filter(([k]) => k === 'chat' || k === 'info' || counts[k] > 0);
+    const seen = tabs.filter(([k]) => k === 'chat' || k === 'info' || k === 'head' || counts[k] > 0);
     if (!seen.some(([k]) => k === SOLO.tab) && extraReady.v) SOLO.tab = 'chat';
     if (!panes[SOLO.tab] || !seen.some(([k]) => k === SOLO.tab)) { paneBox.replaceChildren(panes.chat); } else paneBox.replaceChildren(panes[SOLO.tab]);
     const cur = seen.some(([k]) => k === SOLO.tab) ? SOLO.tab : 'chat';
@@ -2620,9 +2620,9 @@ async function soloRender(root, no) {
   // le intestazioni delle mail: si scaricano i file, quindi arrivano per ultime
   api('/api/crm/ticket/' + encodeURIComponent(t.no) + '/mails').then((r) => r.json()).then((x) => {
     counts.head = x.mails.length;
-    panes.head.replaceChildren(...x.mails.map(tsMailHead));
+    panes.head.replaceChildren(...(x.mails.length ? x.mails.map(tsMailHead) : [h('div', { class: 'cl-empty', text: 'Il CRM non ha conservato la mail originale di questo ticket: ha solo il testo, quindi le intestazioni non ci sono.' })]));
     paintTabs();
-  }).catch(() => {});
+  }).catch((e) => { panes.head.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); });
   api('/api/crm/ticket/' + encodeURIComponent(t.no) + '/extra').then((r) => r.json()).then((x) => {
     const parent = t.parent_ticket?.no ? { no: t.parent_ticket.no, title: t.parent_ticket.title || t.parent_ticket.no } : null;
     Object.assign(counts, { stati: x.stati.length, ore: x.consuntivi.length, email: x.email.length, nps: x.nps.length, rel: x.figli.length + (parent ? 1 : 0) });
@@ -4149,13 +4149,13 @@ function tkActions(t, reload, manage, opts = {}) {
     };
     const slaPick = () => { const cur = t.fields?.sla || ''; return field('Priorità', h('select', { class: 'ag-in', 'aria-label': 'Priorità', onchange: (e) => act(e.target, () => patch({ sla: e.target.value }), 'Priorità cambiata') },
       ...(o.sla.some((x) => x.id === cur) ? [] : [h('option', { value: '', text: '—' })]), ...o.sla.map((x) => h('option', { value: x.id, text: x.label + (x.hours ? ` · ${x.hours} ore` : ''), selected: x.id === cur ? true : null })))); };
-    const assign = o.groups.length ? field('Assegnato a', h('select', { class: 'ag-in', 'aria-label': 'Assegnato a', onchange: (e) => {
+    // si riassegna solo un ticket già preso in carico: prima è tuo, poi lo passi a qualcuno
+    const assign = t.mine && !t.done && (o.people?.length || o.groups.length) ? field('Riassegna a', h('select', { class: 'ag-in', 'aria-label': 'Riassegna a', onchange: (e) => {
       const val = e.target.value;
-      if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo sposti?`)) { e.target.value = t.assigned; return; }
-      act(e.target, () => patch({ assigned_user_id: val }), 'Assegnazione cambiata'); } },
-      ...(t.assigned !== o.me && !o.groups.some((g) => g.id === t.assigned) ? [h('option', { value: t.assigned, text: t.owner || '—' })] : []),
+      act(e.target, () => patch({ assigned_user_id: val }), `Assegnato a ${e.target.selectedOptions[0].textContent}`); } },
       h('option', { value: o.me, text: 'A me', selected: t.assigned === o.me ? true : null }),
-      ...o.groups.map((g) => h('option', { value: g.id, text: g.name, selected: g.id === t.assigned ? true : null })))) : null;
+      o.people?.length ? h('optgroup', { label: 'Persone' }, ...o.people.map((x) => h('option', { value: x.id, text: x.name }))) : null,
+      o.groups.length ? h('optgroup', { label: 'Gruppi' }, ...o.groups.map((g) => h('option', { value: g.id, text: g.name }))) : null)) : !t.mine && !t.done ? field('Assegnato a', h('span', { class: 'tkb-ro', text: t.owner || '—', title: 'Si riassegna dopo averlo preso in carico' })) : null;
     const edit = (label, name, value, type) => !name || !o.known.includes(name) ? null : field(label, h('input', { class: 'ag-in', type: type || 'text', value: value || '', 'aria-label': label,
       onchange: (e) => act(e.target, () => patch({ [name]: e.target.value }), `${label} salvata`) }));
     const fields = h('div', { class: 'tkb-fields' },
