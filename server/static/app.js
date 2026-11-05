@@ -3162,11 +3162,17 @@ function feedCard(it) {
       chip('Copia', 'copy', () => navigator.clipboard.writeText(d.code).then(() => toast('Codice copiato')), true)));
     body.push(h('div', { class: 'au-sub', text: `Da ${d.from || ''}${d.subject ? ' · ' + d.subject : ''}` }));
   } else if (it.kind === 'ticket') {
-    body.push(h('div', { class: 'au-ticket' }, h('b', { class: 'tnum', text: d.no || '' }), d.priority ? h('span', { class: 'au-sub', text: d.priority }) : null));
-    body.push(h('div', { class: 'au-title', text: d.title || title }));
-    if (d.client) body.push(h('div', { class: 'au-sub', text: d.client }));
-    chips.push(chip('Apri il ticket', 'ticket', () => tkOpenFromAlert(d.no), true));
-    if (!done && !d.mine) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }));
+    // come un biglietto da staccare: chi e cosa sopra, cosa fare sotto la linea tratteggiata
+    const open = () => tkOpenFromAlert(d.no), who = (d.client || '').trim(), take = !done && !d.mine;
+    const letters = who.split(/\s+/).filter((w) => /^[\p{L}\p{N}]/u.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+    body.length = 0;
+    body.push(h('div', { class: 'tkn-top' }, h('span', { class: 'tkn-new', text: d.mine ? 'Nuovo, assegnato a te' : 'Nuovo ticket' }), h('span', { class: 'tkn-no mono', text: d.no || '' }), h('span', { class: 'au-time tnum', text: hhmm(it.at) })),
+      h('button', { type: 'button', class: 'tkn-title', text: d.title || title, title: 'Apri il ticket', onclick: open }),
+      h('div', { class: 'tkn-who' }, who ? h('span', { class: 'tkn-mono', 'aria-hidden': 'true', text: letters || '?' }) : null, who ? h('span', { class: 'tkn-client', text: who }) : null,
+        d.priority ? h('span', { class: 'tkn-prio' + (/urg|alt|high|crit/i.test(d.priority) ? ' hot' : ''), text: d.priority }) : null),
+      h('div', { class: 'tkn-tear', 'aria-hidden': 'true' }));
+    if (take) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }, true));
+    chips.push(chip('Apri il ticket', 'ticket', open, !take));
   } else if (it.kind === 'deadline') {
     const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
     body.push(h('div', { class: 'au-due' },
@@ -3537,7 +3543,7 @@ function tkaParts(text) {
       href = /^http/i.test(label) ? label : 'https://' + label;
     }
     if (m.index > last) out.push(text.slice(last, m.index));
-    out.push({ label, href });
+    out.push({ label, href, at: m.index, len: m[1] ? m[0].length : label.length });
     if (tail) out.push(tail);
     last = m.index + m[0].length;
   }
@@ -3545,12 +3551,82 @@ function tkaParts(text) {
   return out;
 }
 const tkaAnchor = (p) => h('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer', text: p.label, title: p.href });
+// La casella del testo: i link si vedono già come link dentro il testo. Il suo .value resta testo semplice con [testo](indirizzo),
+// che è quello che va al server e ad Aura; gli indirizzi scritti per intero diventano link appena finiti
+function tkaEditor(v, label) {
+  const el = h('div', { class: 'tka-edit', role: 'textbox', 'aria-multiline': 'true', 'aria-label': label, 'data-placeholder': label });
+  try { el.contentEditable = 'plaintext-only'; } catch { el.contentEditable = 'true'; }
+  const isBare = (p) => p.label === p.href || 'https://' + p.label === p.href;
+  const mk = (p) => { const a = tkaAnchor(p); if (isBare(p)) a.dataset.bare = '1'; return a; };
+  const read = (n) => [...n.childNodes].map((c) => {
+    if (c.nodeType === 3) return c.data;
+    if (c.nodeName === 'BR') return '\n';
+    if (c.nodeName !== 'A') return (c.previousSibling ? '\n' : '') + read(c);
+    const t = c.textContent.replace(/\s+/g, ' ').trim().replace(/\]/g, ')');
+    return c.dataset.bare ? c.textContent : t ? `[${t}](${c.getAttribute('href')})` : '';
+  }).join('');
+  Object.defineProperty(el, 'value', {
+    get: () => read(el),
+    set: (s) => { el.replaceChildren(...tkaParts(String(s || '')).map((p) => (typeof p === 'string' ? p : mk(p)))); },
+  });
+  const caretAfter = (a) => {
+    // sempre uno spazio dopo un link in fondo al testo: quello che scrivi dopo non si attacca all'indirizzo
+    if (a.nextSibling?.nodeType !== 3) a.after(' ');
+    else if (!a.nextSibling.data) a.nextSibling.data = ' ';
+    const n = a.nextSibling, s = getSelection();
+    s.collapse(n, n.data === ' ' ? 1 : 0);
+  };
+  const linkify = (force) => {
+    const s = getSelection(), walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT), nodes = [];
+    while (walk.nextNode()) if (!walk.currentNode.parentElement.closest('a')) nodes.push(walk.currentNode);
+    for (const n of nodes) {
+      for (const p of tkaParts(n.data).filter((x) => typeof x !== 'string').reverse()) {
+        const typing = s.focusNode === n && s.focusOffset > p.at && s.focusOffset <= p.at + p.len;
+        if (typing && !force) continue;   // lo sta ancora scrivendo: diventa link quando finisce
+        const u = n.splitText(p.at); u.splitText(p.len);
+        const a = mk(p); u.replaceWith(a);
+        if (typing && document.activeElement === el) caretAfter(a);
+      }
+    }
+  };
+  // Un link scritto per intero segue il suo testo: se lo correggi cambia l'indirizzo, se non è più un indirizzo torna testo
+  const syncBare = () => el.querySelectorAll('a[data-bare]').forEach((a) => {
+    a.normalize();
+    const parts = tkaParts(a.textContent);
+    if (parts.length === 1 && typeof parts[0] !== 'string') { a.href = a.title = parts[0].href; return; }
+    const t = a.firstChild, s = getSelection(), at = t && s.focusNode === t ? s.focusOffset : null;
+    if (t) a.replaceWith(t); else a.remove();
+    if (at != null) s.collapse(t, at);
+  });
+  el.addEventListener('input', (e) => {
+    if (!e.isComposing) { syncBare(); linkify(/^insertFrom/.test(e.inputType || '')); }
+    if (!el.textContent.trim() && !el.querySelector('a')) el.replaceChildren();   // così torna la scritta di aiuto
+    v.text = el.value;
+  });
+  el.addEventListener('blur', () => { linkify(true); v.text = el.value; });
+  // Il tasto Link: mette, cambia o toglie il link nel punto salvato. Senza testo selezionato scrive l'indirizzo
+  el.linkAt = (range, url) => {
+    const open = (range.commonAncestorContainer.nodeType === 3 ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer).closest?.('a');
+    if (open && el.contains(open)) {
+      if (!url) { const t = open.firstChild; if (t) open.replaceWith(t); else open.remove(); }
+      else { if (open.dataset.bare) open.textContent = url.replace(/^https:\/\/(?=www\.)/i, ''); open.href = open.title = url; }
+    } else if (url) {
+      const picked = range.toString().replace(/\s+/g, ' ').trim();
+      range.deleteContents();
+      const a = mk({ label: picked || url, href: url });
+      range.insertNode(a); el.focus(); caretAfter(a);
+    }
+    el.normalize(); v.text = el.value;
+  };
+  el.value = v.text || '';
+  return el;
+}
 function tkaBody(v, locked) {
   const c = TKA[v.mode] || TKA.edit;
   const body = h('div', { class: 'tka-b' }, h('div', { class: 'tka-who', text: [v.client, v.title].filter(Boolean).join(' · ') }));
   const hasText = ['close', 'reply', 'note'].includes(v.mode);
   if (hasText && locked) body.append(h('div', { class: 'tka-read' }, ...tkaParts(v.text || '').map((p) => (typeof p === 'string' ? p : tkaAnchor(p)))));
-  if (hasText && !locked) body.append(h('textarea', { 'aria-label': c.field, placeholder: c.field, text: v.text || '', oninput: (e) => { v.text = e.target.value; } }));
+  if (hasText && !locked) body.append(tkaEditor(v, c.field));
   if (v.mode === 'close') {
     body.append(locked ? (v.units ? h('div', { class: 'tka-units', text: `Unità impiegate: ${v.units}` }) : '')
       : h('label', { class: 'tka-units' }, 'Unità impiegate', h('input', { class: 'ag-in', inputmode: 'decimal', value: v.units || '', placeholder: 'facoltativo', oninput: (e) => { v.units = e.target.value; } })));
@@ -3569,30 +3645,37 @@ function tkaAssist(v, area) {
   const status = h('div', { class: 'tka-busy', role: 'status' });
   let before = null, busy = false;
   const buttons = [];
-  // sotto la casella, i link che nel ticket saranno cliccabili: così si vede subito se un indirizzo è stato preso giusto
-  const links = h('div', { class: 'tka-links' });
-  const paintLinks = () => {
-    const found = tkaParts(area.value).filter((p) => typeof p !== 'string');
-    links.replaceChildren(...(found.length ? [h('span', { text: found.length > 1 ? 'Diventano link:' : 'Diventa link:' }), ...found.map(tkaAnchor)] : []));
-  };
-  area.addEventListener('input', paintLinks);
-  const undo = h('button', { type: 'button', class: 'tka-link', text: 'Torna al testo di prima', hidden: true, onclick: () => { area.value = v.text = before ?? ''; undo.hidden = true; paintLinks(); area.focus(); } });
-  // Il tasto Link: il testo selezionato diventa cliccabile, come nell'editor del CRM
-  let sel = [0, 0];
-  const linkText = h('input', { class: 'ag-in', 'aria-label': 'Testo del link', placeholder: 'Testo da mostrare (facoltativo)' });
-  const linkUrl = h('input', { class: 'ag-in', 'aria-label': 'Indirizzo del link', inputmode: 'url', placeholder: 'https://…', onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addLink(); } } });
-  const linkBox = h('div', { class: 'tka-explain', hidden: true }, linkText, linkUrl, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
-    h('button', { type: 'button', class: 'btn sm', text: 'Chiudi', onclick: () => { linkBox.hidden = true; } }),
-    h('button', { type: 'button', class: 'btn sm primary', text: 'Inserisci link', onclick: () => addLink() })));
+  const undo = h('button', { type: 'button', class: 'tka-link', text: 'Torna al testo di prima', hidden: true, onclick: () => { area.value = v.text = before ?? ''; undo.hidden = true; area.focus(); } });
+  // Il tasto Link: la parola selezionata resta evidenziata mentre scrivi l'indirizzo, e diventa link dentro la casella
+  let spot = null;
+  const mark = (r) => { try { if (r) CSS.highlights.set('tka-sel', new Highlight(r)); else CSS.highlights.delete('tka-sel'); } catch {} };
+  const closeLink = () => { linkBox.hidden = true; mark(null); };
+  const linkUrl = h('input', { class: 'ag-in', 'aria-label': 'Indirizzo del link', inputmode: 'url', placeholder: 'Incolla l\'indirizzo: https://…', onkeydown: (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); addLink(); }
+    if (e.key === 'Escape') { e.preventDefault(); closeLink(); area.focus(); } } });
+  const unlink = h('button', { type: 'button', class: 'btn sm', text: 'Togli link', hidden: true, onclick: () => { area.linkAt(spot, ''); closeLink(); area.focus(); } });
+  const linkBox = h('div', { class: 'tka-linkbox', hidden: true }, h('span', { html: icon('link', 'sm') }), linkUrl, unlink,
+    h('button', { type: 'button', class: 'btn sm primary', text: 'Metti link', onclick: () => addLink() }),
+    h('button', { type: 'button', class: 'btn sm', text: 'Chiudi', onclick: () => { closeLink(); area.focus(); } }));
   const addLink = () => {
     let url = linkUrl.value.trim();
     if (url && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
-    if (!/^https?:\/\/[^\s()]+$/i.test(url)) { status.className = 'tka-busy err'; status.textContent = 'Indirizzo non valido: deve iniziare con http:// o https://, senza spazi né parentesi.'; return; }
-    const label = linkText.value.trim().replace(/\s+/g, ' ').replace(/\]/g, ')');
-    const piece = label && label !== url ? `[${label}](${url})` : url;
-    area.value = v.text = area.value.slice(0, sel[0]) + piece + area.value.slice(sel[1]);
-    status.textContent = ''; linkBox.hidden = true; paintLinks();
-    area.focus(); area.setSelectionRange(sel[0] + piece.length, sel[0] + piece.length);
+    url = url.replace(/\(/g, '%28').replace(/\)/g, '%29');
+    if (!/^https?:\/\/\S+$/i.test(url)) { status.className = 'tka-busy err'; status.textContent = 'Indirizzo non valido: controlla che sia scritto bene, senza spazi.'; return; }
+    status.textContent = '';
+    area.linkAt(spot, url);
+    closeLink();
+  };
+  const openLink = () => {
+    if (!linkBox.hidden) { closeLink(); return; }
+    const s = getSelection();
+    if (s.rangeCount && area.contains(s.anchorNode)) spot = s.getRangeAt(0).cloneRange();
+    else { spot = document.createRange(); spot.selectNodeContents(area); spot.collapse(false); }   // mai cliccato nella casella: in fondo al testo
+    const c = spot.commonAncestorContainer, open = (c.nodeType === 3 ? c.parentElement : c).closest?.('a'), picked = spot.toString().trim();
+    const inside = !!(open && area.contains(open));
+    linkUrl.value = inside ? open.getAttribute('href') : /^(https?:\/\/|www\.)\S+$/i.test(picked) ? picked : '';
+    unlink.hidden = !inside;
+    linkBox.hidden = false; mark(spot); linkUrl.focus(); linkUrl.select();
   };
   const setBusy = (on, msg) => { busy = on; buttons.forEach((b) => { b.disabled = on; }); status.className = 'tka-busy'; status.replaceChildren(...(on ? [h('span', { class: 'spinner' }), h('span', { text: msg })] : [])); };
   const ask = async (action, msg, extra) => {
@@ -3602,7 +3685,6 @@ function tkaAssist(v, area) {
       const r = await (await api(url, { mode: v.mode, action, text: area.value, ...extra })).json();
       before = area.value; area.value = v.text = r.text;
       undo.hidden = !before.trim();
-      paintLinks();
       setBusy(false);
       return true;
     } catch (e) { setBusy(false); status.className = 'tka-busy err'; status.textContent = e.message; return false; }
@@ -3620,22 +3702,17 @@ function tkaAssist(v, area) {
     tool(v.mode === 'close' ? 'Riformula chiusura' : v.mode === 'note' ? 'Riformula nota' : 'Riformula risposta', 'retry', 'Sistema errori e sintassi di quello che hai scritto, senza cambiare il senso', () => {
       if (area.value.trim().length < 2) { status.className = 'tka-busy err'; status.textContent = 'Scrivi prima qualcosa da riformulare.'; return; }
       ask('rewrite', 'Aura sta riformulando il testo…'); }),
-    tool('Link', 'link', 'Fa diventare link il testo selezionato. Gli indirizzi scritti per intero diventano link da soli', () => {
-      if (!linkBox.hidden) { linkBox.hidden = true; return; }
-      sel = [area.selectionStart, area.selectionEnd];
-      const picked = area.value.slice(sel[0], sel[1]).trim(), isUrl = /^(https?:\/\/|www\.)\S+$/i.test(picked);
-      linkText.value = isUrl ? '' : picked; linkUrl.value = isUrl ? picked : '';
-      linkBox.hidden = false; (isUrl ? linkText : linkUrl).focus(); }),
+    (() => { const b = tool('Link', 'link', 'Seleziona una parola e premi qui: diventa un link. Gli indirizzi scritti per intero diventano link da soli', openLink);
+      b.addEventListener('mousedown', (e) => e.preventDefault()); return b; })(),   // la casella non perde la selezione
     undo);
-  paintLinks();
-  return h('div', { class: 'tka-assist' }, row, linkBox, explain, links, status);
+  return h('div', { class: 'tka-assist' }, row, linkBox, explain, status);
 }
 // in chat: la conferma di Aura. Il testo si può correggere: nel CRM va quello che c'è qui quando premi
 function ticketActConfirmEl(chat, m) {
   const v = m.view, c = TKA[v.mode] || TKA.edit, pending = m.status === 'pending';
   const card = h('div', { class: 'tka ' + v.mode }, tkaHead(v), tkaBody(v, !pending));
   if (pending) {
-    const area = card.lastChild.querySelector('textarea');
+    const area = card.lastChild.querySelector('.tka-edit');
     if (area) card.lastChild.append(tkaAssist(v, area));
     card.lastChild.append(h('div', { class: 'tka-f' }, h('span', area ? { class: 'grow' } : { class: 'tka-hint', text: c.hint }),
       h('button', { class: 'btn sm', text: 'Annulla', disabled: !!S.stream, onclick: () => decide(chat, m, false) }),
@@ -3682,10 +3759,10 @@ function tkActions(t, reload, manage) {
           await after(mode === 'close' ? `Ticket ${t.no} chiuso` : mode === 'note' ? 'Nota aggiunta' : 'Risposta inserita nel ticket');
         } catch (e) { err.textContent = e.message; send.disabled = false; } } });
       const body = tkaBody(v, false);
-      body.append(tkaAssist(v, body.querySelector('textarea')), err, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
+      body.append(tkaAssist(v, body.querySelector('.tka-edit')), err, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
         h('button', { class: 'btn sm', text: 'Annulla', onclick: () => form.replaceChildren() }), send));
       form.replaceChildren(h('div', { class: 'tka ' + mode }, tkaHead(v), body));
-      body.querySelector('textarea')?.focus();
+      body.querySelector('.tka-edit')?.focus();
     };
     const btn = (label, cls, onclick) => h('button', { class: 'btn sm tkb-btn ' + cls, text: label, onclick });
     const take = !t.done && (!t.mine || t.status === 'Open') ? btn('Prendi in carico', 'primary', (e) => {

@@ -1818,6 +1818,28 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .em-ext-hint { flex: 1; min-width: 160px; font-size: 12.5px; color: var(--text-3); }
 .cons-ex-add { margin-left: 4px; padding: 1px 8px; border-radius: 99px; border: 1px solid var(--border-strong); background: none; color: var(--text-2); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .cons-ex-add:hover { border-color: var(--accent); color: var(--accent); }
+.ak-ticket .au-badge { display: none; }
+.ak-ticket .au-bubble { padding: 14px 16px 12px; flex: 0 1 460px; }
+.ak-ticket .au-body { gap: 8px; }
+.tkn-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tkn-new { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--k); white-space: nowrap; }
+.tkn-new::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--k); box-shadow: 0 0 0 3px color-mix(in oklch, var(--k) 22%, transparent); }
+.tkn-no { font-size: 12px; color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tkn-no::before { content: "·"; margin-right: 8px; }
+.tkn-top .au-time { margin-left: auto; flex: none; }
+.tkn-title { display: block; width: 100%; padding: 0; border: 0; background: none; color: var(--text); font: inherit; font-size: 17px; font-weight: 650; line-height: 1.3; letter-spacing: -.005em; text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.tkn-title:hover { color: var(--k); }
+.tkn-who { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; font-size: 13px; color: var(--text-2); }
+.tkn-mono { width: 22px; height: 22px; flex: none; display: grid; place-items: center; border-radius: 7px; font-size: 10px; font-weight: 700; letter-spacing: .02em; color: var(--k); background: color-mix(in oklch, var(--k) 15%, transparent); }
+.tkn-client { min-width: 0; overflow-wrap: anywhere; }
+.tkn-prio { padding: 1px 8px; border-radius: 99px; font-size: 11.5px; font-weight: 550; color: var(--text-2); background: var(--hover); }
+.tkn-prio.hot { color: var(--err); background: color-mix(in oklch, var(--err) 14%, transparent); }
+.tkn-tear { position: relative; height: 0; margin: 4px -16px 2px; border-top: 1px dashed var(--border-strong); }
+.tkn-tear::before, .tkn-tear::after { content: ""; position: absolute; top: -8px; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); border: 1px solid var(--border); box-sizing: border-box; }
+.tkn-tear::before { left: -9px; clip-path: inset(0 0 0 50%); }
+.tkn-tear::after { right: -9px; clip-path: inset(0 50% 0 0); }
+.ak-ticket .au-chip.primary { background: var(--k); color: var(--tk-on); }
+.ak-ticket .au-chip.primary:hover { background: color-mix(in oklch, var(--k) 86%, black); }
 .au-ticket { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--k); } .au-ticket .au-sub { color: var(--text-3); }
 .tk-alert { position: fixed; top: 14px; right: 14px; z-index: 95; width: min(340px, calc(100vw - 28px)); border-radius: 14px; overflow: hidden; background: var(--raised); border: 1px solid color-mix(in oklch, var(--tk-reply) 50%, var(--border)); box-shadow: var(--shadow); animation: tkAlertIn .3s cubic-bezier(.16, 1, .3, 1) both; }
 @keyframes tkAlertIn { from { opacity: 0; transform: translateY(-10px); } }
@@ -1854,8 +1876,14 @@ textarea.ag-in { height: auto; padding: 10px 12px; resize: vertical; min-height:
 .tka-explain { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 10px; background: color-mix(in oklch, var(--tka) 6%, transparent); }
 .tka-explain[hidden], .tka-link[hidden] { display: none; }
 .tka-explain textarea { min-height: 64px; }
-.tka-links { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: var(--text-2); } .tka-links:empty { display: none; }
-.tka-links a { overflow-wrap: anywhere; } .tka-links a, .tka-read a { color: var(--accent); text-decoration: underline; }
+.tka-read a, .tka-edit a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.tka-edit { width: 100%; min-height: 110px; max-height: 45vh; overflow-y: auto; resize: vertical; padding: 9px 11px; border-radius: 10px; border: 1px solid var(--border-strong); background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.45; box-sizing: border-box; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.tka-edit:focus { outline: 2px solid color-mix(in oklch, var(--tka) 55%, transparent); border-color: transparent; }
+.tka-edit:empty::before { content: attr(data-placeholder); color: var(--text-3); pointer-events: none; }
+::highlight(tka-sel) { background: color-mix(in oklch, var(--accent) 40%, transparent); }
+.tka-linkbox { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--raised); color: var(--text-2); }
+.tka-linkbox[hidden], .tka-linkbox .btn[hidden] { display: none; }
+.tka-linkbox .ag-in { flex: 1 1 200px; min-width: 0; }
 .tka-busy { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); } .tka-busy:empty { display: none; } .tka-busy.err { color: var(--err); }
 .tka-hint { flex: 1; min-width: 180px; font-size: 12.5px; color: var(--text-3); }
 .tka-send { background: var(--tka); color: var(--tk-on); border-color: transparent; } .tka-send:hover { background: color-mix(in oklch, var(--tka) 85%, black); color: var(--tk-on); }
