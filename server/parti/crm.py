@@ -677,9 +677,10 @@ async def _tool_crm_search(user: dict, args: dict, request: Request) -> dict:
             "display": f"Ticket chiusi simili: {len(rows)}", "view": view}
 
 
-TICKET_PHOTO_ASK = re.compile(r"\b(fot[oi]\w*|immagin\w*|screen\w*|schermat\w*|allegat\w*|guard\w*|vedi|vedere|analizz\w*|file|document\w*|pdf|excel|word|mail|e-mail|legg\w*|apri\w*|contenuto|dentro|scaric\w*)\b", re.I)
+TICKET_PHOTO_ASK = re.compile(r"\b(fot[oi]\w*|immagin\w*|screen\w*|schermat\w*|allegat\w*|guard\w*|vedi|vedere|analizz\w*|file|document\w*|pdf|excel|word|mail|e-mail|legg\w*|apri\w*|contenuto|dentro|scaric\w*|header\w*|intestazion\w*|received|spf|dkim|dmarc|mittente|spoof\w*|phishing)\b", re.I)
 TICKET_PHOTO_MIN = 4096   # sotto ci sono le icone di firme e avvisi automatici
 TICKET_ICON_MAX = 120     # pixel: sotto è un'icona, anche se il file pesa
+TICKET_HEADERS_ASK = re.compile(r"\b(header\w*|intestazion\w*|received|spf|dkim|dmarc|mittente|spoof\w*|phishing|truffa|da dove arriva|server di posta)\b", re.I)
 
 
 def _ticket_photo_jpeg(data: bytes) -> str:
@@ -759,11 +760,58 @@ def _crm_mail_parts(data: bytes, depth: int = 0) -> tuple[str, list[tuple[str, b
     return text, images, others
 
 
-def _crm_read_file(name: str, data: bytes) -> tuple[str, list[tuple[str, bytes]]]:
+_CRM_AUTH = re.compile(r"\b(spf|dkim|dmarc|arc|compauth)\s*=\s*([a-z]+)", re.I)
+_CRM_SPAM_HEADERS = ("X-MS-Exchange-Organization-SCL", "X-Spam-Status", "X-Spam-Score", "X-Spam-Flag", "X-Forefront-Antispam-Report", "X-Microsoft-Antispam")
+
+
+def crm_mail_headers(data: bytes) -> dict:
+    """Le intestazioni di una mail, per chi deve capire da dove arriva: quelle che contano, autenticazione, percorso dei server e l'elenco completo."""
+    from email import policy
+    from email.parser import BytesHeaderParser
+    from email.utils import parsedate_to_datetime
+    m = BytesHeaderParser(policy=policy.default).parsebytes(data)
+    text = lambda v: re.sub(r"\s+", " ", str(v or "")).strip()
+    hops, before = [], None
+    for raw in reversed(m.get_all("Received") or []):   # dal primo server all'ultimo
+        line = text(raw)
+        when, delay = "", None
+        if ";" in line:
+            try:
+                at = parsedate_to_datetime(line.rsplit(";", 1)[1].strip())
+                when = at.isoformat()
+                if before is not None:
+                    delay = int((at - before).total_seconds())
+                before = at
+            except (TypeError, ValueError):
+                pass
+        found = lambda word: (re.search(rf"\b{word}\s+(\S+)", line, re.I) or [None, ""])[1]
+        ip = re.search(r"\[(\d{1,3}(?:\.\d{1,3}){3}|[0-9a-f:]{3,})\]|\b(\d{1,3}(?:\.\d{1,3}){3})\b", line.split(" by ")[0], re.I)
+        hops.append({"from": found("from"), "by": found("by"), "with": found("with"), "ip": (ip.group(1) or ip.group(2)) if ip else "", "when": when, "delay": delay})
+    auth = {}
+    for v in (m.get_all("Authentication-Results") or [])[:1] + (m.get_all("ARC-Authentication-Results") or [])[:1]:
+        for k, r in _CRM_AUTH.findall(text(v)):
+            auth.setdefault(k.lower(), r.lower())
+    spf = text(m["Received-SPF"]).split(" ")[0].lower()
+    if spf and "spf" not in auth:
+        auth["spf"] = spf
+    return {"main": [[k, text(m[k])] for k in ("From", "To", "Cc", "Reply-To", "Return-Path", "Subject", "Date", "Message-ID") if m[k]],
+            "subject": text(m["Subject"]), "from": text(m["From"]), "date": text(m["Date"]), "auth": auth, "hops": hops,
+            "spam": [[k, text(m[k])] for k in _CRM_SPAM_HEADERS if m[k]], "all": [[k, str(v)] for k, v in m.items()]}
+
+
+def _crm_headers_text(h: dict) -> str:
+    """Le stesse intestazioni per il modello: complete, ma senza ripetere le lunghissime firme."""
+    keep = [f"{k}: {re.sub(chr(92) + 's+', ' ', v)[:500]}" for k, v in h["all"] if k.lower() not in ("dkim-signature", "x-ms-exchange-antispam-messagedata-chunkcount", "x-ms-exchange-antispam-messagedata-0", "arc-seal", "arc-message-signature")]
+    return "INTESTAZIONI COMPLETE:\n" + "\n".join(keep)[:9000]
+
+
+def _crm_read_file(name: str, data: bytes, headers: bool = False) -> tuple[str, list[tuple[str, bytes]]]:
     """(testo per il modello, immagini trovate dentro). Se non si può leggere il testo lo dice: mai far finta."""
     ext = _crm_file_ext(name, data)
     if ext == "eml":
         text, images, others = _crm_mail_parts(data)
+        if headers:
+            text = _crm_headers_text(crm_mail_headers(data)) + "\n\nTESTO DELLA MAIL:\n" + text
         for n, d in others[:6]:
             inner, more = _crm_read_file(n, d)
             text += f"\n\n--- Allegato della mail: {n} ---\n{inner[:_TICKET_FILE_TEXT]}"
@@ -825,9 +873,9 @@ async def _tool_crm_files(user: dict, args: dict, request: Request) -> dict:
     # i documenti e le mail allegate: il testo, e le immagini che hanno dentro
     parts, inner, left = [], [], _TICKET_FILES_TEXT
     for f in docs:
-        text, more = await asyncio.to_thread(_crm_read_file, f["name"], f["data"])
+        text, more = await asyncio.to_thread(_crm_read_file, f["name"], f["data"], bool(TICKET_HEADERS_ASK.search(str(args.get("_last_user") or ""))))
         inner += [(f"{f['name']}: {n}", d) for n, d in more if _crm_inner_photo(n, d)]
-        label = "mail allegata" if _crm_file_ext(f["name"], f["data"]) == "eml" else f"file {f['name']}"
+        label = "mail (file .eml: può essere la mail originale del commento o una inoltrata)" if _crm_file_ext(f["name"], f["data"]) == "eml" else f"file {f['name']}"
         clipped = text[:min(_TICKET_FILE_TEXT, max(0, left))]
         left -= len(clipped)
         parts.append(f"--- {label} ({_human_size(f['size'])}) ---\n{clipped}" + ("\n(testo tagliato: il file è più lungo)" if len(clipped) < len(text) else ""))
@@ -920,6 +968,28 @@ async def crm_ticket_extra(ref: str) -> dict:
     }
 
 
+@app.get("/api/crm/ticket/{ref}/mails")
+async def crm_ticket_mails_api(ref: str, _: dict = Depends(require_user)):
+    """Le mail originali che stanno tra gli allegati del ticket, con le intestazioni. Si leggono solo quando si apre la pagina del ticket."""
+    if not crm_on():
+        raise HTTPException(409, "CRM non collegato")
+    try:
+        t = await crm_detail(ref)
+    except ValueError as e:
+        raise HTTPException(404 if "non trovato" in str(e) else 502, str(e))
+
+    async def one(c, fid):
+        try:
+            f = await crm_file(fid)
+            if _crm_file_ext(f["name"], f["data"]) != "eml":
+                return None
+            return {"id": fid, "who": c.get("who") or "", "at": c.get("at") or "", **await asyncio.to_thread(crm_mail_headers, f["data"])}
+        except (ValueError, TypeError, httpx.HTTPError):
+            return None
+    found = await asyncio.gather(*(one(c, fid) for c in t["comments"] for fid in c.get("files") or []))
+    return {"mails": [x for x in found if x]}
+
+
 @app.get("/api/crm/ticket/{ref}/extra")
 async def crm_ticket_extra_api(ref: str, _: dict = Depends(require_user)):
     if not crm_on():
@@ -957,7 +1027,7 @@ TOOLS.update({
                     {"problema": {"type": "string", "description": "Il problema in poche parole chiave"},
                      "solo_miei": {"type": "boolean", "description": "true = solo i ticket dell'utente"}}, ["problema"])},
     "ticket_allegati": {"admin": False, "crm": True, "confirm": False, "run": _tool_crm_files,
-        "spec": _fn("ticket_allegati", "Apre gli allegati di un ticket del CRM: foto e screenshot, PDF, Word, Excel, testi e mail allegate, con quello che hanno dentro. "
+        "spec": _fn("ticket_allegati", "Apre gli allegati di un ticket del CRM: foto e screenshot, PDF, Word, Excel, testi e mail allegate, con quello che hanno dentro, e anche le intestazioni delle mail (percorso dei server, SPF, DKIM, DMARC) se l'utente le chiede. "
                     "SOLO quando l'utente chiede di guardarli o di leggerli. Non lo prende in carico e non cambia niente nel ticket.",
                     {"ticket": {"type": "string", "description": "Numero del ticket"}, "quante": {"type": "integer", "description": "Quante immagini guardare al massimo, facoltativo (4 di base, massimo 6)"}}, ["ticket"])},
     "ticket_dettaglio": {"admin": False, "crm": True, "confirm": False, "run": _tool_crm_detail,

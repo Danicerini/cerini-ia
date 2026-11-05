@@ -2517,6 +2517,36 @@ function soloOpen(no) {
   if (!S.me?.crm) { root.replaceChildren(h('div', { class: 'ts-empty', text: 'Il CRM non è collegato: fallo in Impostazioni → Collegamenti.' })); return; }
   soloRender(root, no);
 }
+// Una mail vista da un sistemista: chi l'ha mandata, se il mittente è autentico, da che server è passata e quanto ha aspettato, e tutte le intestazioni
+const TS_AUTH_OK = new Set(['pass', 'bestguesspass']), TS_AUTH_BAD = new Set(['fail', 'softfail', 'hardfail', 'permerror', 'temperror']);
+function tsMailHead(m) {
+  const row = (k, v) => h('div', { class: 'tkp-kv' }, h('dt', { text: k }), h('dd', { text: v }));
+  const auth = Object.entries(m.auth || {}).map(([k, v]) => h('span', { class: 'ts-auth ' + (TS_AUTH_OK.has(v) ? 'ok' : TS_AUTH_BAD.has(v) ? 'bad' : ''), title: `${k.toUpperCase()}: ${v}` }, h('b', { text: k.toUpperCase() }), ' ' + v));
+  const fmt = (iso) => { const d = iso ? new Date(iso) : null; return d && !isNaN(d) ? d.toLocaleString('it-IT', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : ''; };
+  const wait = (s) => (s == null ? '' : s < 0 ? `${s} s (orologi diversi)` : s < 60 ? `+${s} s` : s < 3600 ? `+${Math.round(s / 60)} min` : `+${(s / 3600).toFixed(1).replace('.', ',')} ore`);
+  const raw = m.all.map(([k, v]) => `${k}: ${v}`).join('\n');
+  const search = h('input', { class: 'ag-in', type: 'search', 'aria-label': 'Cerca nelle intestazioni', placeholder: 'Cerca nelle intestazioni', oninput: (e) => paint(e.target.value) });
+  const list = h('dl', { class: 'ts-heads' });
+  const paint = (q) => {
+    const low = (q || '').toLowerCase();
+    list.replaceChildren(...m.all.filter(([k, v]) => !low || k.toLowerCase().includes(low) || v.toLowerCase().includes(low)).flatMap(([k, v]) => [h('dt', { class: 'mono', text: k }), h('dd', { class: 'mono', text: v })]));
+  };
+  paint('');
+  return h('section', { class: 'tkp-box ts-mail' },
+    h('h2', { text: m.subject || '(senza oggetto)' }),
+    h('p', { class: 'ts-mail-who', text: [m.from, m.date].filter(Boolean).join(' · ') }),
+    auth.length ? h('div', { class: 'ts-auths' }, ...auth) : h('p', { class: 'ts-mail-who', text: 'Questa mail non riporta i controlli SPF, DKIM e DMARC.' }),
+    h('dl', { class: 'ts-mail-main' }, ...m.main.filter(([k]) => !['Subject', 'From', 'Date'].includes(k)).map(([k, v]) => row(k, v)), ...(m.spam || []).filter(([k]) => /SCL|Spam-(Status|Score|Flag)/i.test(k)).map(([k, v]) => row(k.replace(/^X-(MS-Exchange-Organization-)?/i, ''), v))),
+    m.hops?.length ? h('details', { class: 'ts-more', open: true }, h('summary', { text: `Percorso: ${m.hops.length} ${m.hops.length === 1 ? 'passaggio' : 'passaggi'}` }),
+      h('ol', { class: 'ts-hops' }, ...m.hops.map((x) => h('li', {},
+        h('div', { class: 'ts-hop' }, h('span', { class: 'mono', text: x.by || '—' }), h('small', { class: 'tnum', text: [fmt(x.when), wait(x.delay)].filter(Boolean).join(' · ') })),
+        h('small', { class: 'mono', text: ['da ' + (x.from || '?'), x.ip, x.with].filter(Boolean).join(' · ') }))))) : null,
+    h('details', { class: 'ts-more' }, h('summary', { text: `Tutte le intestazioni (${m.all.length})` }),
+      h('div', { class: 'ts-heads-bar' }, search,
+        h('button', { type: 'button', class: 'btn sm', html: icon('copy', 'sm') + 'Copia', onclick: () => navigator.clipboard?.writeText(raw).then(() => toast('Intestazioni copiate')).catch(() => {}) }),
+        h('a', { class: 'btn sm', href: `/api/crm/file/${m.id}?dl=1`, download: 'mail.eml', html: icon('down', 'sm') + 'Scarica' })),
+      list));
+}
 async function soloRender(root, no) {
   const bar = (...kids) => h('header', { class: 'ts-bar' }, h('a', { class: 'ts-home', href: '/', title: 'Torna ad Aura', 'aria-label': 'Torna ad Aura' }, h('span', { class: 'au-mini', 'aria-hidden': 'true' }, h('span'))), ...kids);
   if (!root.firstChild) root.replaceChildren(bar(h('b', { class: 'ts-crumb', text: no })), h('main', { class: 'ts-wrap' }, tkpSkeleton(5)));
@@ -2563,9 +2593,9 @@ async function soloRender(root, no) {
       card('Date e lavoro', row('Ricevuto', when(t.received)), row('Creato', when(t.created)), row('Preso in carico', when(t.taken_at)), row('Chiuso', when(t.closed_at)),
         row('Ultima modifica', [when(t.modified), t.modified_by].filter(Boolean).join(' · ')), row('Unità impiegate', Number(t.units) ? String(t.units) : ''), row('Giorni di gestione', Number(t.days) ? String(t.days) : ''))),
     docs: docBox ? h('div', { class: 'ts-pane' }, h('section', { class: 'tkp-box' }, docBox)) : null,
-    stati: h('div', { class: 'ts-pane' }), ore: h('div', { class: 'ts-pane' }), email: h('div', { class: 'ts-pane' }), rel: h('div', { class: 'ts-pane' }), nps: h('div', { class: 'ts-pane' }),
+    stati: h('div', { class: 'ts-pane' }), head: h('div', { class: 'ts-pane' }), ore: h('div', { class: 'ts-pane' }), email: h('div', { class: 'ts-pane' }), rel: h('div', { class: 'ts-pane' }), nps: h('div', { class: 'ts-pane' }),
   };
-  const tabs = [['chat', 'Conversazione', shown.length], ['info', 'Dettagli'], ['docs', 'Documenti', t.documents?.length || 0], ['stati', 'Storico stati'], ['ore', 'Consuntivi'], ['email', 'Email'], ['rel', 'Collegati'], ['nps', 'NPS']];
+  const tabs = [['chat', 'Conversazione', shown.length], ['info', 'Dettagli'], ['docs', 'Documenti', t.documents?.length || 0], ['stati', 'Storico stati'], ['head', 'Intestazioni'], ['ore', 'Consuntivi'], ['email', 'Email'], ['rel', 'Collegati'], ['nps', 'NPS']];
   const tabBar = h('div', { class: 'ts-tabs', role: 'tablist' }), paneBox = h('div', {});
   const counts = { docs: t.documents?.length || 0 }, extraReady = { v: false };
   const paintTabs = () => {
@@ -2586,6 +2616,12 @@ async function soloRender(root, no) {
     if (!d.rows?.length) return;
     related.hidden = false;
     related.replaceChildren(h('h3', { text: 'Altri ticket del cliente' }), ...d.rows.map(relRow));
+  }).catch(() => {});
+  // le intestazioni delle mail: si scaricano i file, quindi arrivano per ultime
+  api('/api/crm/ticket/' + encodeURIComponent(t.no) + '/mails').then((r) => r.json()).then((x) => {
+    counts.head = x.mails.length;
+    panes.head.replaceChildren(...x.mails.map(tsMailHead));
+    paintTabs();
   }).catch(() => {});
   api('/api/crm/ticket/' + encodeURIComponent(t.no) + '/extra').then((r) => r.json()).then((x) => {
     const parent = t.parent_ticket?.no ? { no: t.parent_ticket.no, title: t.parent_ticket.title || t.parent_ticket.no } : null;
