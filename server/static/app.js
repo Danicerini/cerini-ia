@@ -1516,7 +1516,7 @@ async function refreshMemoryCount() {
 }
 
 function brainGraph(data, onOpen) {
-  // grafo 3D come quello di Obsidian: le forze dispongono i pallini nello spazio, si ruota trascinando
+  // grafo come quello di Obsidian, in 3D (si ruota trascinando) o in 2D (si sposta): le forze dispongono i pallini, la scelta resta salvata
   const box = h('div', { class: 'mem-map graph' });
   const N = data.nodes.map((n, i) => {   // partenza su una sfera (spirale di Fibonacci): niente pallini sovrapposti
     const k = (i + 0.5) / Math.max(1, data.nodes.length), phi = Math.acos(1 - 2 * k), th = Math.PI * (1 + Math.sqrt(5)) * i, r = 80;
@@ -1531,6 +1531,7 @@ function brainGraph(data, onOpen) {
   box.append(cv, tip);
   const size = (n) => n.kind === 'diary' ? 3.2 : n.kind === 'me' ? 8.5 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2);
   let rx = -0.3, ry = 0, zoom = 1, auto = true, drag = null, hover = null, raf = 0, last = performance.now(), proj = [];
+  let mode = pref.get('graphMode', '3d') === '2d' ? '2d' : '3d', panX = 0, panY = 0, ext2 = 0, scale = 1;
   const step = () => {   // si respingono tutti, i collegamenti tirano, il centro trattiene
     for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
       const a = N[i], b = N[j]; let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; const d2 = dx * dx + dy * dy + dz * dz || 0.01, f = 1600 / d2;
@@ -1548,16 +1549,27 @@ function brainGraph(data, onOpen) {
   };
   for (let k = 0; k < 600; k++) step();
   const ext = Math.max(40, ...N.map((n) => Math.hypot(n.x, n.y, n.z)));   // quanto e' grande la nuvola: serve a farla stare nel riquadro
+  // la disposizione in piano si calcola solo la prima volta che serve: stesse forze, tutto schiacciato su z = 0. Le posizioni 3D restano com'erano
+  const layout2d = () => {
+    if (ext2) return;
+    const keep = N.map((n) => [n.x, n.y, n.z]);
+    N.forEach((n, i) => { const a = i * 2.39996, r = 8 * Math.sqrt(i + 1); n.x = r * Math.cos(a); n.y = r * Math.sin(a); n.z = 0; n.vx = n.vy = n.vz = 0; });
+    for (let k = 0; k < 500; k++) { step(); N.forEach((n) => { n.z = 0; n.vz = 0; }); }
+    N.forEach((n, i) => { n.px = n.x; n.py = n.y; [n.x, n.y, n.z] = keep[i]; });
+    ext2 = Math.max(40, ...N.map((n) => Math.hypot(n.px, n.py)));
+  };
+  if (mode === '2d') layout2d();
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const draw = (now) => {
     const dt = Math.min(64, now - last); last = now;
-    if (auto && !drag) ry += dt * 0.00015;
+    if (auto && !drag && mode === '3d') ry += dt * 0.00015;
     const dpr = devicePixelRatio || 1, w = box.clientWidth, hh = box.clientHeight;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hh * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); }
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
     const S = Math.min(w, hh) * 0.42 / ext * zoom, cam = ext * 3.2, cx = w / 2, cy = hh / 2;
     const cr = Math.cos(rx), sr = Math.sin(rx), cyw = Math.cos(ry), syw = Math.sin(ry);
-    proj = N.map((n) => {
+    scale = Math.min(w, hh) * 0.46 / (ext2 || 1) * zoom;
+    proj = mode === '2d' ? N.map((n) => ({ n, sx: cx + panX + n.px * scale, sy: cy + panY + n.py * scale, f: 1, depth: 1 })) : N.map((n) => {
       const x1 = n.x * cyw + n.z * syw, z1 = -n.x * syw + n.z * cyw, y1 = n.y * cr - z1 * sr, z2 = n.y * sr + z1 * cr;
       const f = cam / (cam - z2);   // prospettiva: quello davanti e' piu' grande
       return { n, sx: cx + x1 * f * S, sy: cy + y1 * f * S, f, depth: (z2 / ext + 1) / 2 };
@@ -1594,11 +1606,20 @@ function brainGraph(data, onOpen) {
     proj.forEach((p) => { const d = Math.hypot(p.sx - mx, p.sy - my); if (d < size(p.n) * p.f * Math.sqrt(zoom) + 6 && d < bd) { bd = d; best = p; } });
     return best?.n || null;
   };
-  box.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, rx, ry, moved: false, node: at(e) }; box.setPointerCapture(e.pointerId); });
+  box.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('.graph-modes')) return;
+    const node = at(e);
+    drag = { x: e.clientX, y: e.clientY, rx, ry, panX, panY, moved: false, node, px: node?.px, py: node?.py };
+    box.setPointerCapture(e.pointerId);
+  });
   box.addEventListener('pointermove', (e) => {
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; auto = false; }
+      if (mode === '2d') {   // un pallino si sposta da solo, lo sfondo sposta tutto
+        if (drag.node) { drag.node.px = drag.px + dx / scale; drag.node.py = drag.py + dy / scale; } else { panX = drag.panX + dx; panY = drag.panY + dy; }
+        return;
+      }
       ry = drag.ry + dx * 0.008; rx = Math.max(-1.5, Math.min(1.5, drag.rx + dy * 0.008));
       return;
     }
@@ -1609,9 +1630,21 @@ function brainGraph(data, onOpen) {
   box.addEventListener('pointerup', () => { const d = drag; drag = null; if (d && !d.moved && d.node) onOpen(d.node); });
   box.addEventListener('pointerleave', () => { hover = null; tip.classList.add('hidden'); });
   box.addEventListener('wheel', (e) => { e.preventDefault(); zoom = Math.max(0.4, Math.min(4, zoom * Math.exp(-e.deltaY * 0.0015))); }, { passive: false });
-  box.addEventListener('dblclick', () => { auto = true; zoom = 1; rx = -0.3; });
+  box.addEventListener('dblclick', (e) => { if (e.target.closest('.graph-modes')) return; auto = true; zoom = 1; rx = -0.3; panX = panY = 0; });
+  // la scelta tra 2D e 3D, nell'angolo del grafo, e la riga che dice come si usa
+  const hint = h('span', {});
+  const HOW = { '3d': 'Trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.', '2d': 'Trascina per spostarti o per spostare un pallino, rotellina per lo zoom, doppio clic per ricentrare.' };
+  const modes = h('div', { class: 'seg graph-modes', role: 'radiogroup', 'aria-label': 'Vista del grafo' });
+  const paintMode = () => {
+    hint.textContent = HOW[mode];
+    modes.replaceChildren(...['2d', '3d'].map((m) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(mode === m), text: m.toUpperCase(), onclick: () => {
+      if (mode === m) return;
+      mode = m; pref.set('graphMode', m); zoom = 1; panX = panY = 0; if (m === '2d') layout2d(); paintMode(); } })));
+  };
+  paintMode();
+  box.append(modes);
   raf = requestAnimationFrame(draw);
-  return { el: box, stop: () => cancelAnimationFrame(raf) };
+  return { el: box, hint, stop: () => cancelAnimationFrame(raf) };
 }
 
 function memoryMap(items, onPick) {
@@ -1839,10 +1872,11 @@ async function renderMemory() {
     h('div', { class: 'set-body' },
       h('section', { class: 'card' },
         h('div', { class: 'card-head graph-head' }, h('h2', { text: 'Il grafo del cervello' }),
-          h('a', { class: 'btn sm', href: '/api/brain/export', download: '', title: 'Scarica il cervello com’è adesso: estrai lo zip e apri la cartella «cervello» in Obsidian',
-            html: icon('unload', 'sm') + 'Esporta per Obsidian' }),
-          h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Importa', title: 'Porta qui un cervello da uno zip', onclick: () => brainImport() }),
-          h('p', { text: 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla; trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.' })),
+          h('div', { class: 'graph-acts' },
+            h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Importa', title: 'Porta qui un cervello da uno zip', onclick: () => brainImport() }),
+            h('a', { class: 'btn sm', href: '/api/brain/export', download: '', title: 'Scarica il cervello com’è adesso: estrai lo zip e apri la cartella «cervello» in Obsidian',
+              html: icon('unload', 'sm') + 'Esporta per Obsidian' })),
+          h('p', {}, 'Come in Obsidian: ogni pallino è una scheda (o un giorno del diario), ogni linea un collegamento. Più linee ha, più è grande. Passa sopra per vedere i collegamenti, clicca per aprirla. ', map.hint || null)),
         map.el,
         h('div', { class: 'mem-legend' }, ...kinds.map(([k, [label, col]]) => h('span', {}, h('i', { style: `background:${col}` }), `${label} (${graph.nodes.filter((n) => n.kind === k).length})`)),
           h('label', { class: 'graph-opt' }, h('input', { type: 'checkbox', checked: withDiary, onchange: (e) => { pref.set('graphDiary', e.target.checked); renderMemory(); } }), 'Mostra il diario'))),

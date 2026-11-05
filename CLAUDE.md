@@ -47,7 +47,7 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 - **Pacchi**: dalle mail (`_parcel_found`, stessi codici uniti con `_parcel_merge`, stato con `_parcel_next`); con la chiave di 17TRACK dell'utente (`tracking.json`, Collegamenti) `parcel_track_loop` registra i codici e aggiorna lo stato ogni ora (aura_scrive.py).
 - **Avvisi dei ticket**: `crm_new_loop` in crm.py, spegnibili (`prefs.crm_notify`); gli id già visti in `ticket_visti` nel `crm.json`.
 - **Importare un cervello**: Memoria → Importa, zip con boot/wiki/diary/skills (`/api/brain/import/…` in cervello.py). Si analizza senza scrivere, non si sovrascrive, le regole di boot/ restano fuori, le skill sono spente di partenza, le password vengono tolte, un commit solo che si annulla.
-- **Grafo** del cervello: `/api/brain/graph` + `brainGraph()` in app.js (3D, canvas). Esportazione per Obsidian: `/api/brain/export` (zip).
+- **Grafo** del cervello: `/api/brain/graph` + `brainGraph()` in app.js (canvas, 3D o 2D a scelta, `pref graphMode`). Esportazione per Obsidian: `/api/brain/export` (zip).
 
 ## Come si lavora
 
