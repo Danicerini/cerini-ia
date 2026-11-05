@@ -3526,11 +3526,30 @@ const TKA = {
   take: { label: 'Prendi in carico', send: 'Prendi in carico', ic: 'ticket', hint: 'Lo assegna a te e lo mette in lavorazione.' },
   edit: { label: 'Modifica ticket', send: 'Applica', ic: 'ticket', hint: 'Cambia questi dati nel CRM.' },
 };
+// I link del testo, riconosciuti come fa il server (_crm_html in crm.py): indirizzi nudi e [testo](indirizzo)
+function tkaParts(text) {
+  const out = [], re = /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+  let last = 0, m;
+  while ((m = re.exec(text))) {
+    let label = m[1] || m[0], href = m[2] || m[0], tail = '';
+    if (!m[1]) {
+      while (label && ('.,;:!?\'»”]'.includes(label.slice(-1)) || (label.endsWith(')') && label.split(')').length > label.split('(').length))) { tail = label.slice(-1) + tail; label = label.slice(0, -1); }
+      href = /^http/i.test(label) ? label : 'https://' + label;
+    }
+    if (m.index > last) out.push(text.slice(last, m.index));
+    out.push({ label, href });
+    if (tail) out.push(tail);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+const tkaAnchor = (p) => h('a', { href: p.href, target: '_blank', rel: 'noopener noreferrer', text: p.label, title: p.href });
 function tkaBody(v, locked) {
   const c = TKA[v.mode] || TKA.edit;
   const body = h('div', { class: 'tka-b' }, h('div', { class: 'tka-who', text: [v.client, v.title].filter(Boolean).join(' · ') }));
   const hasText = ['close', 'reply', 'note'].includes(v.mode);
-  if (hasText && locked) body.append(h('div', { class: 'tka-read', text: v.text || '' }));
+  if (hasText && locked) body.append(h('div', { class: 'tka-read' }, ...tkaParts(v.text || '').map((p) => (typeof p === 'string' ? p : tkaAnchor(p)))));
   if (hasText && !locked) body.append(h('textarea', { 'aria-label': c.field, placeholder: c.field, text: v.text || '', oninput: (e) => { v.text = e.target.value; } }));
   if (v.mode === 'close') {
     body.append(locked ? (v.units ? h('div', { class: 'tka-units', text: `Unità impiegate: ${v.units}` }) : '')
@@ -3550,7 +3569,31 @@ function tkaAssist(v, area) {
   const status = h('div', { class: 'tka-busy', role: 'status' });
   let before = null, busy = false;
   const buttons = [];
-  const undo = h('button', { type: 'button', class: 'tka-link', text: 'Torna al testo di prima', hidden: true, onclick: () => { area.value = v.text = before ?? ''; undo.hidden = true; area.focus(); } });
+  // sotto la casella, i link che nel ticket saranno cliccabili: così si vede subito se un indirizzo è stato preso giusto
+  const links = h('div', { class: 'tka-links' });
+  const paintLinks = () => {
+    const found = tkaParts(area.value).filter((p) => typeof p !== 'string');
+    links.replaceChildren(...(found.length ? [h('span', { text: found.length > 1 ? 'Diventano link:' : 'Diventa link:' }), ...found.map(tkaAnchor)] : []));
+  };
+  area.addEventListener('input', paintLinks);
+  const undo = h('button', { type: 'button', class: 'tka-link', text: 'Torna al testo di prima', hidden: true, onclick: () => { area.value = v.text = before ?? ''; undo.hidden = true; paintLinks(); area.focus(); } });
+  // Il tasto Link: il testo selezionato diventa cliccabile, come nell'editor del CRM
+  let sel = [0, 0];
+  const linkText = h('input', { class: 'ag-in', 'aria-label': 'Testo del link', placeholder: 'Testo da mostrare (facoltativo)' });
+  const linkUrl = h('input', { class: 'ag-in', 'aria-label': 'Indirizzo del link', inputmode: 'url', placeholder: 'https://…', onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); addLink(); } } });
+  const linkBox = h('div', { class: 'tka-explain', hidden: true }, linkText, linkUrl, h('div', { class: 'tka-f' }, h('span', { class: 'grow' }),
+    h('button', { type: 'button', class: 'btn sm', text: 'Chiudi', onclick: () => { linkBox.hidden = true; } }),
+    h('button', { type: 'button', class: 'btn sm primary', text: 'Inserisci link', onclick: () => addLink() })));
+  const addLink = () => {
+    let url = linkUrl.value.trim();
+    if (url && !/^[a-z][a-z0-9+.-]*:/i.test(url)) url = 'https://' + url;
+    if (!/^https?:\/\/[^\s()]+$/i.test(url)) { status.className = 'tka-busy err'; status.textContent = 'Indirizzo non valido: deve iniziare con http:// o https://, senza spazi né parentesi.'; return; }
+    const label = linkText.value.trim().replace(/\s+/g, ' ').replace(/\]/g, ')');
+    const piece = label && label !== url ? `[${label}](${url})` : url;
+    area.value = v.text = area.value.slice(0, sel[0]) + piece + area.value.slice(sel[1]);
+    status.textContent = ''; linkBox.hidden = true; paintLinks();
+    area.focus(); area.setSelectionRange(sel[0] + piece.length, sel[0] + piece.length);
+  };
   const setBusy = (on, msg) => { busy = on; buttons.forEach((b) => { b.disabled = on; }); status.className = 'tka-busy'; status.replaceChildren(...(on ? [h('span', { class: 'spinner' }), h('span', { text: msg })] : [])); };
   const ask = async (action, msg, extra) => {
     if (busy) return false;
@@ -3559,6 +3602,7 @@ function tkaAssist(v, area) {
       const r = await (await api(url, { mode: v.mode, action, text: area.value, ...extra })).json();
       before = area.value; area.value = v.text = r.text;
       undo.hidden = !before.trim();
+      paintLinks();
       setBusy(false);
       return true;
     } catch (e) { setBusy(false); status.className = 'tka-busy err'; status.textContent = e.message; return false; }
@@ -3576,8 +3620,15 @@ function tkaAssist(v, area) {
     tool(v.mode === 'close' ? 'Riformula chiusura' : v.mode === 'note' ? 'Riformula nota' : 'Riformula risposta', 'retry', 'Sistema errori e sintassi di quello che hai scritto, senza cambiare il senso', () => {
       if (area.value.trim().length < 2) { status.className = 'tka-busy err'; status.textContent = 'Scrivi prima qualcosa da riformulare.'; return; }
       ask('rewrite', 'Aura sta riformulando il testo…'); }),
+    tool('Link', 'link', 'Fa diventare link il testo selezionato. Gli indirizzi scritti per intero diventano link da soli', () => {
+      if (!linkBox.hidden) { linkBox.hidden = true; return; }
+      sel = [area.selectionStart, area.selectionEnd];
+      const picked = area.value.slice(sel[0], sel[1]).trim(), isUrl = /^(https?:\/\/|www\.)\S+$/i.test(picked);
+      linkText.value = isUrl ? '' : picked; linkUrl.value = isUrl ? picked : '';
+      linkBox.hidden = false; (isUrl ? linkText : linkUrl).focus(); }),
     undo);
-  return h('div', { class: 'tka-assist' }, row, explain, status);
+  paintLinks();
+  return h('div', { class: 'tka-assist' }, row, linkBox, explain, links, status);
 }
 // in chat: la conferma di Aura. Il testo si può correggere: nel CRM va quello che c'è qui quando premi
 function ticketActConfirmEl(chat, m) {
