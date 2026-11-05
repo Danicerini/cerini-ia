@@ -45,7 +45,9 @@ Le note private (server, persone, cosa si è fatto finora, cose in sospeso) stan
 - **/briefing**: scheda con agenda, cose da fare e rimaste indietro (`morning_data` in cervello.py, `morningView` in app.js). Con `/briefing [giorno]` o «cosa c'è da fare oggi» si fa senza modello; le voci si spuntano dalla scheda.
 - **Schede complete**: le procedure, le note e /briefing (`SHOWN_TOOLS` in chat.py) chiudono il turno appena mostrate, così il modello non le riscrive.
 - **Pacchi**: dalle mail (`_parcel_found`, stessi codici uniti con `_parcel_merge`, stato con `_parcel_next`); con la chiave di 17TRACK dell'utente (`tracking.json`, Collegamenti) `parcel_track_loop` registra i codici e aggiorna lo stato ogni ora (aura_scrive.py).
-- **Avvisi dei ticket**: `crm_new_loop` in crm.py, spegnibili (`prefs.crm_notify`); gli id già visti in `ticket_visti` nel `crm.json`.
+- **Avvisi dei ticket**: `crm_new_loop` in crm.py, spegnibili (`prefs.crm_notify`); gli id già visti in `ticket_visti` nel `crm.json`. Anche le risposte dei clienti ai ticket dell'utente (`crm_new_replies`, kind `ticket_reply`, id in `commenti_visti`): il cliente è chi ha il campo `customer` nel commento.
+- **Allegati dei ticket**: strumento `ticket_allegati` (`_tool_crm_files`), legge foto, documenti e mail allegate; il tipo si capisce dai byte (`_crm_file_ext`), perché il CRM salva nomi senza estensione.
+- **Priorità e SLA**: lo SLA dipende dal campo `sla`, collegato a `ElencoSLA` (non da `ticketpriorities`). Per prendere in carico la priorità è obbligatoria (`ticket_take`, `tkPickSla`).
 - **Importare un cervello**: Memoria → Importa, zip con boot/wiki/diary/skills (`/api/brain/import/…` in cervello.py). Si analizza senza scrivere, non si sovrascrive, le regole di boot/ restano fuori, le skill sono spente di partenza, le password vengono tolte, un commit solo che si annulla.
 - **Grafo** del cervello: `/api/brain/graph` + `brainGraph()` in app.js (canvas, 3D o 2D a scelta, `pref graphMode`): disposizione a forze con gruppi (`makeSim`), in 2D viva mentre si trascina, nomi che non si sovrappongono. Esportazione per Obsidian: `/api/brain/export` (zip).
 

@@ -837,7 +837,7 @@ async def aura_feed_act(fid: int, body: FeedActIn, user: dict = Depends(require_
             raise HTTPException(400, str(e))
     elif body.action == "keep" and data.get("email"):
         _set_rule(uid, data["email"], "keep"); _skip_clear(uid, data["email"]); status, msg = "keep", f"Ok: le mail di {data['from']} te le segnalo sempre"
-    elif body.action == "seen" and r["kind"] in ("mail", "suspect"):
+    elif body.action == "seen" and r["kind"] in ("mail", "suspect", "ticket_reply"):
         status = "seen"
     elif body.action == "junk" and data.get("email"):
         _skip_add(uid, data["email"], f"{re.sub(r'(?i)^((re|r|fw|fwd|i):\s*)+', '', data.get('subject') or '')} — {r['body']}")

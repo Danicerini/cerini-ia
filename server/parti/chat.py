@@ -1123,7 +1123,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         here = next((m for m in reversed(body.messages) if m.get("role") == "user"), {})
                         args = {**args, "_images": list(here.get("images") or []), "_images_before": last_images,
                                 "_files": [dict(file_row(user["id"], f.get("id")), id=_int(f.get("id"))) for f in here.get("files") or [] if _mine_file(user["id"], f.get("id"))]}
-                    if name == "ticket_foto":
+                    if name == "ticket_allegati":
                         args = {**args, "_last_user": _last_user_text(body.messages), "_model": body.model}
                     if name in ("progetto_nuovo", "lavoro_fatto", "diario_nota"):
                         args = {**args, "_chat": body.chat_id or ""}   # la ricerca del ricordo (o delle mail) e' per questo utente
@@ -1313,6 +1313,8 @@ async def tool_confirm(pid: str, request: Request, user: dict = Depends(require_
             call["args"][tool["edit_field"]] = str(edits["text"]).strip()
             if call["name"] == "ticket_chiudi":
                 call["args"]["unita"] = str(edits.get("units") or "")
+        if call["name"] == "ticket_prendi_in_carico" and isinstance(edits, dict):
+            call["args"]["_sla"] = str(edits.get("sla") or "")   # la priorità scelta nella scheda
         try:
             result = tool["run"](user, call["args"], request)
             if asyncio.iscoroutine(result):

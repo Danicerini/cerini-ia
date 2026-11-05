@@ -3030,13 +3030,21 @@ async function tkOpenFromAlert(no) {
   TKP.sel = no || null;
   await openTickets();
 }
-async function tkTakeFromAlert(no) {
+// Prima di prendere in carico si sceglie la priorità: da quella il CRM calcola lo SLA. Se questo CRM non ce l'ha si va avanti come prima
+async function tkPickSla(e, then) {
+  const r = e.currentTarget.getBoundingClientRect();
+  let o;
+  try { o = await (await api('/api/crm/options')).json(); } catch (err) { toast(err.message); return; }
+  if (!o.sla?.length) { then(''); return; }
+  tkMenu(r.left, r.bottom + 4, o.sla.map((x) => [x.label + (x.hours ? ` · ${x.hours} ore` : ''), () => then(x.id)]), 'Con che priorità?');
+}
+async function tkTakeFromAlert(no, sla) {
   try {
     const url = '/api/crm/ticket/' + encodeURIComponent(no);
     const t = await (await api(url)).json();
     if (t.done) { toast(`Il ticket ${no} è già chiuso`); return false; }
     if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo prendi tu?`)) return false;
-    await api(url + '/take', {});
+    await api(url + '/take', { sla: sla || '' });
     TKP.folders = null; TK.folders = null;
     toast(`Ticket ${no} preso in carico`);
     return true;
@@ -3044,24 +3052,24 @@ async function tkTakeFromAlert(no) {
 }
 function tkAlert(items) {
   $('#tkAlert')?.remove();
-  const one = items.length === 1 ? items[0].data || {} : null;
+  const one = items.length === 1 ? items[0].data || {} : null, reply = items.length === 1 && items[0].kind === 'ticket_reply';
   const close = () => { clearTimeout(timer); box.remove(); };
   const box = h('div', { id: 'tkAlert', class: 'tk-alert', role: 'status', 'aria-live': 'polite' },
-    h('div', { class: 'tk-alert-h' }, h('span', { html: icon('ticket', 'sm') }), h('b', { text: one ? 'Nuovo ticket' : `${items.length} ticket nuovi` }), one ? h('span', { class: 'no tnum', text: one.no }) : null,
+    h('div', { class: 'tk-alert-h' }, h('span', { html: icon('ticket', 'sm') }), h('b', { text: reply ? `${one.who || 'Il cliente'} ha risposto` : one ? 'Nuovo ticket' : items.every((i) => i.kind === 'ticket') ? `${items.length} ticket nuovi` : `${items.length} avvisi dei ticket` }), one ? h('span', { class: 'no tnum', text: one.no }) : null,
       h('button', { class: 'tk-alert-x', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: () => close() })),
     h('div', { class: 'tk-alert-b' },
       one ? h('div', { class: 'tt', text: one.title || '' }) : h('div', { class: 'tt', text: items.slice(0, 3).map((i) => i.data?.no).join(' · ') + (items.length > 3 ? ' …' : '') }),
-      one?.client ? h('small', { text: [one.client, one.priority].filter(Boolean).join(' · ') }) : null,
+      reply && one.said ? h('small', { class: 'tk-alert-said', text: one.said }) : one?.client ? h('small', { text: [one.client, one.priority].filter(Boolean).join(' · ') }) : null,
       h('div', { class: 'tk-alert-f' },
         h('button', { class: 'btn sm primary', 'data-ticket': one?.no, text: one ? 'Apri' : 'Vedi i ticket', onclick: () => tkOpenFromAlert(one?.no) }),
-        one && !one.mine ? h('button', { class: 'btn sm', text: 'Prendi in carico', onclick: async (e) => {
-          e.currentTarget.disabled = true;
-          if (await tkTakeFromAlert(one.no)) { const it = items[0]; api(`/api/aura/feed/${it.id}/act`, { action: 'ticket_taken' }).catch(() => {}); close(); } else if (e.target.isConnected) e.target.disabled = false; } }) : null)));
+        one && !one.mine && !reply ? h('button', { class: 'btn sm', text: 'Prendi in carico', onclick: (e) => {
+          clearTimeout(timer);   // mentre scegli la priorità l'avviso resta
+          tkPickSla(e, async (sla) => { if (await tkTakeFromAlert(one.no, sla)) { const it = items[0]; api(`/api/aura/feed/${it.id}/act`, { action: 'ticket_taken' }).catch(() => {}); close(); } }); } }) : null)));
   const timer = setTimeout(close, 30000);
   document.body.append(box);
 }
 function tkAlertCheck(items) {
-  const tickets = items.filter((i) => i.kind === 'ticket');
+  const tickets = items.filter((i) => i.kind === 'ticket' || i.kind === 'ticket_reply');
   const top = tickets.reduce((m, i) => Math.max(m, i.id), 0);
   if (S.tkAlertSeen === undefined) { S.tkAlertSeen = top; return; }   // appena aperta: quello che c'è già sta in «Da Aura»
   const fresh = tickets.filter((i) => i.id > S.tkAlertSeen && i.unread && !i.status);
@@ -3156,7 +3164,7 @@ async function feedAct(it, action, mid, extra) {
 }
 const AURA_KIND = { voce: ['Voce', 'sound'], code: ['Codice', 'key'], mail: ['Posta', 'mail'], suspect: ['Attenzione', 'shield'], trashed: ['Pulizia', 'trash'],
   reminder: ['Promemoria', 'bell'], brief: ['Buongiorno', 'sun'], power: ['PC', 'power'], deadline: ['Scadenza', 'calendar'],
-  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'], ticket: ['Ticket nuovo', 'ticket'] };
+  parcel: ['Pacco', 'box'], checked: ['Posta controllata', 'check'], homebase: ['Homebase', 'home'], ticket: ['Ticket nuovo', 'ticket'], ticket_reply: ['Risposta del cliente', 'ticket'] };
 const PARCEL_STEPS = ['ordinato', 'spedito', 'in consegna', 'consegnato'];
 const hhmm = (sec) => new Date(sec * 1000).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 const shortDay = (iso) => { const d = new Date(iso + 'T12:00:00'); return d.toLocaleDateString('it-IT', { weekday: 'short', day: 'numeric', month: 'numeric' }); };
@@ -3410,13 +3418,26 @@ function feedCard(it) {
       h('div', { class: 'tkn-who' }, who ? h('span', { class: 'tkn-mono', 'aria-hidden': 'true', text: letters || '?' }) : null, who ? h('span', { class: 'tkn-client', text: who }) : null,
         d.priority ? h('span', { class: 'tkn-prio' + (/urg|alt|high|crit/i.test(d.priority) ? ' hot' : ''), text: d.priority }) : null),
       h('div', { class: 'tkn-tear', 'aria-hidden': 'true' }));
-    if (take) chips.push(chip('Prendi in carico', 'check', async () => { if (await tkTakeFromAlert(d.no)) feedAct(it, 'ticket_taken'); }, true));
+    if (take) chips.push(chip('Prendi in carico', 'check', (e) => tkPickSla(e, async (sla) => { if (await tkTakeFromAlert(d.no, sla)) feedAct(it, 'ticket_taken'); }), true));
     chips.push(chip('Apri il ticket', 'ticket', open, !take));
     if (d.no) chips.at(-1).dataset.ticket = d.no;
     if (!done) chips.push(chip('Scarta', 'trash', async () => {
       if (!confirm(`Scarto il ticket ${d.no}? Passa ad «Annullato».`)) return;
       try { await api('/api/crm/ticket/' + encodeURIComponent(d.no), { fields: { ticketstatus: 'Annullato' } }, { method: 'PATCH' }); TKP.key = ''; TKP.folders = null; TK.folders = null; toast(`Ticket ${d.no} scartato`); feedAct(it, 'ticket_taken'); }
       catch (e) { toast(e.message); } }));
+  } else if (it.kind === 'ticket_reply') {
+    // il cliente ha risposto: chi, in quale ticket e cosa ha scritto. Aperto, l'avviso se ne va
+    const open = () => { tkOpenFromAlert(d.no); feedAct(it, 'seen'); }, who = (d.who || 'Il cliente').trim();
+    const letters = who.split(/\s+/).filter((w) => /^[\p{L}\p{N}]/u.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
+    body.length = 0;
+    body.push(h('div', { class: 'tkn-top' }, h('span', { class: 'tkn-new', text: 'Ha risposto il cliente' }), h('span', { class: 'tkn-no mono', text: d.no || '' }), h('span', { class: 'au-time tnum', text: hhmm(it.at) })),
+      h('button', { type: 'button', class: 'tkn-title', 'data-ticket': d.no, text: d.title || title, title: 'Apri il ticket', onclick: open }),
+      h('div', { class: 'tkn-who' }, h('span', { class: 'tkn-mono', 'aria-hidden': 'true', text: letters || '?' }), h('span', { class: 'tkn-client', text: [who, d.client].filter(Boolean).join(' · ') })),
+      d.said ? h('div', { class: 'tkn-said', text: d.said }) : null,
+      h('div', { class: 'tkn-tear', 'aria-hidden': 'true' }));
+    chips.push(chip('Apri il ticket', 'ticket', open, true));
+    if (d.no) chips.at(-1).dataset.ticket = d.no;
+    chips.push(chip('Visto', 'eye', () => feedAct(it, 'seen')));
   } else if (it.kind === 'deadline') {
     const due = d.due ? new Date(d.due + 'T12:00:00') : null, left = d.due ? daysTo(d.due) : null;
     body.push(h('div', { class: 'au-due' },
@@ -3914,6 +3935,15 @@ function tkaBody(v, locked) {
   const hasText = ['close', 'reply', 'note'].includes(v.mode);
   if (hasText && locked) body.append(h('div', { class: 'tka-read' }, ...tkaParts(v.text || '').map((p) => (typeof p === 'string' ? p : tkaAnchor(p)))));
   if (hasText && !locked) body.append(tkaEditor(v, c.field));
+  if (v.mode === 'take' && v.sla_list?.length) {   // la priorità decide lo SLA: senza non si conferma
+    const pick = v.sla_list.find((x) => x.id === v.sla);
+    if (locked) { if (pick) body.append(h('div', { class: 'tka-units', text: `Priorità: ${pick.label}` })); } else {
+      const seg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Priorità' });
+      const paint = () => seg.replaceChildren(...v.sla_list.map((x) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(v.sla === x.id), text: x.label + (x.hours ? ` · ${x.hours} ore` : ''), onclick: () => { v.sla = x.id; paint(); } })));
+      paint();
+      body.append(h('div', { class: 'tka-units' }, 'Priorità', seg));
+    }
+  }
   if (v.mode === 'close') {
     body.append(locked ? (v.units ? h('div', { class: 'tka-units', text: `Unità impiegate: ${v.units}` }) : '')
       : h('label', { class: 'tka-units' }, 'Unità impiegate', h('input', { class: 'ag-in', inputmode: 'decimal', value: v.units || '', placeholder: 'facoltativo', oninput: (e) => { v.units = e.target.value; } })));
@@ -4003,7 +4033,9 @@ function ticketActConfirmEl(chat, m) {
     if (area) card.lastChild.append(tkaAssist(v, area));
     card.lastChild.append(h('div', { class: 'tka-f' }, h('span', area ? { class: 'grow' } : { class: 'tka-hint', text: c.hint }),
       h('button', { class: 'btn sm', text: 'Annulla', disabled: !!S.stream, onclick: () => decide(chat, m, false) }),
-      h('button', { class: 'btn sm tka-send', title: c.hint, html: icon(c.ic, 'sm') + c.send, disabled: !!S.stream, onclick: () => decide(chat, m, true, { text: v.text || '', units: v.units || '' }) })));
+      h('button', { class: 'btn sm tka-send', title: c.hint, html: icon(c.ic, 'sm') + c.send, disabled: !!S.stream, onclick: () => {
+        if (v.mode === 'take' && v.sla_list?.length && !v.sla) { toast('Scegli prima la priorità'); return; }
+        decide(chat, m, true, { text: v.text || '', units: v.units || '', sla: v.sla || '' }); } })));
   } else if (m.status === 'working') {
     card.lastChild.append(h('div', { class: 'tka-st' }, h('span', { class: 'spinner' }), h('span', { text: 'Scrivo nel CRM…' })));
   } else {
@@ -4055,7 +4087,8 @@ function tkActions(t, reload, manage, opts = {}) {
     const btn = (label, cls, onclick) => h('button', { class: 'btn sm tkb-btn ' + cls, text: label, onclick });
     const take = !t.done && (!t.mine || t.status === 'Open') ? btn('Prendi in carico', 'primary', (e) => {
       if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo prendi tu?`)) return;
-      act(e.currentTarget, () => api(url + '/take', {}), 'Ticket preso in carico'); }) : null;
+      const b = e.currentTarget;
+      tkPickSla(e, (sla) => act(b, () => api(url + '/take', { sla }), 'Ticket preso in carico')); }) : null;
     const starred = ['1', 'true'].includes(String(t.fields?.starred));
     const row = h('div', { class: 'tkb-row' }, take,
       t.done ? null : btn(opts.solo ? 'Rispondi al cliente' : 'Rispondi', 'reply', () => open('reply')),
@@ -4078,6 +4111,8 @@ function tkActions(t, reload, manage, opts = {}) {
         ...list.map((x) => h('option', { value: x.value, text: x.label, selected: x.value === value ? true : null })));
       return field(label, sel);
     };
+    const slaPick = () => { const cur = t.fields?.sla || ''; return field('Priorità', h('select', { class: 'ag-in', 'aria-label': 'Priorità', onchange: (e) => act(e.target, () => patch({ sla: e.target.value }), 'Priorità cambiata') },
+      ...(o.sla.some((x) => x.id === cur) ? [] : [h('option', { value: '', text: '—' })]), ...o.sla.map((x) => h('option', { value: x.id, text: x.label + (x.hours ? ` · ${x.hours} ore` : ''), selected: x.id === cur ? true : null })))); };
     const assign = o.groups.length ? field('Assegnato a', h('select', { class: 'ag-in', 'aria-label': 'Assegnato a', onchange: (e) => {
       const val = e.target.value;
       if (t.other_person && !confirm(`Questo ticket è assegnato a ${t.owner}. Lo sposti?`)) { e.target.value = t.assigned; return; }
@@ -4088,7 +4123,7 @@ function tkActions(t, reload, manage, opts = {}) {
     const edit = (label, name, value, type) => !name || !o.known.includes(name) ? null : field(label, h('input', { class: 'ag-in', type: type || 'text', value: value || '', 'aria-label': label,
       onchange: (e) => act(e.target, () => patch({ [name]: e.target.value }), `${label} salvata`) }));
     const fields = h('div', { class: 'tkb-fields' },
-      pick('Stato', 'ticketstatus', t.status), pick('Priorità', 'ticketpriorities', t.fields?.ticketpriorities), pick('Categoria', 'ticketcategories', t.fields?.ticketcategories),
+      pick('Stato', 'ticketstatus', t.status), o.sla?.length ? slaPick() : pick('Priorità', 'ticketpriorities', t.fields?.ticketpriorities), pick('Categoria', 'ticketcategories', t.fields?.ticketcategories),
       pick('Tipo intervento', 'tipo_intervento', t.fields?.tipo_intervento), pick('Gruppo di supporto', 'gruppo_di_supporto', t.fields?.gruppo_di_supporto), assign,
       edit('Data intervento', 'data_intervento', t.fields?.data_intervento, 'date'), edit('Scadenza', 'data_scadenza_ricezione', t.fields?.data_scadenza_ricezione, 'date'),
       edit('Nota', o.note_field, t.fields?.[o.note_field]), edit('Titolo', 'ticket_title', t.title));
@@ -4108,7 +4143,7 @@ async function tkMark(f, kind, refill) {
     refill?.();
   } catch (e) { toast(e.message); }
 }
-function tkMenu(x, y, items) {
+function tkMenu(x, y, items, title) {
   document.querySelector('.tk-menu')?.remove();
   const close = () => { menu.remove(); document.removeEventListener('pointerdown', outside, true); };
   const outside = (e) => { if (!menu.contains(e.target)) close(); };
@@ -4117,7 +4152,7 @@ function tkMenu(x, y, items) {
     if (e.key === 'Escape') close();
     if (e.key === 'ArrowDown') { e.preventDefault(); btns[(at + 1) % btns.length].focus(); }
     if (e.key === 'ArrowUp') { e.preventDefault(); btns[(at - 1 + btns.length) % btns.length].focus(); }
-  } }, ...items.map(([label, fn]) => h('button', { type: 'button', role: 'menuitem', text: label, onclick: () => { close(); fn(); } })));
+  } }, title ? h('div', { class: 'tk-menu-t', text: title }) : null, ...items.map(([label, fn]) => h('button', { type: 'button', role: 'menuitem', text: label, onclick: () => { close(); fn(); } })));
   document.body.append(menu);
   const r = menu.getBoundingClientRect();
   menu.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
@@ -5022,7 +5057,7 @@ async function run(chat) {
   // Degli avvisi di «Da Aura» solo gli ultimi di oggi: per il resto ha gli strumenti. I codici e le pulizie della posta non gli servono mai.
   const askedTk = /\b(tick|tik|tk\b|tk-|crm)/i.test(chat.messages.filter((m) => m.role === 'user').at(-1)?.content || '');   // gli avvisi dei ticket solo se ne sta parlando
   const feedNow = new Set(chat.messages.filter((m) => { const it = m.role === 'feed' && S.feed?.[m.fid];
-    return it && !['code', 'trashed', 'checked', 'power'].includes(it.kind) && (it.kind !== 'ticket' || askedTk) && Date.now() / 1000 - it.at < 86400; }).slice(-5).map((m) => m.fid));
+    return it && !['code', 'trashed', 'checked', 'power'].includes(it.kind) && (!['ticket', 'ticket_reply'].includes(it.kind) || askedTk) && Date.now() / 1000 - it.at < 86400; }).slice(-5).map((m) => m.fid));
   const history = chat.messages.slice(0, -1).filter((m) => ['user', 'assistant', 'tool'].includes(m.role) || (m.role === 'feed' && feedNow.has(m.fid))).map((m) => {
     if (m.role === 'feed') {
       const it = S.feed[m.fid], when = new Date(it.at * 1000).toLocaleString('it-IT', { weekday: 'long', hour: '2-digit', minute: '2-digit' });
