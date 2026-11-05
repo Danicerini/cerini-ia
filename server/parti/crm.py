@@ -684,7 +684,8 @@ TICKET_PHOTO_MIN = 4096   # sotto ci sono le icone di firme e avvisi automatici
 def _ticket_photo_jpeg(data: bytes) -> str:
     """Il formato che vogliono tutti i modelli: JPEG, al massimo 1536 pixel per lato."""
     import io
-    from PIL import Image, ImageOps
+    from PIL import Image, ImageFile, ImageOps
+    ImageFile.LOAD_TRUNCATED_IMAGES = True   # le foto arrivate rovinate dalle mail: meglio mezza che niente
     with Image.open(io.BytesIO(data)) as im:
         im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((1536, 1536))
@@ -777,6 +778,19 @@ def _crm_read_file(name: str, data: bytes) -> tuple[str, list[tuple[str, bytes]]
         return f"(Non riesco a leggere questo file: {_clip(str(e), 120)}.)", []
 
 
+def _crm_inner_photo(name: str, data: bytes) -> bool:
+    """Un'immagine dentro un file allegato: le firme si riconoscono come quelle dei commenti, e non si guardano."""
+    if len(data) < TICKET_PHOTO_MIN:
+        return False
+    try:
+        w_, h_ = _crm_image_size(data)
+        exact, bits = _crm_image_prints(data)
+    except Exception:
+        return True   # non si capisce: la decide il modello, se si apre
+    f = {"id": "", "name": name, "size": len(data), "mime": "image/", "data": data, "w": w_, "h": h_, "exact": exact, "bits": bits}
+    return _crm_mark_for(f) == "photo" or not crm_is_logo(f)
+
+
 async def _tool_crm_files(user: dict, args: dict, request: Request) -> dict:
     # gli allegati dei clienti vanno al modello solo se l'utente lo chiede: lo decide il suo messaggio, non il modello
     if not TICKET_PHOTO_ASK.search(str(args.get("_last_user") or "")):
@@ -809,7 +823,7 @@ async def _tool_crm_files(user: dict, args: dict, request: Request) -> dict:
     parts, inner, left = [], [], _TICKET_FILES_TEXT
     for f in docs:
         text, more = await asyncio.to_thread(_crm_read_file, f["name"], f["data"])
-        inner += [(f"{f['name']}: {n}", d) for n, d in more if len(d) >= TICKET_PHOTO_MIN]
+        inner += [(f"{f['name']}: {n}", d) for n, d in more if _crm_inner_photo(n, d)]
         label = "mail allegata" if _crm_file_ext(f["name"], f["data"]) == "eml" else f"file {f['name']}"
         clipped = text[:min(_TICKET_FILE_TEXT, max(0, left))]
         left -= len(clipped)
