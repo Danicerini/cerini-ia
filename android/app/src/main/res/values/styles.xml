@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Aura" parent="@android:style/Theme.DeviceDefault.DayNight.NoActionBar">
+    <style name="Aura" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
         <item name="android:windowBackground">@color/fondo</item>
         <item name="android:statusBarColor">@color/fondo</item>
         <item name="android:navigationBarColor">@color/fondo</item>
