@@ -2205,15 +2205,17 @@ select.bp-tab { appearance: none; padding-right: 10px; cursor: pointer; }
 .mask-info summary { display: inline-flex; align-items: center; gap: 5px; min-height: 26px; cursor: pointer; }
 .mask-info ul { margin: 4px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
 .mask-info code { color: var(--text-3); font-size: 12px; }
-#queued { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+#queued { max-width: 780px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
 #queued:not(:empty) { margin-bottom: 8px; }
-.qm { display: flex; align-items: center; gap: 8px; max-width: min(88%, 560px); padding: 8px 10px 8px 16px; border-radius: 18px; background: var(--raised); font-size: 15px; animation: qmIn .18s ease-out; }
+.qm { display: flex; align-items: center; gap: 6px; min-height: 42px; padding: 6px 8px 6px 18px; border: 1px solid var(--border); border-radius: 16px; background: var(--raised); font-size: 14px; animation: qmIn .18s ease-out; }
 @keyframes qmIn { from { opacity: 0; transform: translateY(4px); } }
-.qm-t { flex: 1; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+.qm-t { flex: 1; min-width: 0; padding: 0; border: 0; background: none; color: var(--text); font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .qm.sent .qm-t { cursor: default; color: var(--text-2); }
-.qm .spinner { flex: none; }
-.qm-x { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer; }
+.qm-now { flex: none; height: 30px; padding: 0 14px; border: 0; border-radius: 99px; background: var(--accent-soft); color: var(--accent); font: inherit; font-size: 13px; font-weight: 550; white-space: nowrap; cursor: pointer; }
+.qm-now:hover { background: color-mix(in oklch, var(--accent) 24%, transparent); }
+.qm-x { flex: none; display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: 50%; background: none; color: var(--text-3); cursor: pointer; }
 .qm-x:hover { background: var(--hover); color: var(--text); }
+.qm-s { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px 0 4px; font-size: 12.5px; color: var(--text-3); white-space: nowrap; }
 #brainResize { display: none; }
 .bp-cal { max-width: 340px; margin-left: auto; margin-right: auto; }
 @media (min-width: 821px) {
