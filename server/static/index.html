@@ -1310,7 +1310,25 @@ button.tool-card.link:hover { border-color: var(--accent); color: var(--text); }
   .seg button { height: 38px; }
   #scroller, #settings, #memoryView, #mailView, #agendaView, #chatList { overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 }
-@media (min-width: 821px) { #newChatTop { display: none; } }
+@media (min-width: 821px) { #newChatTop, .side-phone { display: none; } }
+/* Telefono: pulito. Niente saluto né scritte fisse, in alto solo menu, modello e nuova chat; la casella è una riga sola in fondo, gli strumenti stanno nel menu */
+@media (max-width: 820px) {
+  #hero, #calChip, #projChip, #brainToggle, #modelDot, #modelName .mn-ic, #privBtn, #thinkBtn, .hint.quiet { display: none !important; }
+  #main.empty #hero { display: none !important; }
+  .topbar .grow { display: none; }
+  #main.empty .center-wrap { justify-content: flex-end; padding-bottom: 0; }
+  #main.empty #scroller { flex: 1 1 auto; }
+  .composer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 2px; padding: 5px 6px; border-radius: 28px; }
+  .composer-bar { display: contents; }
+  .composer-bar .grow { display: none; }
+  .composer .attachments { flex: 0 0 100%; order: -1; }
+  #attachBtn { order: 0; }
+  .composer textarea { flex: 1 1 0; width: auto; min-width: 0; order: 1; padding: 9px 6px; min-height: 40px; }
+  #micBtn { order: 2; } #voiceBtn { order: 3; } #sendBtn { order: 4; }
+  #sendBtn:disabled { display: none; }
+  .composer:has(#sendBtn:not(:disabled)) #micBtn, .composer:has(#sendBtn:not(:disabled)) #voiceBtn { display: none; }
+  .composer .rec-bar, .composer .rec-live, .composer .voice-bar { flex: 0 0 100%; }
+}
 @media (max-width: 400px) {
   .composer-bar .toggle { padding: 0 10px; }
   .mail-wrap .set-head h1 small { display: block; margin: 2px 0 0; }
@@ -2366,6 +2384,7 @@ body:has(#main.tickets-open) #brainResize { display: none; }   /* nei ticket il 
     </div>
     <button class="new-chat" id="newChat" title="Nuova chat"><span data-icon="edit"></span>Nuova chat<kbd>Ctrl ⇧ O</kbd></button>
     <button class="side-link" id="auraBtn" title="Da Aura"><span data-icon="bell"></span>Da Aura<span class="n" id="auraCount"></span></button>
+    <button class="side-link side-phone" id="brainSide" title="Cervello"><span data-icon="brain"></span>Cervello</button>
     <button class="side-link" id="memoryBtn" title="Memoria"><span data-icon="brain"></span>Memoria<span class="n" id="memoryCount"></span></button>
     <button class="side-link hidden" id="mailBtn" title="Posta"><span data-icon="mail"></span>Posta<span class="n" id="mailCount"></span></button>
     <button class="side-link hidden" id="agendaBtn" title="Agenda"><span data-icon="calendar"></span>Agenda</button>

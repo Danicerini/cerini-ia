@@ -8,5 +8,5 @@
         <item name="android:navigationBarColor">@color/fondo</item>
     </style>
     <color name="fondo">#141518</color>
-    <color name="icona">#2F6FE0</color>
+    <color name="icona">#1F2024</color>
 </resources>

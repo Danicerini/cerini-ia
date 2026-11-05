@@ -3523,6 +3523,7 @@ function toggleBrain(force) {
   if (on) renderBrainPanel();
 }
 $('#brainToggle').onclick = () => toggleBrain();
+$('#brainSide').onclick = () => { closeSide(); toggleBrain(true); };
 $('#brainScrim').onclick = () => toggleBrain(false);
 
 async function renderBrainPanel() {

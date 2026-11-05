@@ -4,14 +4,17 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.DownloadManager;
+import android.app.PendingIntent;
 import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInstaller;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
 import android.provider.OpenableColumns;
@@ -35,6 +38,10 @@ import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -49,6 +56,10 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> pendingFiles;
     private PermissionRequest pendingMic;
     private String pendingShare;
+    private volatile int readyUpdate = -1;
+    private boolean checking;
+    private volatile boolean stopped;
+    static volatile Intent confirmUpdate;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -297,6 +308,122 @@ public class MainActivity extends Activity {
             web.goBack();
         } else {
             super.onBackPressed();
+        }
+    }
+
+    // ---- Aggiornamento da solo: l'APK nuovo si scarica in sottofondo e si installa quando esci dall'app, così non ti interrompe mai.
+    // Android lo fa senza chiedere niente solo se l'installazione di prima l'ha fatta l'app stessa: la prima volta chiede una conferma.
+    @Override
+    protected void onResume() {
+        super.onResume();
+        stopped = false;
+        Intent ask = confirmUpdate;
+        if (ask != null) {
+            confirmUpdate = null;
+            ask.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                startActivity(ask);
+            } catch (ActivityNotFoundException ignored) {
+            }
+        }
+        checkUpdate();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        stopped = true;
+        installUpdate();
+    }
+
+    private HttpURLConnection open(String path) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(home + path).openConnection();
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(60000);
+        c.setRequestProperty("Cookie", String.valueOf(CookieManager.getInstance().getCookie(home)));
+        return c;
+    }
+
+    private void checkUpdate() {
+        SharedPreferences prefs = getSharedPreferences("aura", MODE_PRIVATE);
+        long now = System.currentTimeMillis();
+        if (home.isEmpty() || checking || readyUpdate >= 0 || now - prefs.getLong("update_check", 0) < 6 * 3600 * 1000L) {
+            return;
+        }
+        checking = true;
+        new Thread(() -> {
+            int id = -1;
+            PackageInstaller installer = getPackageManager().getPackageInstaller();
+            try {
+                HttpURLConnection info = open("/api/app/android/info");
+                if (info.getResponseCode() != 200) {
+                    return;   // non ancora entrato: si riprova alla prossima apertura
+                }
+                JSONObject d;
+                try (InputStream in = info.getInputStream(); ByteArrayOutputStream text = new ByteArrayOutputStream()) {
+                    copy(in, text);
+                    d = new JSONObject(new String(text.toByteArray(), StandardCharsets.UTF_8));
+                }
+                prefs.edit().putLong("update_check", now).apply();
+                if (!d.optBoolean("available") || d.optInt("version") <= BuildConfig.VERSION_CODE) {
+                    return;
+                }
+                for (PackageInstaller.SessionInfo old : installer.getMySessions()) {
+                    installer.abandonSession(old.getSessionId());
+                }
+                PackageInstaller.SessionParams params = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+                params.setAppPackageName(getPackageName());
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+                }
+                id = installer.createSession(params);
+                HttpURLConnection apk = open("/api/app/android");
+                if (apk.getResponseCode() != 200) {
+                    throw new IllegalStateException("download");
+                }
+                try (PackageInstaller.Session session = installer.openSession(id); InputStream in = apk.getInputStream();
+                     OutputStream out = session.openWrite("aura.apk", 0, -1)) {
+                    copy(in, out);
+                    session.fsync(out);
+                }
+                readyUpdate = id;
+                id = -1;
+                runOnUiThread(() -> {
+                    if (stopped) {   // sei uscito mentre scaricava
+                        installUpdate();
+                    }
+                });
+            } catch (Exception e) {
+                if (id >= 0) {
+                    try {
+                        installer.abandonSession(id);
+                    } catch (Exception ignored) {
+                    }
+                }
+            } finally {
+                checking = false;
+            }
+        }).start();
+    }
+
+    private static void copy(InputStream in, OutputStream out) throws Exception {
+        byte[] buf = new byte[65536];
+        int n;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+        }
+    }
+
+    private void installUpdate() {
+        int id = readyUpdate;
+        if (id < 0) {
+            return;
+        }
+        readyUpdate = -1;
+        try (PackageInstaller.Session session = getPackageManager().getPackageInstaller().openSession(id)) {
+            PendingIntent done = PendingIntent.getBroadcast(this, 0, new Intent(this, UpdateReceiver.class), PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
+            session.commit(done.getIntentSender());
+        } catch (Exception ignored) {
         }
     }
 
