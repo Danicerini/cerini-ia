@@ -987,7 +987,11 @@ async def crm_ticket_mails_api(ref: str, _: dict = Depends(require_user)):
         except (ValueError, TypeError, httpx.HTTPError):
             return None
     found = await asyncio.gather(*(one(c, fid) for c in t["comments"] for fid in c.get("files") or []))
-    return {"mails": [x for x in found if x]}
+    mails = {}   # la stessa mail può stare in due commenti: si mostra una volta
+    for x in found:
+        if x:
+            mails.setdefault(dict(x["main"]).get("Message-ID") or x["id"], x)
+    return {"mails": list(mails.values())}
 
 
 @app.get("/api/crm/ticket/{ref}/extra")
