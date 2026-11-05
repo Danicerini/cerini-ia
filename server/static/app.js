@@ -1251,12 +1251,17 @@ function renderComposer() {
   pb.title = privOn() ? 'Riservato acceso: i dati personali partono coperti verso il modello' : 'Riservato spento: i dati partono in chiaro verso il modello';
   const att = $('#attachments');
   S.files = S.files || [];
-  // i messaggi scritti mentre Aura risponde: partono uno alla volta, appena ha finito
+  // i messaggi scritti mentre Aura lavora: stanno sopra la casella. Partono da soli quando ha finito, oppure subito con «Invia ora», senza fermarla
   let queued = $('#queued');
-  if (!queued) { queued = h('div', { id: 'queued' }); att.before(queued); }
-  const waiting = S.stream?.queue || [];
-  queued.replaceChildren(...waiting.map((q, i) => h('div', { class: 'queued' }, h('span', { class: 'queued-l', text: 'Dopo questa risposta' }), h('span', { class: 'queued-t', text: q.content || 'Allegato' }),
-    h('button', { type: 'button', 'aria-label': 'Togli dalla coda', html: icon('x', 'sm'), onclick: () => { waiting.splice(i, 1); renderComposer(); } }))));
+  if (!queued) { queued = h('div', { id: 'queued' }); $('#composer').before(queued); }
+  const waiting = S.stream?.queue || [], nudgeChat = S.stream?.chatId;
+  queued.replaceChildren(...waiting.map((q) => h('div', { class: 'qm' + (q.sent ? ' sent' : '') },
+    h('button', { type: 'button', class: 'qm-t', disabled: q.sent ? true : null, title: q.sent ? '' : 'Tocca per correggerlo', text: q.content || (q.files?.length ? q.files[0].name : 'Allegato'), onclick: () => {
+      waiting.splice(waiting.indexOf(q), 1);
+      input.value = q.content + (input.value ? '\n' + input.value : ''); S.attachments = q.images || []; S.files = q.files || []; autosize(); renderComposer(); input.focus(); } }),
+    q.sent ? h('span', { class: 'qm-s' }, h('span', { class: 'spinner' }), 'La legge appena può')
+      : h('button', { type: 'button', class: 'qm-now', text: 'Invia ora', title: 'Aura lo legge mentre lavora, senza fermarsi', onclick: () => nudgeSend(nudgeChat, q) }),
+    q.sent ? null : h('button', { type: 'button', class: 'qm-x', 'aria-label': 'Togli dalla coda', html: icon('x', 'sm'), onclick: () => { waiting.splice(waiting.indexOf(q), 1); renderComposer(); } }))));
   att.classList.toggle('hidden', !S.attachments.length && !S.files.length);
   att.replaceChildren(...S.attachments.map((src, i) => h('div', { class: 'att' }, h('img', { src, alt: '' }),
     h('button', { type: 'button', 'aria-label': 'Rimuovi immagine', html: icon('x'), onclick: () => { S.attachments.splice(i, 1); const im = S.files.filter((f) => f.image)[i]; if (im) S.files.splice(S.files.indexOf(im), 1); renderComposer(); } }))),
@@ -4892,6 +4897,16 @@ function regenerate(chat) {
   run(chat);
 }
 
+// «Invia ora»: entra nel turno in corso. Se il turno è già finito, o qualcosa va storto, resta in coda e parte come messaggio normale
+async function nudgeSend(chatId, q) {
+  q.sent = true; q.nid = q.nid || uid(); renderComposer();
+  try {
+    const m = { content: q.content || '', ...(q.images?.length ? { images: q.images.map((d) => d.slice(d.indexOf(',') + 1)) } : {}), ...(q.files?.length ? { files: q.files.map((f) => ({ id: f.id, name: f.name, ...(f.image ? { image: true } : {}) })) } : {}) };
+    const r = await (await api(`/api/chat/${encodeURIComponent(chatId)}/nudge`, { id: q.nid, message: m })).json();
+    if (!r.live) q.sent = false;
+  } catch (e) { q.sent = false; toast(e.message); }
+  renderComposer();
+}
 async function run(chat) {
   chat.messages = chat.messages.filter((m) => m.role !== 'error');
   let reply = { role: 'assistant', content: '', thinking: '', _streaming: true };
@@ -4958,6 +4973,19 @@ async function run(chat) {
           continue;
         }
         if (d.event === 'ping') continue;
+        if (d.event === 'nudge') {   // l'ha letto adesso: nella chat compare qui, tra quello che ha già fatto e quello che fa dopo
+          const at = entry.queue.findIndex((q) => q.nid === d.id);
+          if (at >= 0) {
+            const [q] = entry.queue.splice(at, 1);
+            delete q.nid; delete q.sent;
+            if (reply) { delete reply._streaming; if (!reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1); }
+            chat.messages.push(q);
+            reply = { role: 'assistant', content: '', thinking: '', _streaming: true };
+            chat.messages.push(reply); thinkStart = 0;
+            if (S.currentId === chat.id) { renderThread(); renderComposer(); keepFollowing(); }
+          }
+          continue;
+        }
         if (d.event === 'project') { chat.project = d.project || null; if (S.currentId === chat.id) renderProjectChip(); continue; }
         if (d.event === 'tool_result') {
           if (reply && reply._streaming && !reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1);
@@ -5018,6 +5046,8 @@ async function run(chat) {
   if (S.currentId === chat.id) voiceStreamDone(chat);
   const next = entry.queue.shift();
   if (!next) return;
+  entry.queue.forEach((q) => { q.sent = false; delete q.nid; });
+  delete next.sent; delete next.nid;
   if (ended !== 'ok') {   // fermata o andata male: quello che aspettava torna da scrivere, non parte da solo
     if (S.currentId === chat.id && !input.value.trim()) { input.value = [next, ...entry.queue].map((m) => m.content).filter(Boolean).join('\n'); S.attachments = next.images || []; S.files = next.files || []; autosize(); renderComposer(); }
     return;

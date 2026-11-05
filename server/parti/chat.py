@@ -820,6 +820,26 @@ def ev(**kw) -> str:
     return json.dumps(kw, ensure_ascii=False) + "\n"
 
 
+# «Invia ora»: un messaggio scritto mentre Aura lavora entra nel turno in corso, senza fermarlo. Sta qui finché il ciclo non lo prende, al primo passaggio libero
+_CHAT_LIVE, _CHAT_INBOX = {}, {}
+
+
+class ChatNudge(BaseModel):
+    id: str
+    message: dict
+
+
+@app.post("/api/chat/{chat_id}/nudge")
+async def chat_nudge(chat_id: str, body: ChatNudge, user: dict = Depends(require_user)):
+    """Se quella chat non sta lavorando risponde live: false, e il messaggio resta in coda sul browser: non si perde mai."""
+    key = (user["id"], chat_id)
+    if not _CHAT_LIVE.get(key):
+        return {"live": False}
+    m = {k: body.message[k] for k in ("content", "images", "files") if body.message.get(k)}
+    _CHAT_INBOX.setdefault(key, []).append({"role": "user", "content": str(m.pop("content", "")), **m, "nid": body.id})
+    return {"live": True}
+
+
 @app.post("/api/chat")
 async def chat(body: ChatReq, request: Request, user: dict = Depends(require_user)):
     if not is_owner(user["id"]):
@@ -827,6 +847,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
     if is_cloud(body.model) and cloud_name() and body.model != cloud_name():
         body.model = cloud_name()   # chat aperta con un modello cloud di prima: si usa (e si dice) quello impostato adesso
     active_model_save(user, body.model)
+    inbox = (user["id"], body.chat_id)
 
     async def stream():
         try:
@@ -932,7 +953,16 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
             said = ""            # testo gia' mostrato prima di uno strumento
             said_all = ""        # tutto il testo scritto insieme agli strumenti in questo turno
             seen_images = []
-            for _round in range(12 if is_cloud(body.model) else 6):   # Gemma va fermata prima; un modello forte può fare più passaggi
+            rounds = 12 if is_cloud(body.model) else 6   # Gemma va fermata prima; un modello forte può fare più passaggi
+            for _round in range(rounds):
+                for nudge in _CHAT_INBOX.pop(inbox, []):   # scritto mentre lavorava: lo legge adesso e va avanti
+                    nid = nudge.pop("nid")
+                    body.messages.append(nudge)
+                    said, answered, retried = "", False, False
+                    told = files_for_prompt(user, [nudge])[0]
+                    msgs.append({**told, "content": "[Scritto dall'utente mentre stavi lavorando: non lasciare a metà quello che stavi facendo. Se chiede una cosa rispondi, "
+                                                    f"se aggiunge un dettaglio tienine conto, poi continua.]\n{told.get('content') or ''}"})
+                    yield ev(event="nudge", id=nid)
                 payload = {"model": body.model, "messages": msgs, "stream": True, "keep_alive": KEEP_ALIVE}
                 print(f"Chat: utente {user['id']}, modello {body.model}, giro {_round + 1}", flush=True)   # per poter controllare che modello ha risposto
                 if body.think is not None:
@@ -1041,6 +1071,9 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                                 result = {"content": f"Non eseguito: {e}", "display": "Non sono riuscito a salvarlo"}
                             yield ev(event="tool_result", message={"role": "tool", "tool_name": name, "content": result["content"]},
                                      display=result["display"], undo=result.get("undo"), auto=True, open=result.get("open"))
+                    if _CHAT_INBOX.get(inbox) and _round < rounds - 1:   # ha scritto mentre finiva: si risponde nello stesso turno
+                        msgs.append({"role": "assistant", "content": content})
+                        continue
                     return
                 calls = [{"function": {"name": c["function"]["name"], "arguments": _parse_args(c["function"].get("arguments"))}}
                          for c in calls if c.get("function", {}).get("name")]
@@ -1217,7 +1250,18 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
         except httpx.HTTPError as e:
             yield ev(error=f"PC non raggiungibile: {e}")
 
-    return StreamingResponse(stream(), media_type="application/x-ndjson",
+    async def live():
+        _CHAT_LIVE[inbox] = _CHAT_LIVE.get(inbox, 0) + 1
+        try:
+            async for x in stream():
+                yield x
+        finally:   # quello che non ha fatto in tempo a leggere lo rimanda il browser, come messaggio normale
+            _CHAT_LIVE[inbox] -= 1
+            if not _CHAT_LIVE[inbox]:
+                _CHAT_LIVE.pop(inbox, None)
+                _CHAT_INBOX.pop(inbox, None)
+
+    return StreamingResponse(live(), media_type="application/x-ndjson",
                              headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
