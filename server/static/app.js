@@ -1516,12 +1516,10 @@ async function refreshMemoryCount() {
 }
 
 function brainGraph(data, onOpen) {
-  // grafo come quello di Obsidian, in 3D (si ruota trascinando) o in 2D (si sposta): le forze dispongono i pallini, la scelta resta salvata
+  // Grafo come quello di Obsidian, in 2D o in 3D. La disposizione è automatica: le schede si respingono, i collegamenti tirano (meno se un pallino ne ha tanti,
+  // così i più collegati non ammucchiano tutto), e chi è collegato tra sé forma un gruppo. In 2D il grafo è vivo: trascinando un pallino i vicini lo seguono.
   const box = h('div', { class: 'mem-map graph' });
-  const N = data.nodes.map((n, i) => {   // partenza su una sfera (spirale di Fibonacci): niente pallini sovrapposti
-    const k = (i + 0.5) / Math.max(1, data.nodes.length), phi = Math.acos(1 - 2 * k), th = Math.PI * (1 + Math.sqrt(5)) * i, r = 80;
-    return { ...n, i, x: r * Math.sin(phi) * Math.cos(th), y: r * Math.sin(phi) * Math.sin(th), z: r * Math.cos(phi), vx: 0, vy: 0, vz: 0 };
-  });
+  const N = data.nodes.map((n, i) => ({ ...n, i, la: 0 }));
   const byId = new Map(N.map((n) => [n.id, n]));
   const L = data.links.map(([a, b]) => [byId.get(a), byId.get(b)]).filter(([a, b]) => a && b);
   const nb = new Map(N.map((n) => [n, new Set()]));
@@ -1529,74 +1527,135 @@ function brainGraph(data, onOpen) {
   if (!N.length) { box.append(h('div', { class: 'mem-empty-map', text: 'Il cervello è ancora vuoto.' })); return { el: box, stop() {} }; }
   const cv = h('canvas'), tip = h('div', { class: 'mem-tip hidden' });
   box.append(cv, tip);
-  const size = (n) => n.kind === 'diary' ? 3.2 : n.kind === 'me' ? 8.5 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2);
+  const size = (n) => (n.kind === 'diary' ? 3.2 : n.kind === 'me' ? 8.5 : 4.5 + Math.min(7, Math.sqrt(n.deg) * 2));
+  const deg = (n) => Math.max(1, nb.get(n).size);
+
+  // i gruppi: ogni scheda prende il gruppo più frequente tra i vicini. I giorni del diario e l'utente toccano tutto, quindi non contano
+  const group = new Map(N.map((n) => [n, n.i]));
+  const counts = (n) => { const c = new Map(); nb.get(n).forEach((m) => { if (m.kind !== 'diary' && m.kind !== 'me') c.set(group.get(m), (c.get(group.get(m)) || 0) + 1); }); return c; };
+  for (let k = 0; k < 8; k++) N.forEach((n) => {
+    if (n.kind === 'diary' || n.kind === 'me') return;
+    let best = group.get(n), most = 0;
+    [...counts(n)].sort((x, y) => x[0] - y[0]).forEach(([g, c]) => { if (c > most) { most = c; best = g; } });
+    group.set(n, best);
+  });
+  const groups = [...new Set(N.filter((n) => n.kind !== 'diary' && n.kind !== 'me').map((n) => group.get(n)))];
+
+  const PHI = Math.PI * (3 - Math.sqrt(5));
+  // una simulazione per 2D e 3D: dim = 2 lascia z a zero
+  const makeSim = (dim) => {
+    const P = N.map(() => ({ x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, fx: null, fy: null }));
+    const R = 90 + 26 * Math.sqrt(N.length);
+    groups.forEach((g, gi) => {   // ogni gruppo parte in un suo posto: su un cerchio, o su una sfera
+      const k = (gi + 0.5) / groups.length, ph = Math.acos(1 - 2 * k), th = gi * PHI;
+      const cx = dim === 2 ? R * 0.7 * Math.cos(th) : R * 0.7 * Math.sin(ph) * Math.cos(th), cy = dim === 2 ? R * 0.7 * Math.sin(th) : R * 0.7 * Math.sin(ph) * Math.sin(th), cz = dim === 2 ? 0 : R * 0.7 * Math.cos(ph);
+      N.filter((n) => group.get(n) === g && n.kind !== 'diary' && n.kind !== 'me').forEach((n, i) => {
+        const a = i * PHI, r = 12 * Math.sqrt(i + 1);
+        P[n.i].x = cx + r * Math.cos(a); P[n.i].y = cy + r * Math.sin(a); P[n.i].z = dim === 2 ? 0 : cz + r * Math.sin(a * 2) * 0.6;
+      });
+    });
+    N.filter((n) => n.kind === 'diary').forEach((n, i) => {   // un giorno parte vicino alle schede di cui parla
+      const near = [...nb.get(n)].filter((m) => m.kind !== 'diary');
+      const a = i * PHI, avg = (key) => (near.length ? near.reduce((t, m) => t + P[m.i][key], 0) / near.length : 0);
+      P[n.i].x = avg('x') + 14 * Math.cos(a); P[n.i].y = avg('y') + 14 * Math.sin(a); P[n.i].z = dim === 2 ? 0 : avg('z');
+    });
+    const charge = (n) => (n.kind === 'diary' ? -70 : n.kind === 'me' ? -300 : -(260 + 60 * Math.sqrt(deg(n))));
+    const gather = (n) => (n.kind === 'me' ? 0.12 : n.kind === 'diary' ? 0.03 : 0.045);   // un po' verso il centro: tu stai in mezzo, nessuno scappa
+    const tick = (alpha) => {
+      for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
+        const p = P[i], q = P[j]; let dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z, d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < 1) { dx = (i - j) * 0.3 + 0.1; dy = 0.2; dz = 0; d2 = dx * dx + dy * dy; }
+        // si respingono
+        const fi = charge(N[j]) * alpha / d2, fj = charge(N[i]) * alpha / d2;
+        p.vx += dx * fi; p.vy += dy * fi; p.vz += dz * fi; q.vx -= dx * fj; q.vy -= dy * fj; q.vz -= dz * fj;
+        // non si toccano: lo spazio per il pallino e un po' per il nome
+        const gap = size(N[i]) + size(N[j]) + (N[i].kind === 'diary' || N[j].kind === 'diary' ? 8 : 26);
+        if (d2 < gap * gap) { const d = Math.sqrt(d2), f = (gap - d) / d * 0.35; p.vx -= dx * f; p.vy -= dy * f; p.vz -= dz * f; q.vx += dx * f; q.vy += dy * f; q.vz += dz * f; }
+      }
+      L.forEach(([a, b]) => {
+        const p = P[a.i], q = P[b.i], diary = a.kind === 'diary' || b.kind === 'diary', me = a.kind === 'me' || b.kind === 'me';
+        const dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z, d = Math.hypot(dx, dy, dz) || 1;
+        const want = diary ? 60 : me ? 130 : group.get(a) === group.get(b) ? 75 : 120;
+        const k = (diary ? 0.35 : me ? 0.4 : 1) / Math.min(deg(a), deg(b));
+        const f = (d - want) / d * alpha * k, wa = deg(b) / (deg(a) + deg(b)), wb = 1 - wa;   // si muove di più quello con meno collegamenti
+        p.vx += dx * f * wa; p.vy += dy * f * wa; p.vz += dz * f * wa; q.vx -= dx * f * wb; q.vy -= dy * f * wb; q.vz -= dz * f * wb;
+      });
+      P.forEach((p, i) => {
+        const g = gather(N[i]) * alpha;
+        p.vx -= p.x * g; p.vy -= p.y * g; p.vz -= p.z * g;
+        p.vx *= 0.6; p.vy *= 0.6; p.vz *= 0.6;
+        if (p.fx != null) { p.x = p.fx; p.y = p.fy; p.vx = p.vy = 0; } else { p.x += p.vx; p.y += p.vy; }
+        if (dim === 3) p.z += p.vz;
+      });
+    };
+    let alpha = 1;
+    for (let k = 0; k < 320; k++) { tick(alpha); alpha *= 0.986; }
+    const reach = { x: Math.max(40, ...P.map((p) => Math.abs(p.x))), y: Math.max(40, ...P.map((p) => Math.abs(p.y))), all: Math.max(40, ...P.map((p) => Math.hypot(p.x, p.y, p.z))) };
+    const sim = { P, tick, reach, alpha: 0, step() { if (sim.alpha > 0.004) { tick(sim.alpha); sim.alpha *= 0.975; } } };
+    return sim;
+  };
+  const sims = {};
+  const sim = (m) => (sims[m] = sims[m] || makeSim(m === '2d' ? 2 : 3));   // ognuna si calcola la prima volta che serve
+
   let rx = -0.3, ry = 0, zoom = 1, auto = true, drag = null, hover = null, raf = 0, last = performance.now(), proj = [];
-  let mode = pref.get('graphMode', '3d') === '2d' ? '2d' : '3d', panX = 0, panY = 0, ext2 = 0, scale = 1;
-  const step = () => {   // si respingono tutti, i collegamenti tirano, il centro trattiene
-    for (let i = 0; i < N.length; i++) for (let j = i + 1; j < N.length; j++) {
-      const a = N[i], b = N[j]; let dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z; const d2 = dx * dx + dy * dy + dz * dz || 0.01, f = 1600 / d2;
-      dx *= f; dy *= f; dz *= f; a.vx += dx; a.vy += dy; a.vz += dz; b.vx -= dx; b.vy -= dy; b.vz -= dz;
-    }
-    L.forEach(([a, b]) => {
-      const dx = b.x - a.x, dy = b.y - a.y, dz = b.z - a.z, d = Math.hypot(dx, dy, dz) || 1, want = a.kind === 'diary' || b.kind === 'diary' ? 40 : 60;
-      const f = (d - want) * 0.05 / d; a.vx += dx * f; a.vy += dy * f; a.vz += dz * f; b.vx -= dx * f; b.vy -= dy * f; b.vz -= dz * f;
-    });
-    N.forEach((n) => {
-      n.vx -= n.x * 0.01; n.vy -= n.y * 0.01; n.vz -= n.z * 0.01;
-      n.x += Math.max(-15, Math.min(15, n.vx)); n.y += Math.max(-15, Math.min(15, n.vy)); n.z += Math.max(-15, Math.min(15, n.vz));
-      n.vx *= 0.5; n.vy *= 0.5; n.vz *= 0.5;
-    });
-  };
-  for (let k = 0; k < 600; k++) step();
-  const ext = Math.max(40, ...N.map((n) => Math.hypot(n.x, n.y, n.z)));   // quanto e' grande la nuvola: serve a farla stare nel riquadro
-  // la disposizione in piano si calcola solo la prima volta che serve: stesse forze, tutto schiacciato su z = 0. Le posizioni 3D restano com'erano
-  const layout2d = () => {
-    if (ext2) return;
-    const keep = N.map((n) => [n.x, n.y, n.z]);
-    N.forEach((n, i) => { const a = i * 2.39996, r = 8 * Math.sqrt(i + 1); n.x = r * Math.cos(a); n.y = r * Math.sin(a); n.z = 0; n.vx = n.vy = n.vz = 0; });
-    for (let k = 0; k < 500; k++) { step(); N.forEach((n) => { n.z = 0; n.vz = 0; }); }
-    N.forEach((n, i) => { n.px = n.x; n.py = n.y; [n.x, n.y, n.z] = keep[i]; });
-    ext2 = Math.max(40, ...N.map((n) => Math.hypot(n.px, n.py)));
-  };
-  if (mode === '2d') layout2d();
+  let mode = pref.get('graphMode', '3d') === '2d' ? '2d' : '3d', panX = 0, panY = 0, scale = 1;
+  sim(mode);
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
   const draw = (now) => {
     const dt = Math.min(64, now - last); last = now;
     if (auto && !drag && mode === '3d') ry += dt * 0.00015;
+    if (mode === '2d') sims['2d'].step();
     const dpr = devicePixelRatio || 1, w = box.clientWidth, hh = box.clientHeight;
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hh * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hh * dpr); }
     const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hh);
-    const S = Math.min(w, hh) * 0.42 / ext * zoom, cam = ext * 3.2, cx = w / 2, cy = hh / 2;
-    const cr = Math.cos(rx), sr = Math.sin(rx), cyw = Math.cos(ry), syw = Math.sin(ry);
-    scale = Math.min(w, hh) * 0.46 / (ext2 || 1) * zoom;
-    proj = mode === '2d' ? N.map((n) => ({ n, sx: cx + panX + n.px * scale, sy: cy + panY + n.py * scale, f: 1, depth: 1 })) : N.map((n) => {
-      const x1 = n.x * cyw + n.z * syw, z1 = -n.x * syw + n.z * cyw, y1 = n.y * cr - z1 * sr, z2 = n.y * sr + z1 * cr;
-      const f = cam / (cam - z2);   // prospettiva: quello davanti e' piu' grande
-      return { n, sx: cx + x1 * f * S, sy: cy + y1 * f * S, f, depth: (z2 / ext + 1) / 2 };
-    });
+    const cx = w / 2, cy = hh / 2, S0 = sims[mode];
+    if (mode === '2d') {
+      scale = Math.min((w - 70) / (2 * S0.reach.x), (hh - 60) / (2 * S0.reach.y)) * zoom;
+      proj = N.map((n) => ({ n, sx: cx + panX + S0.P[n.i].x * scale, sy: cy + panY + S0.P[n.i].y * scale, f: 1, depth: 1 }));
+    } else {
+      const ext = S0.reach.all, S = Math.min(w, hh) * 0.5 / ext * zoom, cam = ext * 3.2;
+      const cr = Math.cos(rx), sr = Math.sin(rx), cyw = Math.cos(ry), syw = Math.sin(ry);
+      proj = N.map((n) => {
+        const p = S0.P[n.i], x1 = p.x * cyw + p.z * syw, z1 = -p.x * syw + p.z * cyw, y1 = p.y * cr - z1 * sr, z2 = p.y * sr + z1 * cr;
+        const f = cam / (cam - z2);   // prospettiva: quello davanti e' piu' grande
+        return { n, sx: cx + x1 * f * S, sy: cy + y1 * f * S, f, depth: (z2 / ext + 1) / 2 };
+      });
+    }
     const P = new Map(proj.map((p) => [p.n, p]));
     const lit = hover ? new Set([hover, ...nb.get(hover)]) : null;
-    const line = css('--text-3'), text = css('--text'), accent = css('--accent');
+    const line = css('--text-3'), text = css('--text'), accent = css('--accent'), back = css('--raised');
     g.lineWidth = 1;
     L.forEach(([a, b]) => {
       const A = P.get(a), B = P.get(b), on = lit && (a === hover || b === hover);
+      const quiet = a.kind === 'diary' || b.kind === 'diary' ? 0.35 : 1;   // i legami col diario più leggeri: si vede prima la struttura delle schede
       g.strokeStyle = on ? accent : line;
-      g.globalAlpha = lit ? (on ? 0.9 : 0.05) : 0.12 + 0.3 * (A.depth + B.depth) / 2;
+      g.globalAlpha = lit ? (on ? 0.9 : 0.05) : (0.12 + 0.3 * (A.depth + B.depth) / 2) * quiet;
       g.beginPath(); g.moveTo(A.sx, A.sy); g.lineTo(B.sx, B.sy); g.stroke();
     });
-    g.font = '11.5px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top';
+    const radius = (p) => size(p.n) * p.f * Math.sqrt(zoom) * (p.n === hover ? 1.35 : 1);
     [...proj].sort((p, q) => p.depth - q.depth).forEach((p) => {   // da dietro in avanti
-      const n = p.n, r = size(n) * p.f * Math.sqrt(zoom) * (n === hover ? 1.35 : 1);
-      const dim = lit && !lit.has(n);
+      const n = p.n, dim = lit && !lit.has(n);
       g.globalAlpha = dim ? 0.12 : 0.35 + 0.65 * p.depth;
       g.fillStyle = (GRAPH_KINDS[n.kind] || GRAPH_KINDS.things)[1];
-      g.beginPath(); g.arc(p.sx, p.sy, r, 0, Math.PI * 2); g.fill();
-      if (n.kind !== 'diary' || (lit && lit.has(n)) || zoom > 1.8) {   // i nomi: le schede sempre, i giorni da vicino o accanto al pallino puntato
-        g.globalAlpha = dim ? 0.08 : (n.kind === 'diary' ? 0.55 : 0.25 + 0.7 * p.depth);
-        g.fillStyle = text; g.fillText(n.name, p.sx, p.sy + r + 3);
-      }
+      g.beginPath(); g.arc(p.sx, p.sy, radius(p), 0, Math.PI * 2); g.fill();
     });
-    g.globalAlpha = 1;
+    // i nomi sopra tutto, e mai uno sopra l'altro: passano prima quello puntato e i suoi vicini, poi i più collegati e quelli davanti.
+    // Chi non ci sta svanisce e torna quando si avvicina o quando gli passi sopra
+    g.font = '11.5px system-ui, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'top'; g.lineJoin = 'round';
+    const rank = (p) => (lit?.has(p.n) ? 1e6 : 0) + (p.n.kind === 'me' ? 1e4 : 0) + p.depth * 8 + Math.sqrt(deg(p.n)) * 5 - (p.n.kind === 'diary' ? 1e3 : 0);
+    const taken = [];
+    [...proj].sort((p, q) => rank(q) - rank(p)).forEach((p) => {
+      const n = p.n, r = radius(p), wd = (n.tw = n.tw || g.measureText(n.name).width) + 6, x0 = p.sx - wd / 2, y0 = p.sy + r + 2, x1 = x0 + wd, y1 = y0 + 15;
+      const wanted = n.kind !== 'diary' || (lit && lit.has(n)) || zoom > 1.8;
+      const free = wanted && !(lit && !lit.has(n)) && !taken.some((t) => x0 < t[2] && x1 > t[0] && y0 < t[3] && y1 > t[1]);
+      if (free) taken.push([x0, y0, x1, y1]);
+      n.la += ((free ? 1 : 0) - n.la) * 0.18;
+      if (n.la < 0.02) return;
+      g.globalAlpha = n.la * (n.kind === 'diary' ? 0.6 : 0.45 + 0.55 * p.depth);
+      g.lineWidth = 3; g.strokeStyle = back; g.strokeText(n.name, p.sx, y0 + 1);
+      g.fillStyle = text; g.fillText(n.name, p.sx, y0 + 1);
+    });
+    g.globalAlpha = 1; g.lineWidth = 1;
     if (hover && P.get(hover)) { const p = P.get(hover); tip.style.left = p.sx + 'px'; tip.style.top = (p.sy - size(hover) * p.f - 6) + 'px'; }
     raf = requestAnimationFrame(draw);
   };
@@ -1608,16 +1667,18 @@ function brainGraph(data, onOpen) {
   };
   box.addEventListener('pointerdown', (e) => {
     if (e.target.closest('.graph-modes')) return;
-    const node = at(e);
-    drag = { x: e.clientX, y: e.clientY, rx, ry, panX, panY, moved: false, node, px: node?.px, py: node?.py };
+    const node = at(e), p = node && mode === '2d' ? sims['2d'].P[node.i] : null;
+    drag = { x: e.clientX, y: e.clientY, rx, ry, panX, panY, moved: false, node, px: p?.x, py: p?.y };
     box.setPointerCapture(e.pointerId);
   });
   box.addEventListener('pointermove', (e) => {
     if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 3) { drag.moved = true; auto = false; }
-      if (mode === '2d') {   // un pallino si sposta da solo, lo sfondo sposta tutto
-        if (drag.node) { drag.node.px = drag.px + dx / scale; drag.node.py = drag.py + dy / scale; } else { panX = drag.panX + dx; panY = drag.panY + dy; }
+      if (mode === '2d') {
+        if (drag.node) {   // il pallino viene dietro al mouse e i vicini lo seguono
+          if (drag.moved) { const s = sims['2d'], p = s.P[drag.node.i]; p.fx = drag.px + dx / scale; p.fy = drag.py + dy / scale; s.alpha = Math.max(s.alpha, 0.35); }
+        } else { panX = drag.panX + dx; panY = drag.panY + dy; }
         return;
       }
       ry = drag.ry + dx * 0.008; rx = Math.max(-1.5, Math.min(1.5, drag.rx + dy * 0.008));
@@ -1627,19 +1688,23 @@ function brainGraph(data, onOpen) {
     tip.classList.toggle('hidden', !hover);
     if (hover) tip.textContent = `${hover.name} · ${GRAPH_ONE[hover.kind] || 'scheda'} · ${hover.deg} collegament${hover.deg === 1 ? 'o' : 'i'}`;
   });
-  box.addEventListener('pointerup', () => { const d = drag; drag = null; if (d && !d.moved && d.node) onOpen(d.node); });
+  box.addEventListener('pointerup', () => {
+    const d = drag; drag = null;
+    if (d?.node && mode === '2d') { const s = sims['2d'], p = s.P[d.node.i]; p.fx = p.fy = null; if (d.moved) s.alpha = Math.max(s.alpha, 0.2); }   // lasciato, torna a posto da solo
+    if (d && !d.moved && d.node) onOpen(d.node);
+  });
   box.addEventListener('pointerleave', () => { hover = null; tip.classList.add('hidden'); });
   box.addEventListener('wheel', (e) => { e.preventDefault(); zoom = Math.max(0.4, Math.min(4, zoom * Math.exp(-e.deltaY * 0.0015))); }, { passive: false });
   box.addEventListener('dblclick', (e) => { if (e.target.closest('.graph-modes')) return; auto = true; zoom = 1; rx = -0.3; panX = panY = 0; });
   // la scelta tra 2D e 3D, nell'angolo del grafo, e la riga che dice come si usa
   const hint = h('span', {});
-  const HOW = { '3d': 'Trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.', '2d': 'Trascina per spostarti o per spostare un pallino, rotellina per lo zoom, doppio clic per ricentrare.' };
+  const HOW = { '3d': 'Trascina per ruotarlo, rotellina per lo zoom, doppio clic per farlo girare da solo.', '2d': 'Trascina un pallino e i vicini lo seguono, trascina lo sfondo per spostarti, rotellina per lo zoom, doppio clic per ricentrare.' };
   const modes = h('div', { class: 'seg graph-modes', role: 'radiogroup', 'aria-label': 'Vista del grafo' });
   const paintMode = () => {
     hint.textContent = HOW[mode];
     modes.replaceChildren(...['2d', '3d'].map((m) => h('button', { type: 'button', role: 'radio', 'aria-checked': String(mode === m), text: m.toUpperCase(), onclick: () => {
       if (mode === m) return;
-      mode = m; pref.set('graphMode', m); zoom = 1; panX = panY = 0; if (m === '2d') layout2d(); paintMode(); } })));
+      mode = m; pref.set('graphMode', m); zoom = 1; panX = panY = 0; sim(m); paintMode(); } })));
   };
   paintMode();
   box.append(modes);
