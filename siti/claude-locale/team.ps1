@@ -13,5 +13,5 @@ foreach ($h in $Server) {
     exit 0
   }
 }
-if ($Fase -eq "avvio") { Write-Output "ATTENZIONE: server dei siti non raggiungibile (né rete di casa né Tailscale): progetti e messaggi NON letti. Dillo all'umano." }
+if ($Fase -eq "avvio") { Write-Output "ATTENZIONE: server dei siti non raggiungibile (né rete di casa né Tailscale): siti NON letti. Dillo all'umano." }
 exit 0

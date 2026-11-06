@@ -1,6 +1,6 @@
 # Cartella locale di Claude per i siti dei clienti
 
-Una cartella sola per tutti i progetti: all'apertura Claude vede i progetti e le novità, a ogni messaggio le novità.
+Una cartella sola per tutti i progetti: all'apertura Claude vede la guida e i tuoi siti, a ogni messaggio le consegne su main da prendere.
 
 Installazione sul proprio PC (una volta):
 1. Crea una cartella, es. `~/Progetti/siti`, con dentro:

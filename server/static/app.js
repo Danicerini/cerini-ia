@@ -2805,10 +2805,9 @@ function sitoLine(slug) {
   if (!p) return h('div', { class: 'cl-sito' }, h('b', { text: 'Sito in lavorazione' }));
   const me = CL.siti.me, last = (p.main || []).find((c) => c.chi !== 'sito');
   const live = (p.persone || []).filter((g) => g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800).map((g) => (g.utente === me ? 'tu' : g.utente));
-  const open = (p.task || []).filter((t) => t.stato !== 'fatto').length;
   return h('button', { type: 'button', class: 'cl-sito', onclick: () => sitoView(slug) },
     h('b', { text: `In lavorazione · ${p.chi === me ? 'lo segui tu' : 'lo segue ' + p.chi}` }),
-    h('span', { text: [live.length ? `ci sta lavorando ${live.join(' e ')}` : '', last ? `ultima consegna ${agoTs(+last.ts)} (${last.chi})` : 'niente consegnato ancora', open ? `${open} task aperti` : ''].filter(Boolean).join(' · ') }));
+    h('span', { text: [live.length ? `ci sta lavorando ${live.join(' e ')}` : '', last ? `ultima consegna ${agoTs(+last.ts)} (${last.chi})` : 'niente consegnato ancora'].filter(Boolean).join(' · ') }));
 }
 function sitiSection() {
   const s = CL.siti;
@@ -2818,14 +2817,14 @@ function sitiSection() {
   return h('section', { class: 'st-sec' },
     h('div', { class: 'st-h' }, h('h2', { text: 'Siti in lavorazione' }), h('small', { text: list.length ? `${list.length}` : '' })),
     list.length ? h('div', { class: 'st-grid' }, ...list.map((p) => {
-      const last = (p.main || [])[0];
-      const open = (p.task || []).filter((t) => t.stato !== 'fatto').length;
+      const last = (p.main || [])[0], diary = (p.diario || []).filter((d) => d.chi !== 'aura').slice(-1)[0];
       return h('button', { type: 'button', class: 'st-card', onclick: () => sitoView(p.slug) },
         h('div', { class: 'st-top' }, h('b', { text: p.nome }), h('small', { text: p.chi === s.me ? 'tuo' : `di ${p.chi}` })),
         p.errore ? h('small', { class: 'st-err', text: p.errore }) : null,
         ...(p.persone || []).map(sitoPerson),
-        h('div', { class: 'st-foot' }, h('span', { text: last ? `Ultima consegna: ${last.chi} · ${agoTs(+last.ts)}` : '' }), open ? h('span', { class: 'st-badge', text: `${open} task` }) : null));
-    })) : h('div', { class: 'cl-empty', text: 'Nessun sito in lavorazione. Su un cliente premi «Prendo in carico»: nasce il progetto sul server, con una cartella per te e una per i colleghi, e il suo repository su GitHub.' }));
+        diary ? h('small', { class: 'st-hint', text: `📓 ${diary.testo}` }) : null,
+        h('div', { class: 'st-foot' }, h('span', { text: last ? `Ultima consegna: ${last.chi} · ${agoTs(+last.ts)}` : '' })));
+    })) : h('div', { class: 'cl-empty', text: 'Nessun sito in lavorazione. Su un cliente premi «Prendo in carico»: nasce il progetto sul server, con la tua cartella (e una per i colleghi, se ti serve una mano) e il suo repository su GitHub.' }));
 }
 function sitoTake(l) {
   const close = () => modal.remove();
@@ -2841,7 +2840,7 @@ function sitoTake(l) {
   const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
     h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Prendo in carico' },
       h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Prendo in carico ' + l.name }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
-      h('p', { class: 'st-hint', text: 'Sul server dei siti nasce il sito: una cartella per ognuno di voi (dentro la vostra cartella in /srv/siti), la parte in comune, il canale per i Claude e il repository privato su GitHub. Il cliente passa a «In lavorazione».' }),
+      h('p', { class: 'st-hint', text: 'Sul server dei siti nasce il sito: una cartella per ognuno di voi (dentro la vostra cartella in /srv/siti), la parte in comune, il diario di Claude e il repository privato su GitHub. Il cliente passa a «In lavorazione».' }),
       h('label', { class: 'ag-f' }, h('span', { text: 'Nome del sito' }), nome), h('label', { class: 'ag-f' }, h('span', { text: 'Note per il progetto' }), note),
       h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), ok)));
   document.body.append(modal);
@@ -2865,32 +2864,18 @@ async function sitoView(slug) {
     const people = (p.persone || []).map((g) => h('div', { class: 'st-pp' }, sitoPerson(g),
       g.commit?.length ? h('ul', { class: 'st-list' }, ...g.commit.map((c) => h('li', {}, h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : null,
       g.file_modificati?.length ? h('div', { class: 'st-files', text: g.file_modificati.join(' · ') }) : null));
-    const tasks = (p.task || []);
-    const to = h('select', { class: 'ag-in', 'aria-label': 'A chi' }, h('option', { value: 'tutti', text: 'A tutti' }),
-      ...(p.persone || []).filter((g) => g.utente !== me).map((g) => h('option', { value: g.utente, text: 'A ' + g.utente })));
-    const txt = h('textarea', { class: 'ag-in', rows: 2, placeholder: 'Un messaggio nel canale del progetto: lo leggono i Claude e i colleghi' });
-    const send = h('button', { class: 'btn primary sm', text: 'Manda', onclick: async () => {
-      if (!txt.value.trim()) return; send.disabled = true;
-      try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}/messaggio`, { a: to.value, testo: txt.value.trim() })).json()); toast('Messaggio nel canale'); }
-      catch (e) { send.disabled = false; toast(e.message); }
-    } });
     body.replaceChildren(
       h('div', { class: 'st-meta' }, h('span', { text: `Preso in carico da ${p.chi === me ? 'te' : p.chi}` + (p.creato_il ? ` · ${p.creato_il}` : '') }),
         p.github ? h('a', { href: `https://github.com/${p.github}`, target: '_blank', rel: 'noopener', html: icon('link', 'sm') + 'GitHub' }) : null),
       p.note ? h('p', { class: 'st-hint', text: p.note }) : null,
       sec('Chi ci lavora', ...people),
       sec('Consegnato (main)', (p.main || []).length ? h('ul', { class: 'st-list' }, ...(p.main || []).map((c) => h('li', {}, h('b', { text: c.chi }), h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : h('small', { text: 'Ancora niente' })),
-      sec('Task', tasks.length ? h('ul', { class: 'st-list' }, ...tasks.map((t) => h('li', { class: 'st-t ' + t.stato.replace(' ', '-') }, h('b', { text: `#${t.n}` }), h('span', { text: `${t.testo}` }), h('small', { text: `${t.stato} · ${t.per}` })))) : h('small', { text: 'Nessun task' })),
-      sec('Messaggi tra i Claude', (p.messaggi || []).length ? h('ul', { class: 'st-list st-msgs' }, ...[...p.messaggi].reverse().map((m) => h('li', {}, h('b', { text: `${m.da} → ${m.a}` }), h('span', { text: m.testo }), h('small', { text: m.at })))) : h('small', { text: 'Nessun messaggio' }),
-        h('div', { class: 'st-send' }, to, txt, send)));
+      sec('Diario di Claude', (p.diario || []).length ? h('ul', { class: 'st-list st-msgs' }, ...[...p.diario].reverse().map((d) => h('li', {}, h('b', { text: d.chi }), h('span', { text: d.testo }), h('small', { text: d.at })))) : h('small', { text: 'Ancora niente' })));
   };
-  // si aggiorna da sola mentre è aperta, ma non sotto le dita di chi sta scrivendo un messaggio
+  // si aggiorna da sola mentre è aperta
   const load = async (first) => {
-    const writing = !first && (body.querySelector('.st-send textarea')?.value.trim() || document.activeElement?.closest?.('.st-send'));
-    if (!writing) {
-      try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}`)).json()); }
-      catch (e) { if (first) body.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); }
-    }
+    try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}`)).json()); }
+    catch (e) { if (first) body.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); }
     if (modal.isConnected) timer = setTimeout(load, 20000);
   };
   await load(true);
@@ -4003,7 +3988,7 @@ function feedCard(it) {
   } else if (it.kind === 'reminder' && !done) {
     chips.push(chip('Fatto', 'check', async () => { await feedAct(it, 'dismiss'); loadToday(); if (BP.tree) renderBrainPanel(); }, true),
       chip('Tra 10 minuti', 'calendar', () => feedAct(it, 'snooze')));
-  } else if (it.kind === 'sito' && d.slug) {   // consegne, messaggi e task di un sito in lavorazione
+  } else if (it.kind === 'sito' && d.slug) {   // consegne e diario di un sito in lavorazione
     chips.push(chip('Apri il progetto', 'folder', async () => { await openClienti(); sitoView(d.slug); }, true));
   } else if (link && !['deadline', 'parcel'].includes(it.kind)) chips.push(link);
   if (done) body.push(h('div', { class: 'feed-done', html: icon('check', 'sm') + done }));

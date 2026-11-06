@@ -12,5 +12,5 @@ for h in "${SERVER[@]}"; do
     exit 0
   fi
 done
-[ "$1" = avvio ] && echo "ATTENZIONE: server dei siti non raggiungibile (né rete di casa né Tailscale): progetti e messaggi NON letti. Dillo all'umano."
+[ "$1" = avvio ] && echo "ATTENZIONE: server dei siti non raggiungibile (né rete di casa né Tailscale): siti NON letti. Dillo all'umano."
 exit 0

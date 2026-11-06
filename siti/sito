@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
-"""I siti dei clienti sul server dei siti: una cartella per persona, un sito per sottocartella, un canale tra i Claude.
+"""I siti dei clienti sul server dei siti: una cartella per persona, un sito per sottocartella.
+Ognuno lavora da solo sui siti che ha preso in carico (agli altri dà una mano solo se il suo umano glielo chiede);
+i Claude non si danno compiti tra loro. Aura legge commit, file in modifica e il diario di Claude e risponde alle persone.
 
 Struttura (la guida per chi ci lavora è /srv/siti/LEGGIMI.md):
-  /srv/siti/<persona>/<slug>/         la cartella di lavoro di ognuno su quel sito (worktree git, branch <utente>/…)
-  /srv/siti/.progetti/<slug>/main/    il sito "vero" (branch main). Non si tocca a mano: ci si arriva con «sito consegna».
-  /srv/siti/.progetti/<slug>/team/    canale.json: messaggi e task tra i Claude (si scrive solo con «sito team …», con un lock)
-  /srv/siti/.progetti/<slug>/sito.json  nome, cliente, chi l'ha preso in carico, porte, repository GitHub
+  /srv/siti/<persona>/<slug>/            la cartella di lavoro di ognuno su quel sito (worktree git, branch <utente>/…)
+  /srv/siti/.progetti/<slug>/main/       il sito "vero" (branch main). Non si tocca a mano: ci si arriva con «sito consegna».
+  /srv/siti/.progetti/<slug>/diario.jsonl  il diario di Claude: cosa sta facendo e cosa ha fatto (lo legge Aura)
+  /srv/siti/.progetti/<slug>/sito.json   nome, cliente, chi l'ha preso in carico, porte, repository GitHub
 
 Comandi per le persone (e i loro Claude):
   sito elenco                                   i progetti
   sito stato <slug>                             cosa succede nel progetto (JSON con --json)
-  sito team <slug> avvio <utente>               regole, messaggi e task per te, novità su main (all'apertura di Claude)
-  sito team <slug> novita <utente>              solo le novità dall'ultima volta (a ogni messaggio; zitto se niente)
-  sito novita-tutti <utente>                    le novità di tutti i progetti, in breve
-  sito avvio-tutti <utente>                     i progetti e le novità (all'apertura di Claude sul PC)
-  sito team <slug> scrivi <da> <a> <testo…>     messaggio all'altro (a = un utente o tutti)
-  sito team <slug> letti <utente>               segna come letti i messaggi per te
-  sito team <slug> task nuovo <da> <per> <testo…>
-  sito team <slug> task prendi|fatto <utente> <N>
+  sito apri <slug> [utente]                     regole del sito e novità su main (prima di lavorarci)
+  sito diario <slug> <testo…>                   una riga nel diario: cosa stai facendo o cosa hai fatto (la legge Aura)
+  sito avvio-tutti <utente>                     la guida, i tuoi siti e gli altri (all'apertura di Claude sul PC)
+  sito novita-tutti <utente>                    solo le novità su main da prendere (zitto se niente)
   sito consegna                                 dalla tua cartella: rebase su main e main avanza (GitHub si aggiorna da solo)
 Comandi di servizio (root o aura):
-  sito nuovo <slug> <nome> <chi> [note…]        crea il progetto, le cartelle di tutti e il canale
+  sito nuovo <slug> <nome> <chi> [note…]        crea il progetto e le cartelle di tutti
   sito github                                   crea i repository mancanti e manda main e i branch su GitHub
   sito attivita <da-timestamp>                  cosa è successo in tutti i progetti da quel momento (JSON, per Aura)
 """
@@ -31,7 +29,7 @@ from pathlib import Path
 os.environ.setdefault("TZ", "Europe/Rome")   # orari come li leggono le persone (il server sta in UTC)
 time.tzset()
 ROOT = Path("/srv/siti")
-COMUNE = ROOT / ".progetti"                    # la parte in comune di ogni sito: main, canale, dati
+COMUNE = ROOT / ".progetti"                    # la parte in comune di ogni sito: main, diario, dati
 CONF = Path("/etc/siti/config.json")          # utenti, account GitHub, collaboratori
 TOKEN = Path("/etc/siti/github.token")        # solo l'utente aura la legge
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
@@ -94,42 +92,28 @@ def now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
-# ------------------------------------------------------------------ canale (messaggi e task) con lock
-class Canale:
-    def __init__(self, p: Path):
-        self.f, self.lock = p / "team" / "canale.json", p / "team" / ".lock"
-
-    def __enter__(self):
-        self.fd = open(self.lock, "a")
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
-        try:
-            self.d = json.loads(self.f.read_text())
-        except (OSError, ValueError):
-            self.d = {}
-        self.d.setdefault("messaggi", []); self.d.setdefault("task", []); self.d.setdefault("visto", {})
-        self.d.setdefault("n_msg", 0); self.d.setdefault("n_task", 0)
-        return self.d
-
-    def __exit__(self, *exc):
-        if not exc[0]:
-            # i messaggi letti restano 14 giorni, i task fatti gli ultimi 30
-            cut = time.time() - 14 * 86400
-            self.d["messaggi"] = [m for m in self.d["messaggi"] if m["ts"] > cut or not m.get("letto")][-300:]
-            done = [t for t in self.d["task"] if t["stato"] == "fatto"]
-            self.d["task"] = [t for t in self.d["task"] if t["stato"] != "fatto"] + done[-30:]
-            tmp = self.f.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self.d, ensure_ascii=False, indent=1))
-            os.chmod(tmp, 0o664)
-            tmp.replace(self.f)
-        fcntl.flock(self.fd, fcntl.LOCK_UN)
-        self.fd.close()
-
-
-def leggi_canale(p: Path) -> dict:
+# ------------------------------------------------------------------ diario di Claude (lo legge Aura)
+def leggi_diario(p: Path, n: int = 0) -> list[dict]:
     try:
-        return json.loads((p / "team" / "canale.json").read_text())
+        rows = [json.loads(l) for l in (p / "diario.jsonl").read_text().splitlines() if l.strip()]
     except (OSError, ValueError):
-        return {"messaggi": [], "task": [], "visto": {}}
+        return []
+    return rows[-n:] if n else rows
+
+
+def diario(slug: str, testo: str):
+    p = proj(slug)
+    testo = " ".join(testo.split())[:1000]
+    if not testo:
+        die("uso: sito diario <slug> <testo…>")
+    with open(p / ".diario.lock", "a") as lk:
+        fcntl.flock(lk, fcntl.LOCK_EX)
+        rows = leggi_diario(p)[-299:] + [{"ts": int(time.time()), "at": now(), "chi": me(), "testo": testo}]
+        tmp = p / f".diario.{os.getpid()}.tmp"
+        tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+        os.chmod(tmp, 0o664)
+        tmp.replace(p / "diario.jsonl")
+    print("Scritto nel diario.")
 
 
 # ------------------------------------------------------------------ stato
@@ -162,10 +146,7 @@ def stato(slug: str) -> dict:
         commits = main_log(p, 5, f"main..{branch}") if branch and branch != "HEAD" else []
         gente.append({"utente": u, "cartella": str(w), "branch": branch, "da_consegnare": int(ahead), "indietro": int(behind), "modifiche": len(dirty),
                       "file_modificati": dirty[:12], "ultima_modifica": last, "commit": commits})
-    c = leggi_canale(p)
-    return {**m, "main": main_log(p, 10), "persone": gente,
-            "task": [t for t in c["task"] if t["stato"] != "fatto"] + [t for t in c["task"] if t["stato"] == "fatto"][-8:],
-            "messaggi": c["messaggi"][-15:]}
+    return {**m, "main": main_log(p, 10), "persone": gente, "diario": leggi_diario(p, 20)}
 
 
 def stampa_stato(s: dict):
@@ -178,81 +159,37 @@ def stampa_stato(s: dict):
     print("Ultimi commit su main:")
     for c in s["main"][:5]:
         print(f"  {c['hash']} {c['chi']}: {c['testo']}")
-    aperti = [t for t in s["task"] if t["stato"] != "fatto"]
-    if aperti:
-        print("Task aperti:")
-        for t in aperti:
-            print(f"  #{t['n']} [{t['stato']}] per {t['per']}: {t['testo']}")
+    if s.get("diario"):
+        print("Diario:")
+        for d in s["diario"][-8:]:
+            print(f"  {d['at']} {d['chi']}: {d['testo']}")
 
 
-# ------------------------------------------------------------------ comandi del canale
-def team(slug: str, args: list[str]):
+# ------------------------------------------------------------------ prima di lavorare su un sito
+def indietro(p: Path, u: str) -> list[dict]:
+    """Le consegne su main che la cartella di u non ha ancora (niente da salvare: lo dice git)."""
+    w = wt(p, u)
+    if not w.exists():
+        return []
+    br = git("rev-parse", "--abbrev-ref", "HEAD", cwd=w, check=False)
+    return main_log(p, 10, f"{br}..main") if br and br not in ("HEAD", "main") else []
+
+
+def apri(slug: str, u: str):
     p = proj(slug)
-    if not args:
-        die("uso: sito team <slug> avvio|novita|scrivi|letti|task …")
-    cmd = args[0]
-    if cmd in ("avvio", "novita"):
-        u = args[1] if len(args) > 1 else me()
-        with Canale(p) as d:
-            v = d["visto"].setdefault(u, {})
-            novi = [m for m in d["messaggi"] if m["a"] in (u, "tutti") and m["da"] != u and m["n"] > v.get("msg", 0)]
-            tasks = [t for t in d["task"] if t["per"] == u and t["stato"] != "fatto" and (cmd == "avvio" or t["n"] > v.get("task", 0))]
-            head = git("rev-parse", "--short", "main", cwd=p / "main", check=False)
-            nuovi_main = main_log(p, 10, f"{v['main']}..main") if v.get("main") and v["main"] != head else []
-            altri = [t for t in d["task"] if t["per"] != u and t["stato"] == "in corso"]
-            v.update(msg=max([m["n"] for m in d["messaggi"]] + [v.get("msg", 0)]), task=max([t["n"] for t in d["task"]] + [v.get("task", 0)]), main=head)
-        out = []
-        if cmd == "avvio":
-            regole = p / "main" / "CLAUDE.md"
-            out.append(f"=== Progetto {meta(p).get('nome')} ({slug}) — situazione per {u} ===")
-            if regole.exists():
-                out.append("--- Regole (CLAUDE.md di main) ---\n" + regole.read_text())
-        if novi:
-            out.append("--- Messaggi per te ---\n" + "\n".join(f"[M{m['n']}] {m['at']} {m['da']}→{m['a']}: {m['testo']}" for m in novi))
-        if tasks:
-            out.append("--- Task per te ---\n" + "\n".join(f"#{t['n']} [{t['stato']}] da {t['da']}: {t['testo']}" for t in tasks))
-        if altri and cmd == "avvio":
-            out.append("--- In corso dagli altri (non toccare quelle aree) ---\n" + "\n".join(f"#{t['n']} {t['per']}: {t['testo']}" for t in altri))
-        if nuovi_main:
-            out.append("--- Novità su main: fai «git rebase main» nella tua cartella ---\n" + "\n".join(f"{c['hash']} {c['chi']}: {c['testo']}" for c in nuovi_main))
-        if out:
-            print("\n".join(out))
-        return
-    if cmd == "scrivi":
-        if len(args) < 4:
-            die("uso: sito team <slug> scrivi <da> <a> <testo…>")
-        da, a, testo = args[1], args[2], " ".join(args[3:]).strip()
-        if a not in users() + ["tutti"] or da not in users() + ["aura"]:
-            die("utente sconosciuto")
-        with Canale(p) as d:
-            d["n_msg"] += 1
-            d["messaggi"].append({"n": d["n_msg"], "at": now(), "ts": int(time.time()), "da": da, "a": a, "testo": testo[:3000]})
-        print(f"Messaggio M{d['n_msg']} scritto.")
-        return
-    if cmd == "letti":
-        u = args[1] if len(args) > 1 else me()
-        with Canale(p) as d:
-            for m in d["messaggi"]:
-                if m["a"] in (u, "tutti"):
-                    m["letto"] = True
-        return
-    if cmd == "task":
-        sub = args[1] if len(args) > 1 else ""
-        with Canale(p) as d:
-            if sub == "nuovo" and len(args) >= 5:
-                d["n_task"] += 1
-                d["task"].append({"n": d["n_task"], "da": args[2], "per": args[3], "testo": " ".join(args[4:])[:1000], "stato": "da fare", "at": now(), "ts": int(time.time())})
-                print(f"Task #{d['n_task']} creato.")
-                return
-            if sub in ("prendi", "fatto") and len(args) >= 4:
-                t = next((t for t in d["task"] if t["n"] == int(args[3])), None)
-                if not t:
-                    die("task non trovato")
-                t.update(stato="in corso" if sub == "prendi" else "fatto", per=args[2] if sub == "prendi" else t["per"], ts=int(time.time()), quando=now())
-                print(f"Task #{t['n']}: {t['stato']}.")
-                return
-        die("uso: sito team <slug> task nuovo <da> <per> <testo> | prendi <utente> <N> | fatto <utente> <N>")
-    die("comando del canale sconosciuto")
+    m = meta(p)
+    print(f"=== {m.get('nome')} ({slug}) — preso in carico da {m.get('chi')}; tu sei {u}, la tua cartella è {wt(p, u)} ===")
+    if m.get("chi") != u:
+        print("ATTENZIONE: questo sito non è tuo. Ci lavori solo se il tuo umano te l'ha chiesto per dare una mano.")
+    regole = p / "main" / "CLAUDE.md"
+    if regole.exists():
+        print("--- Regole (CLAUDE.md di main) ---\n" + regole.read_text())
+    d = leggi_diario(p, 6)
+    if d:
+        print("--- Ultime righe del diario ---\n" + "\n".join(f"{x['at']} {x['chi']}: {x['testo']}" for x in d))
+    nuovi = indietro(p, u)
+    if nuovi:
+        print("--- Novità su main: fai «git rebase main» nella tua cartella ---\n" + "\n".join(f"{c['hash']} {c['chi']}: {c['testo']}" for c in nuovi))
 
 
 def me() -> str:
@@ -284,7 +221,7 @@ def consegna():
 CLAUDE_MD = """# {nome} — regole per i Claude
 
 Sito per il cliente: {note}
-Preso in carico da: **{chi}**. Ci lavorano {tutti}, ognuno col suo Claude, nello stesso momento se serve.
+Preso in carico da: **{chi}**: è il suo sito e ci lavora col suo Claude. Gli altri danno una mano solo se il loro umano lo chiede.
 
 Le regole generali stanno in `/srv/siti/LEGGIMI.md`: leggile prima. Qui solo quello che vale per questo sito.
 
@@ -294,19 +231,16 @@ Le regole generali stanno in `/srv/siti/LEGGIMI.md`: leggile prima. Qui solo que
 - GitHub: `{github}` (si aggiorna da solo da main e dai branch: non serve fare push).
 
 ## Come si lavora
-1. Lavora **solo nella tua cartella** di questo sito, su branch `<utente>/<argomento>`. Mai nella cartella dell'altro né in main.
+1. Lavora **solo nella tua cartella** di questo sito, su branch `<utente>/<argomento>`. Mai nella cartella di un altro né in main.
 2. Prima di iniziare: `git rebase main`. Commit piccoli e frequenti.
 3. Consegna spesso: `sito consegna` dalla tua cartella (rebase su main e main avanza).
 4. Porte per provare il sito: {porte}. Mai usare le porte dell'altro, mai fermare processi dell'altro.
 5. Segreti (chiavi, password) mai nel repository: vanno in un `.env` non committato.
 
-## Canale tra i Claude (messaggi e task)
-- All'apertura: `sito team {slug} avvio <utente>`; a ogni messaggio dell'umano: `sito team {slug} novita <utente>`
-  (con la cartella locale di Claude lo fanno da soli due hook). Riferisci subito all'umano messaggi e task per lui.
-- Scrivere all'altro: `sito team {slug} scrivi <da> <a> "testo"` quando la tua consegna lo riguarda, ti serve qualcosa o trovi un problema nel suo codice.
-- Prima di un lavoro: `sito team {slug} task nuovo <da> <per> "cosa — file/aree"` e `sito team {slug} task prendi <utente> N`; a consegna fatta `task fatto`.
-- Non toccare file o aree di un task «in corso» dell'altro. Le scelte di progetto non le decidi tu: chiedi al tuo umano.
-- Aura (l'assistente di {tutti}) legge commit, task e messaggi e li mostra a entrambi: scrivi messaggi di commit e task chiari, in italiano.
+## Diario (lo legge Aura)
+- Aura è l'assistente di {tutti}: risponde a «cosa sta facendo Claude?», «a che punto è il sito?». Legge i commit, i file in modifica e il diario.
+- Quando inizi un lavoro e quando lo finisci: `sito diario {slug} "cosa fai / cosa hai fatto, in parole semplici"`. Commit chiari, in italiano.
+- I Claude non si danno compiti tra loro e non si scrivono: le scelte e le richieste passano dagli umani.
 
 ## Regole su git
 Mai `git push --force` su main, mai riscrivere la storia di main, mai cancellare branch dell'altro.
@@ -335,7 +269,6 @@ def nuovo(args: list[str]):
     porte = {u: 4000 + 100 * i + 10 * n for i, u in enumerate(us)}   # ogni persona un blocco di 10 porte per progetto
     gh = f"{c.get('github_owner')}/{c.get('github_prefix', 'sito-')}{slug}" if c.get("github_owner") else ""
     p.mkdir(parents=True)
-    (p / "team").mkdir()
     main = p / "main"
     main.mkdir()
     git("init", "-q", "-b", "main", cwd=main)
@@ -358,10 +291,7 @@ def nuovo(args: list[str]):
         git("config", "--worktree", "user.name", u, cwd=wt(p, u))
     m = {"slug": slug, "nome": nome, "chi": chi, "note": note, "creato": int(time.time()), "creato_il": now(), "porte": porte, "github": gh}
     (p / "sito.json").write_text(json.dumps(m, ensure_ascii=False, indent=1))
-    with Canale(p) as d:
-        d["n_msg"] += 1
-        d["messaggi"].append({"n": 1, "at": now(), "ts": int(time.time()), "da": "aura", "a": "tutti",
-                              "testo": f"Progetto creato: {nome}. Preso in carico da {chi}. Leggete /srv/siti/LEGGIMI.md e il CLAUDE.md del sito prima di iniziare."})
+    (p / "diario.jsonl").write_text(json.dumps({"ts": int(time.time()), "at": now(), "chi": "aura", "testo": f"Progetto creato, preso in carico da {chi}."}, ensure_ascii=False) + "\n")
     # permessi: tutto del gruppo dev, ogni cartella di lavoro del suo utente
     subprocess.run(["chgrp", "-R", "dev", str(p)], check=True)
     subprocess.run(["chmod", "-R", "g+rwX", str(p)], check=True)
@@ -431,11 +361,9 @@ def attivita(since: int) -> dict:
             if br and br not in ("HEAD", "main"):
                 for c in main_log(p, 20, f"main..{br}", f"--since=@{since}"):
                     ev.append({"tipo": "lavoro", "ts": int(c["ts"] or 0), "chi": u, "branch": br, "testo": c["testo"]})
-        ch = leggi_canale(p)
-        ev += [{"tipo": "messaggio", "ts": x["ts"], "chi": x["da"], "a": x["a"], "testo": x["testo"]} for x in ch["messaggi"] if x["ts"] > since]
-        ev += [{"tipo": "task", "ts": x["ts"], "chi": x["per"], "da": x["da"], "stato": x["stato"], "testo": x["testo"], "n": x["n"]} for x in ch["task"] if x["ts"] > since]
+        ev += [{"tipo": "diario", "ts": x["ts"], "chi": x["chi"], "testo": x["testo"]} for x in leggi_diario(p, 50) if x["ts"] > since]
         if ev:
-            out.append({"slug": p.name, "nome": m.get("nome"), "eventi": sorted(ev, key=lambda e: e["ts"])})
+            out.append({"slug": p.name, "nome": m.get("nome"), "chi": m.get("chi"), "eventi": sorted(ev, key=lambda e: e["ts"])})
     return {"ora": int(time.time()), "progetti": out}
 
 
@@ -450,9 +378,10 @@ def elenco() -> list[dict]:
 
 def novita_tutti(u: str):
     for p in progetti():
-        r = subprocess.run([sys.argv[0], "team", p.name, "novita", u], capture_output=True, text=True)
-        if r.stdout.strip():
-            print(f"=== {meta(p).get('nome')} ({p.name}) ===\n{r.stdout.strip()}")
+        nuovi = indietro(p, u)
+        if nuovi:
+            print(f"{meta(p).get('nome')} ({p.name}): {len(nuovi)} consegne su main che la tua cartella non ha (fai «git rebase main» lì): "
+                  + "; ".join(f"{c['chi']}: {c['testo']}" for c in nuovi[:3]))
 
 
 def main():
@@ -471,8 +400,13 @@ def main():
     elif cmd == "stato" and len(a) > 1:
         s = stato(a[1])
         print(json.dumps(s, ensure_ascii=False)) if js else stampa_stato(s)
-    elif cmd == "team" and len(a) > 1:
-        team(a[1], a[2:])
+    elif cmd == "apri" and len(a) > 1:
+        apri(a[1], a[2] if len(a) > 2 else me())
+    elif cmd == "diario" and len(a) > 2:
+        diario(a[1], " ".join(a[2:]))
+    elif cmd == "team":
+        die("Il canale tra i Claude non c'è più: ognuno lavora sui suoi siti e i Claude non si danno compiti. "
+            "Usa «sito apri <sito>» prima di lavorare e «sito diario <sito> <testo>» per dire cosa fai.")
     elif cmd == "novita-tutti":
         novita_tutti(a[1] if len(a) > 1 else me())
     elif cmd == "avvio-tutti":   # all'apertura di Claude sul PC: i progetti, poi le novità di ognuno
@@ -482,8 +416,11 @@ def main():
         if guida.exists():
             print("--- Come si lavora (/srv/siti/LEGGIMI.md) ---\n" + guida.read_text().strip() + "\n")
         print(f"=== Siti dei clienti sul server — situazione per {u} (la tua cartella: {cartella(u)}) ===")
-        print("\n".join(f"- {x['slug']}: {x['nome']} (preso in carico da {x['chi']}) — ci lavori in {cartella(u) / x['slug']}" for x in lst) or "Nessun sito ancora: si creano da Aura (Clienti → Prendo in carico).")
-        print("Prima di lavorare su un sito: sito team <slug> avvio " + u + " (regole del sito e canale). Consegna: sito consegna.")
+        miei, altri = [x for x in lst if x["chi"] == u], [x for x in lst if x["chi"] != u]
+        print("I tuoi siti (ci lavori tu):\n" + ("\n".join(f"- {x['slug']}: {x['nome']} — {cartella(u) / x['slug']}" for x in miei) or "- nessuno: si prendono in carico da Aura (Clienti → Prendo in carico)"))
+        if altri:
+            print("Siti degli altri (solo se il tuo umano ti chiede di dare una mano):\n" + "\n".join(f"- {x['slug']}: {x['nome']} (di {x['chi']})" for x in altri))
+        print(f"Prima di lavorare su un sito: sito apri <slug> {u}. Diario per Aura: sito diario <slug> \"cosa fai\". Consegna: sito consegna.")
         novita_tutti(u)
     elif cmd == "consegna":
         consegna()
