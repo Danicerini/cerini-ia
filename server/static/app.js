@@ -255,7 +255,7 @@ $('#loginForm').addEventListener('submit', async (e) => {
   btn.disabled = false; btn.textContent = 'Accedi';
 });
 // si ricarica la pagina: niente di quello che era in memoria (liste, ticket, conversazioni) passa all'utente dopo
-$('#logoutBtn').onclick = async () => { try { await api('/api/logout', {}); } catch {} location.reload(); };
+$('#logoutBtn').onclick = async () => { try { localStorage.removeItem('tkpCache'); } catch {} try { await api('/api/logout', {}); } catch {} location.reload(); };
 
 // =================================================================== theme
 const THEMES = ['auto', 'light', 'dark'];
@@ -765,12 +765,15 @@ function renderHero() {
 function messageEl(chat, m, i, isLastAssist, isLast) {
   if (m.role === 'user') {
     if (S.editing === i) return editEl(chat, m, i);
+    // le foto stanno sopra il fumetto, come anteprime che si aprono grandi al clic; il fumetto resta solo per il testo
+    const pics = m.images?.length ? h('div', { class: 'msg-imgs' + (m.images.length === 1 ? ' one' : '') }, m.images.map((src, k) =>
+      h('button', { type: 'button', class: 'msg-img', title: 'Apri la foto', 'aria-label': 'Apri la foto', onclick: () => photoViewer(m.images, k) },
+        h('img', { src, alt: 'Immagine allegata', loading: 'lazy' })))) : null;
     const bubble = h('div', { class: 'bubble' });
-    if (m.images?.length) bubble.append(h('div', { class: 'imgs' }, m.images.map((src) => h('img', { src, alt: 'Immagine allegata' }))));
     if (m.files?.some((f) => !f.image)) bubble.append(h('div', { class: 'msg-files' }, m.files.filter((f) => !f.image).map((f) => fileChip(f))));
     if (m.content) bubble.append(document.createTextNode(m.content));
     const copyB = h('button', { class: 'icon-btn sm', title: 'Copia', 'aria-label': 'Copia', html: icon('copy', 'sm'), onclick: () => copyText(m.content, copyB) });
-    return h('div', { class: 'msg user' }, bubble,
+    return h('div', { class: 'msg user' }, pics, bubble.childNodes.length ? bubble : null,
       h('div', { class: 'msg-actions' }, copyB,
         h('button', { class: 'icon-btn sm', title: 'Modifica', 'aria-label': 'Modifica', disabled: !!S.stream, html: icon('pencil', 'sm'),
           onclick: () => { S.editing = i; renderThread(); } })));
@@ -2257,6 +2260,18 @@ function tkpMark(el, text, words) {
 function tkpSkeleton(n) { return h('div', { class: 'tkp-skel', 'aria-label': 'Carico…' }, ...Array.from({ length: n }, () => h('i'))); }
 
 // ---- l'elenco, con ricerca e filtri
+// copia delle ultime cartelle aperte (in questo browser): la lista compare subito, anche riaprendo l'app
+function tkpCacheGet(fid) {
+  try { const c = JSON.parse(localStorage.getItem('tkpCache') || '{}')[fid]; return c && Date.now() - c.at < 7 * 864e5 ? c : null; } catch { return null; }
+}
+function tkpCachePut(fid, d) {
+  try {
+    const all = JSON.parse(localStorage.getItem('tkpCache') || '{}');
+    all[fid] = { rows: d.rows, more: !!d.more, at: Date.now() };
+    const keep = Object.entries(all).sort((a, b) => b[1].at - a[1].at).slice(0, 4);
+    localStorage.setItem('tkpCache', JSON.stringify(Object.fromEntries(keep)));
+  } catch {}
+}
 function tkpList(main) {
   const cur = TKP.folders.find((f) => f.id === TKP.fid) || TKP.folders[0];
   const count = h('small', { class: 'tkp-count tnum' });
@@ -2294,7 +2309,13 @@ function tkpList(main) {
         h('span', { text: 'Scrivi un numero (5819), un cliente, un contatto o le parole del problema (outlook non sincronizza): guardo anche nella richiesta e nella soluzione.' })));
       return;
     }
-    results.replaceChildren(tkpSkeleton(7));
+    // l'ultima copia della cartella si vede subito; quella aggiornata arriva dal CRM e la sostituisce
+    const old = !TKP.q && !TKP.all ? tkpCacheGet(TKP.fid) : null;
+    if (old) {
+      Object.assign(TKP, { rows: old.rows, more: !!old.more, words: [], partial: false, deep: false });
+      tkpListCount(TKP.fid, old.rows.length, old.more);
+      tkpPaint(results, filters, count);
+    } else results.replaceChildren(tkpSkeleton(7));
     try {
       if (TKP.q) {
         // prima numero, titolo, cliente e contatto, che arrivano subito; poi anche dentro richieste e soluzioni, che nel CRM sono lente
@@ -2315,6 +2336,9 @@ function tkpList(main) {
       } else {
         const d = await (await api(`/api/crm/folder/${TKP.fid}`)).json();
         if (seq !== TKP.seq) return;
+        tkpCachePut(TKP.fid, d);
+        const mark = (rows) => rows.map((r) => `${r.no}|${r.status}|${r.modified}|${r.owner}`).join();
+        if (old && (mark(old.rows) === mark(d.rows) || filters.querySelector('[aria-expanded="true"]'))) { TKP.key = key; return; }   // uguale, o sta scegliendo un filtro
         Object.assign(TKP, { rows: d.rows, more: !!d.more, words: [], partial: false, deep: false });
         tkpListCount(TKP.fid, d.rows.length, d.more);
       }
@@ -4213,6 +4237,26 @@ function tkViewer(list, start, refill) {
     onclick: (e) => { if (e.target === box || e.target.classList.contains('tkv-body')) close(); },
     onkeydown: (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowLeft' && list.length > 1) go(-1); if (e.key === 'ArrowRight' && list.length > 1) go(1); } },
     h('div', { class: 'tkv-top' }, h('div', { class: 'tx' }, name, count), mark, dl, closeBtn),
+    h('div', { class: 'tkv-body' }, nav('prev', 'Foto precedente', -1), img, nav('next', 'Foto successiva', 1)));
+  paint();
+  document.body.append(box);
+  closeBtn.focus();
+}
+// Le foto mandate in chat, aperte grandi: frecce per passare all'altra, Esc o clic fuori per chiudere
+function photoViewer(srcs, start) {
+  let i = start;
+  const img = h('img', { alt: 'Foto' }), count = h('small', { class: 'tnum' });
+  const dl = h('a', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica' });
+  const paint = () => { img.src = srcs[i]; count.textContent = srcs.length > 1 ? `${i + 1} di ${srcs.length}` : ''; dl.href = srcs[i]; dl.setAttribute('download', `foto-${i + 1}.jpg`); };
+  const go = (d) => { i = (i + d + srcs.length) % srcs.length; paint(); };
+  const opener = document.activeElement;
+  const close = () => { box.remove(); opener?.focus?.(); };
+  const nav = (cls, label, d) => (srcs.length > 1 ? h('button', { class: 'tkv-nav ' + cls, 'aria-label': label, html: icon('chevron'), onclick: () => go(d) }) : null);
+  const closeBtn = h('button', { class: 'icon-btn', 'aria-label': 'Chiudi', html: icon('x'), onclick: close });
+  const box = h('div', { class: 'tkv photo', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Foto', tabindex: '-1',
+    onclick: (e) => { if (e.target === box || e.target.classList.contains('tkv-body')) close(); },
+    onkeydown: (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowLeft' && srcs.length > 1) go(-1); if (e.key === 'ArrowRight' && srcs.length > 1) go(1); } },
+    h('div', { class: 'tkv-top' }, h('div', { class: 'tx' }, h('b', { text: 'Foto' }), count), dl, closeBtn),
     h('div', { class: 'tkv-body' }, nav('prev', 'Foto precedente', -1), img, nav('next', 'Foto successiva', 1)));
   paint();
   document.body.append(box);

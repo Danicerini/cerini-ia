@@ -70,6 +70,9 @@ class _PerUser:
     def clear(self):
         self._d().clear()
 
+    def pop(self, k, *default):
+        return self._d().pop(k, *default)
+
     def items(self):
         return self._d().items()
 
@@ -1095,7 +1098,8 @@ def _crm_contact_keep(c: dict):
 
 
 async def _crm_page_rows(tickets: list[dict], uid: str) -> list[dict]:
-    """Le righe della pagina Ticket: i contatti si chiedono tutti insieme, i nomi una volta sola (poi restano in memoria)."""
+    """Le righe della pagina Ticket: i contatti si chiedono tutti insieme, i nomi una volta sola (poi restano in memoria e su disco)."""
+    _crm_cache_load()
     missing = list({t["contact_id"] for t in tickets if _crm_real_id(t.get("contact_id")) and t["contact_id"] not in _CRM_CONTACTS})
     for i in range(0, len(missing), 50):
         try:
@@ -1108,6 +1112,8 @@ async def _crm_page_rows(tickets: list[dict], uid: str) -> list[dict]:
     names = [x for x in names if _crm_real_id(x) and x not in _CRM_NAMES]
     for i in range(0, len(names), 8):
         await asyncio.gather(*[_crm_name(x) for x in names[i:i + 8]])
+    if missing or names:
+        _crm_cache_save()
     out, labels = [], await _crm_labels()
     for t in tickets:
         r, c = await _crm_row(t, uid), _CRM_CONTACTS.get(t.get("contact_id")) or {}
@@ -1469,6 +1475,7 @@ async def crm_link_put(body: CrmLinkIn, user: dict = Depends(require_user)):
     _CRM_FIELDS.clear()
     _CRM_LISTS.clear()
     _CRM_FILES.clear()
+    user_file("crm_cache.json").unlink(missing_ok=True)
     try:
         await _crm_get("query", query="SELECT ticket_no FROM HelpDesk LIMIT 1;")
     except ValueError as e:
@@ -1493,6 +1500,7 @@ async def crm_link_delete(user: dict = Depends(require_user)):
     _CRM_FIELDS.clear()
     _CRM_LISTS.clear()
     _CRM_FILES.clear()
+    user_file("crm_cache.json").unlink(missing_ok=True)
     return {"linked": False, "managed": False, "url": "", "user": "", "write": False}
 
 
@@ -1729,9 +1737,51 @@ async def _crm_people() -> list[dict]:
         return []
 
 
-async def crm_options() -> dict:
-    """Cosa si può scrivere in questo CRM: i valori dei campi a scelta e i gruppi. Ogni CRM ha i suoi."""
-    if "opts" in _CRM_LISTS and time.time() - _CRM_LISTS["opts_at"] < 3600:
+# Quello che il CRM cambia di rado (campi, gruppi, colleghi, nomi di clienti e contatti) si tiene anche su disco:
+# dopo un riavvio la pagina Ticket non riparte da zero (prima la prima apertura poteva metterci 5-10 secondi).
+def _crm_cache_load():
+    if _CRM_LISTS.get("disk"):
+        return
+    _CRM_LISTS["disk"] = True
+    try:
+        d = json.loads(user_file("crm_cache.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if d.get("opts") and "opts" not in _CRM_LISTS:
+        _CRM_LISTS.update(opts=d["opts"], opts_at=float(d.get("opts_at") or 0))
+    for k, v in (d.get("names") or {}).items():
+        _CRM_NAMES.setdefault(k, v)
+    for k, v in (d.get("contacts") or {}).items():
+        _CRM_CONTACTS.setdefault(k, v)
+
+
+def _crm_cache_save():
+    try:
+        f = user_file("crm_cache.json")
+        f.touch(mode=0o600)
+        f.write_text(json.dumps({"opts": _CRM_LISTS.get("opts"), "opts_at": _CRM_LISTS.get("opts_at", 0),
+                                 "names": {k: v for k, v in _CRM_NAMES.items() if v}, "contacts": dict(_CRM_CONTACTS)}, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        print(f"CRM: memoria su disco non salvata: {type(e).__name__}", flush=True)
+
+
+async def _crm_options_refresh():
+    try:
+        await crm_options(fresh=True)
+    except Exception as e:   # resta quella di prima
+        print(f"CRM: aggiornamento dei campi non riuscito: {type(e).__name__}", flush=True)
+    finally:
+        _CRM_LISTS.pop("opts_busy", None)
+
+
+async def crm_options(fresh: bool = False) -> dict:
+    """Cosa si può scrivere in questo CRM: i valori dei campi a scelta e i gruppi. Ogni CRM ha i suoi.
+    Vecchia di più di un'ora: si risponde subito con quella e la si rinfresca in sottofondo."""
+    _crm_cache_load()
+    if "opts" in _CRM_LISTS and not fresh:
+        if time.time() - _CRM_LISTS["opts_at"] >= 3600 and not _CRM_LISTS.get("opts_busy"):
+            _CRM_LISTS["opts_busy"] = True
+            asyncio.create_task(_crm_options_refresh())
         return _CRM_LISTS["opts"]
     fields = (await _crm_get("describe", elementType="HelpDesk")).get("fields") or []
     picks = {}
@@ -1759,6 +1809,7 @@ async def crm_options() -> dict:
             sla = []   # non tutti gli utenti possono leggerlo: si prende in carico come prima
     opts = {"picks": picks, "groups": groups, "known": [f.get("name") for f in fields], "note_field": note, "sla": sla, "people": await _crm_people()}
     _CRM_LISTS.update(opts=opts, opts_at=time.time())
+    _crm_cache_save()
     return opts
 
 
