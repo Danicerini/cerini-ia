@@ -962,7 +962,7 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                     told = files_for_prompt(user, [nudge])[0]
                     msgs.append({**told, "content": "[Scritto dall'utente mentre stavi lavorando: non lasciare a metà quello che stavi facendo. Se chiede una cosa rispondi, "
                                                     f"se aggiunge un dettaglio tienine conto, poi continua.]\n{told.get('content') or ''}"})
-                    yield ev(event="nudge", id=nid)
+                    yield ev(event="nudge", id=nid, message=nudge)
                 payload = {"model": body.model, "messages": msgs, "stream": True, "keep_alive": KEEP_ALIVE}
                 print(f"Chat: utente {user['id']}, modello {body.model}, giro {_round + 1}", flush=True)   # per poter controllare che modello ha risposto
                 if body.think is not None:
@@ -1268,8 +1268,171 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                 _CHAT_LIVE.pop(inbox, None)
                 _CHAT_INBOX.pop(inbox, None)
 
-    return StreamingResponse(live(), media_type="application/x-ndjson",
+    # Il turno gira sul server per conto suo: se l'utente chiude l'app o il sito va avanti lo stesso e alla fine salva lui la chat.
+    # Il browser che si riaffaccia (o la cui connessione cade) si riattacca con /api/chat/{id}/live e rivede tutto dall'inizio.
+    old = _CHAT_JOBS.get(inbox)
+    if old and not old["done"]:
+        old["task"].cancel()   # un turno nuovo nella stessa chat sostituisce quello vecchio
+    job = {"events": [], "done": False, "seen_end": False, "stopped": False, "wake": asyncio.Event(), "at": time.time(),
+           "history": body.messages[:], "model": body.model, "user": user}
+
+    async def runner():
+        try:
+            async for x in live():
+                job["events"].append(x)
+                job["wake"].set()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:   # un errore non previsto: si dice, non si perde il turno in silenzio
+            print(f"Chat: turno andato male: {type(e).__name__}: {e}", flush=True)
+            job["events"].append(ev(error=f"Errore del server: {type(e).__name__}"))
+        finally:
+            job["done"], job["at"] = True, time.time()
+            job["wake"].set()
+            await asyncio.sleep(1.5)   # un browser ancora attaccato fa in tempo a leggere la fine e a salvare lui
+            if not job["seen_end"] and not job["stopped"]:
+                try:
+                    _chat_job_save(user, body.chat_id, job)
+                    job["saved"] = True   # chi si riattacca adesso legge la chat salvata, non rivede il turno (sarebbe doppio)
+                except Exception as e:
+                    print(f"Chat: salvataggio del turno non riuscito: {type(e).__name__}: {e}", flush=True)
+
+    _chat_jobs_clean()
+    job["task"] = asyncio.create_task(runner())
+    if body.chat_id:
+        _CHAT_JOBS[inbox] = job
+    return StreamingResponse(_chat_job_feed(job), media_type="application/x-ndjson",
                              headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+_CHAT_JOBS = {}   # (utente, chat) -> turno in corso o appena finito (resta 6 ore per chi si riattacca)
+
+
+def _chat_jobs_clean():
+    for k, j in list(_CHAT_JOBS.items()):
+        if j["done"] and time.time() - j["at"] > 6 * 3600:
+            _CHAT_JOBS.pop(k, None)
+
+
+async def _chat_job_feed(job):
+    """Manda al browser gli eventi del turno, dall'inizio. Se il browser se ne va, il turno non si ferma."""
+    i = 0
+    while True:
+        while i < len(job["events"]):
+            yield job["events"][i]
+            i += 1
+        if job["done"]:
+            job["seen_end"] = True   # questo browser ha visto tutto: salva lui
+            return
+        job["wake"].clear()
+        if i < len(job["events"]) or job["done"]:
+            continue
+        try:
+            await asyncio.wait_for(job["wake"].wait(), 20)
+        except asyncio.TimeoutError:
+            yield ev(event="ping")
+
+
+@app.get("/api/chat/{chat_id}/live")
+async def chat_live(chat_id: str, user: dict = Depends(require_user)):
+    """Riattacca alla risposta in corso (o appena finita) di questa chat: rimanda tutto dall'inizio."""
+    job = _CHAT_JOBS.get((user["id"], chat_id))
+    if not job or job.get("saved"):
+        raise HTTPException(404, "Nessuna risposta in corso")
+    job["seen_end"] = False
+    return StreamingResponse(_chat_job_feed(job), media_type="application/x-ndjson",
+                             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
+
+
+@app.post("/api/chat/{chat_id}/stop")
+async def chat_stop(chat_id: str, user: dict = Depends(require_user)):
+    """Il tasto Stop: ora che il turno gira da solo, va fermato davvero sul server."""
+    job = _CHAT_JOBS.get((user["id"], chat_id))
+    if job and not job["done"]:
+        job["stopped"] = True
+        job["task"].cancel()
+    return {"ok": True}
+
+
+def _chat_job_messages(events: list[str]) -> list[dict]:
+    """Gli eventi del turno diventano i messaggi della chat, come li compone il browser."""
+    out, reply = [], None
+
+    def new():
+        r = {"role": "assistant", "content": "", "thinking": ""}
+        out.append(r)
+        return r
+
+    reply = new()
+    for line in events:
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        e = d.get("event")
+        if d.get("error"):
+            out.append({"role": "error", "content": str(d["error"])})
+            reply = None
+            break
+        if e == "ping" or e == "project":
+            continue
+        if e == "assistant_tool_calls":
+            if reply is None:
+                reply = new()
+            reply["tool_calls"] = d["message"].get("tool_calls")
+            reply["content"] = d["message"].get("content") or reply["content"]
+            continue
+        if e == "nudge":
+            m = dict(d.get("message") or {})
+            if m.get("images"):
+                m["images"] = ["data:image/jpeg;base64," + x for x in m["images"]]
+            out.append(m)
+            reply = new()
+            continue
+        if e == "tool_result":
+            out.append({**d["message"], **{k: d[k] for k in ("display", "view", "undo", "sources", "files", "open") if d.get(k)}})
+            reply = new()
+            continue
+        if e == "confirm":
+            out.append({"role": "confirm", "id": d.get("id"), "name": d.get("name"), "args": d.get("args"), "summary": d.get("summary"),
+                        **({"view": d["view"]} if d.get("view") else {}), "status": "pending"})
+            reply = None
+            continue
+        if reply is None:
+            continue
+        msg = d.get("message") or {}
+        reply["thinking"] += msg.get("thinking") or ""
+        reply["content"] += msg.get("content") or ""
+        if d.get("masked"):
+            reply["masked"] = d["masked"]
+    return [m for m in out if m.get("role") != "assistant" or m.get("content") or m.get("thinking") or m.get("tool_calls")]
+
+
+def _chat_job_save(user: dict, chat_id: str, job: dict):
+    """Nessun browser ha visto la fine: la chat la salva il server, con quello che c'era più la risposta."""
+    if not chat_id or chat_id == aura_chat_id(user["id"]):
+        return
+    with db() as c:
+        r = c.execute("SELECT * FROM chats WHERE id = ? AND user_id = ?", (chat_id, user["id"])).fetchone()
+    stored = json.loads(r["messages"] or "[]") if r else []
+    last = next((m for m in reversed(job["history"]) if m.get("role") == "user"), None)
+    stored_last = next((m for m in reversed(stored) if m.get("role") == "user"), None)
+    same = bool(last and stored_last) and (stored_last.get("content") or "") == (last.get("content") or "")
+    if same and stored[-1] is not stored_last:
+        return   # dopo il messaggio c'e' gia' la risposta: l'ha salvata il browser
+    if last and not same:
+        m = {k: last[k] for k in ("role", "content", "files") if last.get(k)}
+        if last.get("images"):
+            m["images"] = ["data:image/jpeg;base64," + x for x in last["images"]]
+        stored.append(m)   # il messaggio dell'utente non era ancora arrivato al server
+    stored = [m for m in stored if m.get("role") != "error"] + _chat_job_messages(job["events"])
+    title = (r["title"] if r else "") or re.sub(r"\s+", " ", (last or {}).get("content") or "Nuova chat").strip()[:60] or "Nuova chat"
+    now = int(time.time() * 1000)
+    with db() as c:
+        c.execute("""INSERT INTO chats (id, user_id, title, model, created, updated, messages) VALUES (?, ?, ?, ?, ?, ?, ?)
+                     ON CONFLICT(id) DO UPDATE SET updated = excluded.updated, messages = excluded.messages""",
+                  (chat_id, user["id"], title, job["model"], r["created"] if r else now, now, json.dumps(stored, ensure_ascii=False)))
+    print(f"Chat: risposta salvata dal server (utente {user['id']}, nessun browser attaccato)", flush=True)
 
 
 def _short_err(msg: str) -> str:
@@ -1572,7 +1735,12 @@ async def list_chats(user: dict = Depends(require_user)):
     with db() as c:
         rows = c.execute("SELECT id, title, model, created, updated, pinned FROM chats WHERE user_id = ? AND id != ? ORDER BY pinned DESC, updated DESC",
                          (user["id"], aura_chat_id(user["id"]))).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    for r in out:   # sta ancora lavorando sul server: il browser si riattacca
+        j = _CHAT_JOBS.get((user["id"], r["id"]))
+        if j and not j["done"]:
+            r["running"] = True
+    return out
 
 
 @app.get("/api/chats/{chat_id}")
@@ -1584,6 +1752,9 @@ async def get_chat(chat_id: str, user: dict = Depends(require_user)):
     d = dict(r)
     d["messages"] = json.loads(d["messages"])
     del d["user_id"]
+    j = _CHAT_JOBS.get((user["id"], chat_id))
+    if j and not j["done"]:
+        d["running"] = True
     return d
 
 

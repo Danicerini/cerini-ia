@@ -492,11 +492,13 @@ async function openChat(id) {
   const c = S.chats.find((x) => x.id === id); if (!c) return;
   closeViews();
   if (!c.messages) {
+    delete c.running;   // conta quello che dice il server adesso, non l'elenco di prima
     try { Object.assign(c, await Store.get(id)); }
     catch (e) { toast('Non riesco ad aprire la chat: ' + e.message); return; }
   }
   S.currentId = id; S.editing = null; S.attachments = [];
   if (c.model) loadCaps(c.model);
+  if (c.running && !S.streams.has(id)) { delete c.running; run(c, { resume: true }); }
   closeSide(); renderAll(); scrollToBottom(true);
   navSync();
 }
@@ -5077,10 +5079,19 @@ async function nudgeSend(chatId, q) {
   } catch (e) { q.sent = false; toast(e.message); }
   renderComposer();
 }
-async function run(chat) {
+// Il turno gira sul server anche ad app chiusa: se la connessione cade ci si riattacca (/live) e il server rimanda tutto dall'inizio.
+// Con resume: true si riattacca a una risposta che il server sta gia' scrivendo (app riaperta).
+const chatGone = (e) => e.name === 'TypeError' || /network|fetch|load failed|connection|\b52[2-4]\b/i.test(e.message || '');
+const whenBack = () => new Promise((res) => {
+  if (!document.hidden) { setTimeout(res, 1500); return; }
+  const f = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', f); setTimeout(res, 800); } };
+  document.addEventListener('visibilitychange', f);
+});
+async function run(chat, opts = {}) {
   chat.messages = chat.messages.filter((m) => m.role !== 'error');
   let reply = { role: 'assistant', content: '', thinking: '', _streaming: true };
   chat.messages.push(reply);
+  const base = chat.messages.length - 1;   // da qui comincia questa risposta
   // Lo spostamento in cima della chat la mostra come "recente" nella barra laterale
   S.chats = [chat, ...S.chats.filter((c) => c !== chat)];
   const controller = new AbortController();
@@ -5119,9 +5130,18 @@ async function run(chat) {
   };
   const schedule = () => { if (!frame) frame = requestAnimationFrame(paint); };
 
+  let resume = !!opts.resume, tries = 0, fromServer = false;
+  for (;;) {
   try {
-    const r = await api('/api/chat', { model, messages: history, chat_id: chat.id, think: hasCap('thinking') && S.think ? true : undefined,
-      voice: Voice.on || undefined }, { signal: controller.signal });
+    const r = resume ? await api(`/api/chat/${encodeURIComponent(chat.id)}/live`, undefined, { signal: controller.signal })
+      : await api('/api/chat', { model, messages: history, chat_id: chat.id, think: hasCap('thinking') && S.think ? true : undefined,
+        voice: Voice.on || undefined }, { signal: controller.signal });
+    if (resume) {   // il server rimanda il turno dall'inizio: si ricompone da capo
+      chat.messages.splice(base);
+      reply = { role: 'assistant', content: '', thinking: '', _streaming: true }; chat.messages.push(reply);
+      thinkStart = 0; turnTokens = 0;
+      if (S.currentId === chat.id) renderThread();
+    }
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '';
     for (;;) {
@@ -5133,7 +5153,7 @@ async function run(chat) {
         const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
         if (!line) continue;
         const d = JSON.parse(line);
-        if (d.error) throw new Error(d.error);
+        if (d.error) throw Object.assign(new Error(d.error), { fromServer: true });
         if (d.event === 'assistant_tool_calls') {
           reply.tool_calls = d.message.tool_calls; reply.content = d.message.content || reply.content;
           if (thinkStart && !reply.thinkMs) reply.thinkMs = performance.now() - thinkStart;
@@ -5145,8 +5165,10 @@ async function run(chat) {
         if (d.event === 'ping') continue;
         if (d.event === 'nudge') {   // l'ha letto adesso: nella chat compare qui, tra quello che ha già fatto e quello che fa dopo
           const at = entry.queue.findIndex((q) => q.nid === d.id);
-          if (at >= 0) {
-            const [q] = entry.queue.splice(at, 1);
+          // riattaccandosi il messaggio non e' piu' in coda: lo rimanda il server
+          const back = at < 0 && d.message ? { ...d.message, ...(d.message.images ? { images: d.message.images.map((x) => 'data:image/jpeg;base64,' + x) } : {}) } : null;
+          if (at >= 0 || back) {
+            const q = back || entry.queue.splice(at, 1)[0];
             delete q.nid; delete q.sent;
             if (reply) { delete reply._streaming; if (!reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1); }
             chat.messages.push(q);
@@ -5192,15 +5214,31 @@ async function run(chat) {
       }
       schedule();
     }
+    break;
   } catch (err) {
-    if (err.name === 'AbortError') {
+    if (err.name !== 'AbortError' && !err.fromServer && chatGone(err) && tries < 8) {
+      tries++; resume = true;   // connessione caduta (app chiusa, rete): il turno va avanti sul server, ci si riattacca
+      await whenBack();
+      if (!controller.signal.aborted) continue;
+    }
+    if (err.name !== 'AbortError' && resume && /Nessuna risposta in corso/.test(err.message)) {
+      // il turno sul server e' finito da tempo: la risposta, se c'e', l'ha salvata lui
+      try {
+        const fresh = await Store.get(chat.id);
+        if (fresh.messages.length > base) { chat.messages = fresh.messages; reply = null; fromServer = true; break; }
+      } catch {}
+    }
+    if (err.name === 'AbortError' || controller.signal.aborted) {
       ended = 'stop';
+      api(`/api/chat/${encodeURIComponent(chat.id)}/stop`, {}).catch(() => {});   // il turno gira sul server: va fermato anche li'
       if (reply) {
         reply.stats = 'Interrotta';
         // niente sparisce in silenzio: un'azione può essere già partita prima dello stop
         if (!reply.content && !reply.thinking && !reply.tool_calls) reply.content = '_Risposta interrotta. Se avevi chiesto un\'azione, controlla se è già stata fatta._';
       }
     } else { ended = 'error'; chat.messages.push({ role: 'error', content: friendlyError(err.message) }); }
+    break;
+  }
   }
   if (frame) cancelAnimationFrame(frame);
   if (reply) {
@@ -5209,7 +5247,7 @@ async function run(chat) {
     if (!reply.content && !reply.thinking && !reply.tool_calls) chat.messages.splice(chat.messages.indexOf(reply), 1);
   }
   S.streams.delete(chat.id);
-  saveChat(chat);
+  if (!fromServer) saveChat(chat);
   renderAll();
   if (S.currentId === chat.id) keepFollowing();
   refresh();
