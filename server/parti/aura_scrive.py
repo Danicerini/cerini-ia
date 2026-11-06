@@ -437,6 +437,11 @@ def _parcel_found(uid: int, info: dict, sp: dict):
             status, changed, title = sp["stato"], True, sp["cosa"]
             pid = c.execute("INSERT INTO parcels (user_id, title, shop, carrier, tracking, status, eta, mid, created, updated) VALUES (?,?,?,?,?,?,?,?,?,?)",
                             (uid, title, sp["negozio"], sp["corriere"], sp["tracking"], status, sp["arrivo"], info["mid"], now, now)).lastrowid
+    if sp["tracking"] and status != "consegnato" and (not same or same["tracking"] != sp["tracking"]):
+        try:   # codice nuovo: va subito a 17TRACK (se l'utente ha la chiave), senza aspettare il giro di ogni ora
+            asyncio.get_running_loop().create_task(_track_first(uid, 5))
+        except RuntimeError:
+            pass   # fuori dal ciclo (script a mano): ci pensa il giro di ogni ora
     if not changed:
         return
     eta = ""

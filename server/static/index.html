@@ -791,10 +791,13 @@ button:disabled { cursor: default; }
 .tkp-ev::before { content: ""; width: 6px; height: 6px; margin-left: -20px; margin-right: 6px; border-radius: 50%; background: var(--border-strong); }
 .tkp-c { display: flex; gap: 10px; min-width: 0; }
 .tkp-c > .tkp-av { margin-top: 8px; }
-.tkp-cb { flex: 1; min-width: 0; padding: 10px 13px; border: 1px solid var(--border); border-radius: 12px; }
-.tkp-c.client .tkp-cb { background: var(--hover); }
-.tkp-c.me .tkp-cb { border-color: color-mix(in oklch, var(--accent) 35%, var(--border)); background: var(--accent-soft); }
-.tkp-c.priv .tkp-cb { border-style: dashed; border-color: var(--border-strong); background: none; }
+/* ogni messaggio e' un riquadro che si stacca dallo sfondo, con una striscia a sinistra del colore di chi scrive:
+   cliente = colore della risposta, interna = giallo, tu = accento, colleghi = grigio */
+.tkp-cb { --tkc: var(--border-strong); flex: 1; min-width: 0; padding: 11px 14px 11px 15px; border: 1px solid var(--border-strong); border-left: 3px solid var(--tkc); border-radius: 12px;
+  background: color-mix(in oklch, var(--tkc) 7%, var(--raised)); box-shadow: 0 1px 3px oklch(0 0 0 / 0.12); }
+.tkp-c.client .tkp-cb { --tkc: var(--tk-reply); }
+.tkp-c.me .tkp-cb { --tkc: var(--accent); }
+.tkp-c.priv .tkp-cb { --tkc: var(--warn); border-style: dashed; border-left-style: solid; }
 .tkp-cb .tk-txt { font-size: 13.5px; }
 .tkp-cb .tk-com-h > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .tkp-cl { font-size: 11px; color: var(--text-3); }
