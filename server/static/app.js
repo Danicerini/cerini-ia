@@ -2764,7 +2764,11 @@ function leadCard(l) {
     renderClienti();
   };
   const gq = encodeURIComponent(`${l.name} ${l.town || ''}`);
-  const st = h('select', { 'aria-label': 'Stato', onchange: (e) => patch({ status: e.target.value }) },
+  const st = h('select', { 'aria-label': 'Stato', onchange: (e) => {
+    const v = e.target.value;
+    if (l.sito && !['lavorazione', 'cliente'].includes(v) && !confirm(`«${l.name}» ha un sito in lavorazione sul server. Cambiando stato il sito viene tolto dalle cartelle e messo in archivio (non si perde niente). Continuare?`)) { e.target.value = l.status; return; }
+    patch({ status: v });
+  } },
     ...CL_STATUS.map(([v, t]) => h('option', { value: v, text: t, selected: l.status === v ? true : null })));
   const nb = leadNotes(l, () => {}), notes = nb.box, noteOpen = nb.open;
   return h('div', { class: `cl-card k-${l.kind} st-${l.status}` },
@@ -2790,41 +2794,61 @@ function leadCard(l) {
 // ---- Siti in lavorazione: ogni cliente preso in carico è un progetto sul server dei siti, con una cartella per persona
 const agoTs = (ts) => { if (!ts) return ''; const m = Math.round((Date.now() / 1000 - ts) / 60);
   return m < 1 ? 'adesso' : m < 60 ? `${m} min fa` : m < 1440 ? `${Math.round(m / 60)} h fa` : new Date(ts * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }); };
-function sitoPerson(g) {
-  const bits = [];
-  if (g.modifiche) bits.push(`${g.modifiche} file in modifica` + (g.ultima_modifica ? ` · ${agoTs(g.ultima_modifica)}` : ''));
-  if (g.da_consegnare) bits.push(`${g.da_consegnare} da consegnare`);
-  if (g.indietro) bits.push(`${g.indietro} indietro`);
-  const live = g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800;
-  return h('div', { class: 'st-p' + (live ? ' live' : '') }, h('i', { class: 'dot', title: live ? 'Ci sta lavorando adesso' : '' }),
-    h('b', { text: g.utente === CL.siti?.me ? 'Tu' : g.utente }), h('span', { text: bits.join(' · ') || 'niente in sospeso' }));
+// Quello che conta di un sito: chi lo segue, se il suo Claude ci sta lavorando adesso, cosa ha scritto nel diario,
+// cosa resta da consegnare. Gli altri compaiono solo se ci hanno messo mano davvero (file in modifica o commit da consegnare).
+function sitoInfo(p) {
+  const me = CL.siti?.me, ppl = p.persone || [];
+  const owner = ppl.find((g) => g.utente === p.chi) || { utente: p.chi, modifiche: 0, da_consegnare: 0, commit: [], file_modificati: [] };
+  const helpers = ppl.filter((g) => g.utente !== p.chi && (g.modifiche || g.da_consegnare));
+  const live = [owner, ...helpers].some((g) => g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800);
+  const diary = (p.diario || []).filter((d) => d.chi !== 'aura');
+  const last = (p.main || []).find((c) => c.chi !== 'sito');
+  const lastTs = Math.max(+(diary.at(-1)?.ts || 0), +(last?.ts || 0), ...[owner, ...helpers].map((g) => g.ultima_modifica || 0));
+  return { me, mine: p.chi === me, who: p.chi === me ? 'tu' : p.chi, owner, helpers, live, diary, last, lastTs };
 }
-// la riga del sito sulla scheda del cliente: chi lo segue, chi ci sta lavorando adesso, l'ultima consegna
+const sitoName = (u) => (u === CL.siti?.me ? 'tu' : u === 'sito' || u === 'aura' ? 'Aura' : u);
+function sitoState(x) {
+  return h('div', { class: 'st-state' + (x.live ? ' live' : '') }, h('i', { class: 'dot' }),
+    h('span', { text: x.live ? 'Claude ci sta lavorando adesso' : x.lastTs ? `Fermo · ultimo movimento ${agoTs(x.lastTs)}` : 'Non ancora iniziato' }));
+}
+function sitoPending(x) {
+  const o = x.owner, bits = [];
+  if (o.da_consegnare) bits.push(`${o.da_consegnare} ${o.da_consegnare === 1 ? 'commit' : 'commit'} da consegnare`);
+  if (o.modifiche) bits.push(`${o.modifiche} file in modifica`);
+  for (const g of x.helpers) bits.push(`${sitoName(g.utente)} ci ha messo mano`);
+  return bits;
+}
+// la riga del sito sulla scheda del cliente: chi lo segue, se ci si sta lavorando, l'ultima riga del diario
 function sitoLine(slug) {
   const p = (CL.siti?.progetti || []).find((x) => x.slug === slug);
   if (!p) return h('div', { class: 'cl-sito' }, h('b', { text: 'Sito in lavorazione' }));
-  const me = CL.siti.me, last = (p.main || []).find((c) => c.chi !== 'sito');
-  const live = (p.persone || []).filter((g) => g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800).map((g) => (g.utente === me ? 'tu' : g.utente));
+  const x = sitoInfo(p);
   return h('button', { type: 'button', class: 'cl-sito', onclick: () => sitoView(slug) },
-    h('b', { text: `In lavorazione · ${p.chi === me ? 'lo segui tu' : 'lo segue ' + p.chi}` }),
-    h('span', { text: [live.length ? `ci sta lavorando ${live.join(' e ')}` : '', last ? `ultima consegna ${agoTs(+last.ts)} (${last.chi})` : 'niente consegnato ancora'].filter(Boolean).join(' · ') }));
+    h('b', { text: `Sito in lavorazione · ${x.mine ? 'lo segui tu' : 'lo segue ' + p.chi}` }),
+    h('span', { text: x.diary.at(-1)?.testo || (x.live ? 'Claude ci sta lavorando adesso' : 'Ancora niente nel diario') }));
 }
 function sitiSection() {
   const s = CL.siti;
   if (!s?.on) return null;
   if (s.error) return h('div', { class: 'cl-job err', text: 'Siti in lavorazione non letti: ' + s.error });
-  const list = s.progetti || [];
+  const list = [...(s.progetti || [])].sort((a, b) => (b.chi === s.me) - (a.chi === s.me) || sitoInfo(b).lastTs - sitoInfo(a).lastTs);
   return h('section', { class: 'st-sec' },
     h('div', { class: 'st-h' }, h('h2', { text: 'Siti in lavorazione' }), h('small', { text: list.length ? `${list.length}` : '' })),
     list.length ? h('div', { class: 'st-grid' }, ...list.map((p) => {
-      const last = (p.main || [])[0], diary = (p.diario || []).filter((d) => d.chi !== 'aura').slice(-1)[0];
-      return h('button', { type: 'button', class: 'st-card', onclick: () => sitoView(p.slug) },
-        h('div', { class: 'st-top' }, h('b', { text: p.nome }), h('small', { text: p.chi === s.me ? 'tuo' : `di ${p.chi}` })),
+      const x = sitoInfo(p), d = x.diary.at(-1), pend = sitoPending(x);
+      const sub = p.lead ? [p.lead.town].filter(Boolean).join('') : '';
+      return h('button', { type: 'button', class: 'st-card' + (x.mine ? ' mine' : '') + (x.live ? ' live' : ''), onclick: () => sitoView(p.slug) },
+        h('div', { class: 'st-top' }, h('span', { class: 'st-av', text: (p.nome || '?').trim()[0].toUpperCase() }),
+          h('div', { class: 'st-tt' }, h('b', { text: p.nome }), h('small', { text: [sub, x.mine ? 'lo segui tu' : 'lo segue ' + p.chi].filter(Boolean).join(' · ') })),
+          x.mine ? h('span', { class: 'st-chip', text: 'Tuo' }) : null),
         p.errore ? h('small', { class: 'st-err', text: p.errore }) : null,
-        ...(p.persone || []).map(sitoPerson),
-        diary ? h('small', { class: 'st-hint', text: `📓 ${diary.testo}` }) : null,
-        h('div', { class: 'st-foot' }, h('span', { text: last ? `Ultima consegna: ${last.chi} · ${agoTs(+last.ts)}` : '' })));
-    })) : h('div', { class: 'cl-empty', text: 'Nessun sito in lavorazione. Su un cliente premi «Prendo in carico»: nasce il progetto sul server, con la tua cartella (e una per i colleghi, se ti serve una mano) e il suo repository su GitHub.' }));
+        sitoState(x),
+        h('div', { class: 'st-diary' + (d ? '' : ' empty') }, h('p', { text: d ? d.testo : 'Il diario è ancora vuoto: Claude ci scrive quando inizia e quando finisce un lavoro.' }),
+          d ? h('small', { text: `${sitoName(d.chi)} · ${agoTs(+d.ts)}` }) : null),
+        h('div', { class: 'st-foot' },
+          h('span', { text: pend.length ? pend.join(' · ') : 'Niente in sospeso' }),
+          h('span', { text: x.last ? `Consegnato ${agoTs(+x.last.ts)}` : 'Niente consegnato' })));
+    })) : h('div', { class: 'cl-empty', text: 'Nessun sito in lavorazione. Su un cliente premi «Prendo in carico»: nasce il progetto sul server, con la tua cartella e il suo repository su GitHub.' }));
 }
 function sitoTake(l) {
   const close = () => modal.remove();
@@ -2856,23 +2880,30 @@ async function sitoView(slug) {
     h('div', { class: 'ag-sheet st-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Sito in lavorazione' },
       h('div', { class: 'ag-sheet-h' }, title, h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })), body));
   document.body.append(modal);
-  const me = CL.siti?.me;
   const paint = (p) => {
     title.textContent = p.nome;
-    const when = (ts) => agoTs(+ts);
+    const x = sitoInfo(p), o = x.owner;
     const sec = (t, ...kids) => h('section', { class: 'st-s' }, h('h3', { text: t }), ...kids);
-    const people = (p.persone || []).map((g) => h('div', { class: 'st-pp' }, sitoPerson(g),
-      g.commit?.length ? h('ul', { class: 'st-list' }, ...g.commit.map((c) => h('li', {}, h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : null,
-      g.file_modificati?.length ? h('div', { class: 'st-files', text: g.file_modificati.join(' · ') }) : null));
+    const commits = (list) => h('ul', { class: 'st-list' }, ...list.map((c) => h('li', {}, h('span', { text: c.testo }), h('small', { text: agoTs(+c.ts) }))));
+    const files = (g) => g.file_modificati?.length ? h('div', { class: 'st-files' }, ...g.file_modificati.map((f) => h('code', { text: f }))) : null;
+    const todo = o.commit?.length || o.file_modificati?.length;
     body.replaceChildren(
-      h('div', { class: 'st-meta' }, h('span', { text: `Preso in carico da ${p.chi === me ? 'te' : p.chi}` + (p.creato_il ? ` · ${p.creato_il}` : '') }),
+      h('div', { class: 'st-meta' },
+        h('span', { class: 'st-chip' + (x.mine ? '' : ' soft'), text: x.mine ? 'Lo segui tu' : 'Lo segue ' + p.chi }),
+        p.lead ? h('span', { text: `Cliente: ${p.lead.name}` + (p.lead.town ? ` · ${p.lead.town}` : '') }) : h('span', { class: 'st-dim', text: 'Non collegato a un cliente' }),
+        p.creato_il ? h('span', { class: 'st-dim', text: 'dal ' + p.creato_il.slice(0, 10).split('-').reverse().join('/') }) : null,
         p.github ? h('a', { href: `https://github.com/${p.github}`, target: '_blank', rel: 'noopener', html: icon('link', 'sm') + 'GitHub' }) : null),
       p.note ? h('p', { class: 'st-hint', text: p.note }) : null,
-      sec('Chi ci lavora', ...people),
-      sec('Consegnato (main)', (p.main || []).length ? h('ul', { class: 'st-list' }, ...(p.main || []).map((c) => h('li', {}, h('b', { text: c.chi }), h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : h('small', { text: 'Ancora niente' })),
-      sec('Diario di Claude', (p.diario || []).length ? h('ul', { class: 'st-list st-msgs' }, ...[...p.diario].reverse().map((d) => h('li', {}, h('b', { text: d.chi }), h('span', { text: d.testo }), h('small', { text: d.at })))) : h('small', { text: 'Ancora niente' })));
+      h('div', { class: 'st-now' }, sitoState(x), h('small', { text: sitoPending(x).join(' · ') || 'Niente in sospeso' })),
+      sec('Diario di Claude', x.diary.length
+        ? h('ol', { class: 'st-tl' }, ...[...x.diary].reverse().map((d) => h('li', {}, h('i'), h('div', {}, h('p', { text: d.testo }), h('small', { text: `${sitoName(d.chi)} · ${d.at}` })))))
+        : h('p', { class: 'st-hint', text: 'Ancora vuoto: Claude ci scrive quando inizia e quando finisce un lavoro.' })),
+      todo ? sec(x.mine ? 'Da consegnare (nella tua cartella)' : `Da consegnare (cartella di ${p.chi})`, o.commit?.length ? commits(o.commit) : null, files(o)) : null,
+      ...x.helpers.map((g) => sec(`${sitoName(g.utente) === 'tu' ? 'Tu' : g.utente} ci ha messo mano`, g.commit?.length ? commits(g.commit) : null, files(g))),
+      sec('Consegnato', (p.main || []).length
+        ? h('ul', { class: 'st-list' }, ...(p.main || []).map((c) => h('li', {}, h('b', { text: sitoName(c.chi) }), h('span', { text: c.testo }), h('small', { text: agoTs(+c.ts) }))))
+        : h('small', { text: 'Ancora niente' })));
   };
-  // si aggiorna da sola mentre è aperta
   const load = async (first) => {
     try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}`)).json()); }
     catch (e) { if (first) body.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); }

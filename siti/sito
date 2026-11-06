@@ -19,6 +19,7 @@ Comandi per le persone (e i loro Claude):
   sito consegna                                 dalla tua cartella: rebase su main e main avanza (GitHub si aggiorna da solo)
 Comandi di servizio (root o aura):
   sito nuovo <slug> <nome> <chi> [note…]        crea il progetto e le cartelle di tutti
+  sito archivia <slug>                          toglie il sito: tutto (anche il lavoro non salvato) in /srv/siti/.archivio/<slug>-<data>.tar.gz
   sito github                                   crea i repository mancanti e manda main e i branch su GitHub
   sito attivita <da-timestamp>                  cosa è successo in tutti i progetti da quel momento (JSON, per Aura)
 """
@@ -303,6 +304,26 @@ def nuovo(args: list[str]):
     print(json.dumps(m, ensure_ascii=False))
 
 
+def archivia(slug: str):
+    """Il cliente non c'è più (non interessa): il sito sparisce dalle cartelle ma non si perde niente, finisce in un archivio."""
+    if os.getuid() != 0:
+        die("solo root (o aura con sudo) archivia i progetti")
+    p = proj(slug)
+    arch = ROOT / ".archivio"
+    if not arch.exists():
+        arch.mkdir()
+        subprocess.run(["chgrp", "dev", str(arch)], check=True); os.chmod(arch, 0o2750)
+    out = arch / f"{slug}-{datetime.now():%Y%m%d-%H%M%S}.tar.gz"
+    cartelle = [wt(p, u) for u in users() if wt(p, u).exists()]
+    subprocess.run(["tar", "czf", str(out), "--exclude=node_modules", "-C", str(ROOT), str(p.relative_to(ROOT)),
+                    *[str(w.relative_to(ROOT)) for w in cartelle]], check=True)
+    subprocess.run(["chgrp", "dev", str(out)], check=True); os.chmod(out, 0o640)
+    for w in cartelle:
+        shutil.rmtree(w)
+    shutil.rmtree(p)
+    print(json.dumps({"archivio": str(out)}, ensure_ascii=False))
+
+
 # ------------------------------------------------------------------ GitHub (solo aura: la chiave la legge solo lei)
 def gh_api(method: str, path: str, token: str, body: dict | None = None):
     req = urllib.request.Request("https://api.github.com" + path, method=method, data=json.dumps(body).encode() if body is not None else None,
@@ -427,6 +448,8 @@ def main():
         consegna()
     elif cmd == "nuovo":
         nuovo(a[1:])
+    elif cmd == "archivia" and len(a) > 1:
+        archivia(a[1])
     elif cmd == "github":
         github()
     elif cmd == "attivita":

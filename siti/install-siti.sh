@@ -45,6 +45,7 @@ git config --system --get-all safe.directory | grep -qx '\*' || git config --sys
 UTENTI=$(python3 -c 'import json; print(",".join(json.load(open("/etc/siti/config.json")).get("utenti") or []))' 2>/dev/null || true)
 {
   echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito nuovo *'
+  echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito archivia *'
   echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito-file *'
   [ -n "$UTENTI" ] && echo "aura ALL=($UTENTI) NOPASSWD: /usr/local/bin/sito-file *"
 } > /etc/sudoers.d/aura-siti

@@ -642,6 +642,12 @@ async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_cli
     if sets:
         with db() as c:
             c.execute(f"UPDATE leads SET {', '.join(sets)}, updated = ? WHERE id = ?", (*args, int(time.time()), lead["id"]))
+    # il sito resta sul server solo finché il cliente è In lavorazione o Cliente: altrimenti va in archivio subito
+    if body.status and lead.get("sito") and body.status not in ("lavorazione", "cliente"):
+        try:
+            await siti_archive(lead, "non interessa" if body.status == "no" else "stato cambiato")
+        except ValueError as e:
+            raise HTTPException(502, f"Stato cambiato, ma il sito non è stato archiviato: {e}")
     return _lead(owner_id(), lid)
 
 

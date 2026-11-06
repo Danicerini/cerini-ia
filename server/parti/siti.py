@@ -93,12 +93,62 @@ async def siti_all() -> list[dict]:
 
 # ---- API per la pagina Clienti (sezione «Siti in lavorazione»)
 
+def _siti_leads() -> dict:
+    """slug -> il cliente della pagina Clienti da cui è nato il sito."""
+    with db() as c:
+        return {r["sito"]: {"id": r["id"], "name": r["name"], "status": r["status"], "town": r["town"]}
+                for r in c.execute("SELECT id, name, status, town, sito FROM leads WHERE user_id = ? AND sito != ''", (owner_id(),))}
+
+
+SITI_LIVE = ("lavorazione", "cliente")   # gli stati del cliente in cui il sito resta sul server
+
+
+async def siti_archive(lead: dict, why: str = "") -> str:
+    """Il cliente è uscito da «In lavorazione» (o non interessa): il sito va in archivio sul server, non si perde niente."""
+    slug = lead.get("sito") or ""
+    if not slug:
+        return ""
+    where = ""
+    try:
+        where = json.loads(await siti_call("archivia", slug) or "{}").get("archivio", "")
+    except ValueError as e:
+        if "non trovato" not in str(e):
+            raise
+    except json.JSONDecodeError:
+        pass
+    _siti_forget()
+    with db() as c:
+        c.execute("UPDATE leads SET sito = '', updated = ? WHERE id = ?", (int(time.time()), lead["id"]))
+        c.execute("INSERT INTO lead_notes (lead_id, user_id, who, text, at) VALUES (?,?,?,?,?)",
+                  (lead["id"], 0, "Aura", f"Sito «{slug}» tolto dal server{(' (' + why + ')') if why else ''}: è in archivio, si può recuperare.", int(time.time())))
+    return where
+
+
+async def siti_sync_leads():
+    """Tiene insieme clienti e siti: un sito resta solo se il suo cliente è In lavorazione o Cliente (anche se lo stato
+    l'ha cambiato Aura in chat); un cliente che punta a un sito sparito perde il collegamento."""
+    if not siti_on():
+        return
+    with db() as c:
+        rows = [dict(r) for r in c.execute("SELECT * FROM leads WHERE user_id = ? AND sito != ''", (owner_id(),))]
+    if not rows:
+        return
+    have = {p["slug"] for p in await siti_json("elenco", ttl=0)}
+    for r in rows:
+        if r["sito"] not in have:
+            with db() as c:
+                c.execute("UPDATE leads SET sito = '' WHERE id = ?", (r["id"],))
+        elif r["status"] not in SITI_LIVE:
+            await siti_archive(r, "il cliente non è più in lavorazione")
+
+
 @app.get("/api/siti")
 async def siti_get(user: dict = Depends(require_user)):
     if not siti_on() or not siti_user(user):
         return {"on": False}
     try:
-        return {"on": True, "me": siti_user(user), "progetti": await siti_all()}
+        leads = _siti_leads()
+        return {"on": True, "me": siti_user(user), "progetti": [{**p, "lead": leads.get(p.get("slug"))} for p in await siti_all()]}
     except ValueError as e:
         raise HTTPException(502, str(e))
 
@@ -106,7 +156,7 @@ async def siti_get(user: dict = Depends(require_user)):
 @app.get("/api/siti/{slug}")
 async def siti_one(slug: str, user: dict = Depends(require_siti)):
     try:
-        return await siti_json("stato", slug, ttl=5)
+        return {**await siti_json("stato", slug, ttl=5), "lead": _siti_leads().get(slug)}
     except ValueError as e:
         raise HTTPException(502, str(e))
 
@@ -161,6 +211,10 @@ async def siti_watch_loop():
     since = int(time.time())
     while True:
         if siti_on():
+            try:
+                await siti_sync_leads()
+            except (ValueError, json.JSONDecodeError) as e:
+                print(f"Siti: allineamento coi clienti non riuscito: {_clip(str(e), 120)}", flush=True)
             try:
                 d = await siti_call("attivita", str(since))
                 d = json.loads(d)
