@@ -193,7 +193,8 @@ def apri(slug: str, u: str):
 
 
 def me() -> str:
-    return os.environ.get("SUDO_USER") or pwd.getpwuid(os.getuid()).pw_name
+    """Chi sta lanciando il comando: l'utente vero; SUDO_USER solo se si è root via sudo."""
+    return (os.environ.get("SUDO_USER") if os.getuid() == 0 else "") or pwd.getpwuid(os.getuid()).pw_name
 
 
 # ------------------------------------------------------------------ consegna

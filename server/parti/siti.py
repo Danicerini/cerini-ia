@@ -172,7 +172,7 @@ async def siti_watch_loop():
                             me = u["ct"]
                             # ognuno lavora sui suoi siti: si avvisa solo quando un altro consegna o scrive nel diario di un
                             # sito tuo (ti ha dato una mano). Il resto si vede nella pagina e lo si chiede ad Aura.
-                            if p.get("chi") != me or e.get("chi") in (me, "aura") or e["tipo"] not in ("consegna", "diario"):
+                            if p.get("chi") != me or e.get("chi") in (me, "aura", "sito") or e["tipo"] not in ("consegna", "diario"):
                                 continue
                             title = {"consegna": f"🧱 {p['nome']}: {e['chi']} ha consegnato",
                                      "diario": f"📓 {p['nome']}: {e['chi']} ci sta lavorando"}[e["tipo"]]
