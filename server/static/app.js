@@ -885,12 +885,17 @@ function paintAssistant(el, m, chat, isLastAssist) {
   if (!streaming && !(m.tool_calls?.length && !m.content) && (closes || (m.content || '').length > 200)) {
     const copyB = h('button', { class: 'icon-btn sm', title: 'Copia', 'aria-label': 'Copia risposta', html: icon('copy', 'sm'), onclick: () => copyText(m.content, copyB) });
     const speakB = S.me?.homebase && m.content ? h('button', { class: 'icon-btn sm', title: 'Ascolta', 'aria-label': 'Ascolta la risposta', html: icon('sound', 'sm'), onclick: () => speak(m.content, speakB) }) : null;
-    el.append(h('div', { class: 'msg-actions assist' }, copyB, speakB,
-      isLastAssist ? h('button', { class: 'icon-btn sm', title: 'Rigenera', 'aria-label': 'Rigenera risposta', html: icon('retry', 'sm'), onclick: () => regenerate(chat) }) : null,
-      closes && m.stats ? h('span', { class: 'stats tnum', text: m.stats }) : null));
+    // modalità riservata: uno scudino col numero dei dati coperti, sulla stessa riga dei token; un tocco apre l'elenco
     const masked = closes ? turnMasked(chat, m) : null;
-    if (masked) el.append(h('details', { class: 'mask-info' }, h('summary', { html: icon('shield', 'sm') + (masked.length ? `Riservato: ${masked.length === 1 ? 'un dato coperto' : masked.length + ' dati coperti'}` : 'Riservato: nessun dato riconosciuto') }),
-      masked.length ? h('ul', {}, ...masked.map((x) => h('li', {}, h('code', { text: x.label }), ` ${x.real}`))) : null));
+    const maskList = masked?.length ? h('ul', { class: 'mask-list', hidden: true }, ...masked.map((x) => h('li', {}, h('code', { text: x.label }), ` ${x.real}`))) : null;
+    const maskB = masked ? h('button', { class: 'mask-pill', 'aria-expanded': 'false',
+      title: masked.length ? `Riservato: ${masked.length === 1 ? 'un dato coperto' : masked.length + ' dati coperti'} prima di uscire verso il modello` : 'Riservato: nessun dato riconosciuto',
+      html: icon('shield', 'sm') + `<span class="tnum">${masked.length}</span>`,
+      onclick: (e) => { if (!maskList) return; maskList.hidden = !maskList.hidden; e.currentTarget.setAttribute('aria-expanded', String(!maskList.hidden)); } }) : null;
+    el.append(h('div', { class: 'msg-actions assist' + (closes && (m.stats || masked) ? ' has-info' : '') }, copyB, speakB,
+      isLastAssist ? h('button', { class: 'icon-btn sm', title: 'Rigenera', 'aria-label': 'Rigenera risposta', html: icon('retry', 'sm'), onclick: () => regenerate(chat) }) : null,
+      closes && m.stats ? h('span', { class: 'stats tnum', text: m.stats }) : null, maskB));
+    if (maskList) el.append(maskList);
   }
 }
 
@@ -2694,7 +2699,7 @@ async function soloRender(root, no) {
 // ================================================================== clienti (siti vetrina)
 // Le attivita' della zona (scelta nelle impostazioni) senza sito o con un sito da rifare: numero, mail, motivo e una mail pronta da mandare.
 const CL = { tab: 'nuovo', q: '', town: '', shown: 60 };
-const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['lavorazione', 'In lavorazione'], ['cliente', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
+const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['clienti', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
 const CL_STATUS = [['nuovo', 'Da contattare'], ['contattato', 'Contattato'], ['risposto', 'Ha risposto'], ['lavorazione', 'In lavorazione'], ['cliente', 'Cliente'], ['no', 'Non interessa']];
 function closeClienti() { $('#main').classList.remove('clienti-open'); clearTimeout(CL.timer); }
 async function openClienti() {
@@ -2721,16 +2726,15 @@ async function renderClienti() {
   const job = d.job;
   const head = h('div', { class: 'cl-head' },
     h('div', { class: 'tx' }, h('h1', { text: 'Clienti per siti vetrina' }),
-      h('p', { text: `Attività ${d.zona?.nome ? d.zona.nome + ' ' : 'della tua zona '}senza un sito o con un sito da rifare. Contattale una per volta: la mail la prepara Aura, la mandi tu.` }),
-      h('div', { class: 'cl-src' + (d.has_key ? '' : ' warn'), html: icon(d.has_key ? 'check' : 'globe', 'sm') +
-        (d.has_key ? 'Dati da Google Maps' : 'Dati dai siti dei Comuni e dalle ricerche sul web (Google, DuckDuckGo, Brave)') })),
+      h('p', { text: `Attività ${d.zona?.nome ? d.zona.nome + ' ' : 'della tua zona '}senza un sito o con un sito da rifare. Contattale una per volta: la mail la prepara Aura, la mandi tu.` })),
     h('div', { class: 'acts' },
       d.owner ? h('button', { class: 'btn primary', html: icon('retry', 'sm') + (job?.running ? 'Sto cercando…' : 'Cerca in zona'), disabled: !!job?.running, onclick: async () => {
         try { await api('/api/clienti/cerca', {}); } catch (e) { toast(e.message); } renderClienti(); } }) : h('span', { class: 'cl-shared', html: icon('user', 'sm') + 'Pagina condivisa' }),
       d.owner ? h('button', { class: 'icon-btn', title: 'Impostazioni e condivisione', 'aria-label': 'Impostazioni dei clienti', html: icon('settings'), onclick: () => clientiSettings(d) }) : null,
       h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { closeClienti(); focusInput(); } })));
-  const jobEl = job && (job.running || job.error) ? h('div', { class: 'cl-job' + (job.error ? ' err' : '') },
-    h('div', { text: job.error ? 'La ricerca si è fermata: ' + job.error : `${job.phase} ${job.total ? job.done + ' di ' + job.total : ''}` }),
+  const jobEl = job && (job.running || job.error || job.phase === 'Fatto') ? h('div', { class: 'cl-job' + (job.error ? ' err' : '') },
+    h('div', { text: job.error ? 'La ricerca si è fermata: ' + job.error : job.running ? `${job.phase} ${job.total ? job.done + ' di ' + job.total : ''}`
+      : `Ricerca finita: ${job.new ? (job.new === 1 ? 'un\'attività nuova' : job.new + ' attività nuove') : 'nessuna attività nuova'}. Quelle che c'erano già non le ho toccate.` }),
     job.running ? h('div', { class: 'bar' }, h('i', { style: `width:${job.total ? Math.round((100 * job.done) / job.total) : 5}%` })) : null) : null;
   const stat = (cls, label, n, kind, tab) => h('button', { class: 'cl-stat ' + cls + ((CL.kind || '') === (kind || '') && CL.tab === tab ? ' on' : ''), onclick: () => { CL.kind = kind; CL.tab = tab; CL.shown = 60; renderClienti(); } },
     h('small', { text: label }), h('b', { class: 'tnum', text: String(n) }));
@@ -2739,7 +2743,7 @@ async function renderClienti() {
     stat('s-bad', 'Sito da rifare', cnt((k, s) => k === 'bad' && s === 'nuovo'), 'bad', 'nuovo'),
     stat('s-cont', 'Contattati', cnt((k, s) => k !== 'ok' && ['contattato', 'risposto'].includes(s)), '', 'contattato'),
     stat('s-lav', 'In lavorazione', cnt((k, s) => s === 'lavorazione'), '', 'lavorazione'),
-    stat('s-cli', 'Clienti', cnt((k, s) => s === 'cliente'), '', 'cliente'));
+    stat('s-cli', 'Clienti', cnt((k, s) => s === 'cliente' || s === 'lavorazione'), '', 'clienti'));
   const towns = [...new Set((d.leads || []).map((l) => l.town).filter(Boolean))].sort();
   const search = h('input', { class: 'ag-in', type: 'search', placeholder: 'Cerca per nome, mestiere o paese', value: CL.q, 'aria-label': 'Cerca',
     oninput: (e) => { CL.q = e.target.value; paintList(); } });
@@ -2749,9 +2753,11 @@ async function renderClienti() {
   const list = h('div', { class: 'cl-list' });
   function paintList() {
     const q = CL.q.trim().toLowerCase();
-    const rows = (d.leads || []).filter((l) => (!CL.town || l.town === CL.town) && (!q || `${l.name} ${l.category} ${l.town}`.toLowerCase().includes(q)));
-    list.replaceChildren(...(rows.length ? rows.slice(0, CL.shown).map(leadCard) : [h('div', { class: 'cl-empty', text: (d.leads || []).length
-      ? 'Nessuna attività con questi filtri.' : 'Ancora niente qui. Premi «Cerca in zona»: in qualche minuto trovo le attività e controllo i loro siti.' })]),
+    const rows = (d.leads || []).filter((l) => (!CL.town || l.town === CL.town) && (!q || `${l.name} ${l.category} ${l.town} ${l.referente || ''}`.toLowerCase().includes(q)));
+    const card = (l) => (['lavorazione', 'cliente'].includes(l.status) ? clientCard(l) : leadCard(l));
+    list.replaceChildren(...(rows.length ? rows.slice(0, CL.shown).map(card) : [h('div', { class: 'cl-empty', text: (d.leads || []).length
+      ? 'Nessuna attività con questi filtri.' : CL.tab === 'clienti' ? 'Ancora nessun cliente: quando prendi in carico un\'attività diventa un cliente e la trovi qui.'
+      : 'Ancora niente qui. Premi «Cerca in zona»: in qualche minuto trovo le attività e controllo i loro siti.' })]),
       rows.length > CL.shown ? h('button', { class: 'btn cl-more', text: `Mostra altre ${Math.min(60, rows.length - CL.shown)} (di ${rows.length - CL.shown})`, onclick: () => { CL.shown += 60; paintList(); } }) : '');
   }
   paintList();
@@ -2790,6 +2796,72 @@ function leadCard(l) {
       h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Aggiungi nota', onclick: () => noteOpen() }),
       l.sito ? h('button', { class: 'btn sm cl-sito-on', html: icon('folder', 'sm') + 'Sito in lavorazione', onclick: () => sitoView(l.sito) })
         : CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => sitoTake(l) }) : null));
+}
+// ---- Clienti veri (in lavorazione o già fatti): una scheda con i loro dati, da cambiare qui o chiedendo ad Aura, e i loro siti
+const CL_FIELDS = [['name', 'Nome dell\'attività'], ['referente', 'Referente'], ['phone', 'Telefono'], ['email', 'Email'], ['address', 'Indirizzo'],
+  ['town', 'Paese'], ['category', 'Mestiere'], ['website', 'Sito che hanno adesso'], ['piva', 'Partita IVA']];
+const clientSites = (l) => (CL.siti?.progetti || []).filter((p) => p.lead?.id === l.id || p.slug === l.sito);
+function clientCard(l) {
+  const sites = clientSites(l);
+  const gq = encodeURIComponent(`${l.name} ${l.address || l.town || ''}`);
+  const contact = (ic, text, href) => h('a', { class: 'cl-link', href, ...(href.startsWith('http') ? { target: '_blank', rel: 'noopener' } : {}) }, h('i', { html: icon(ic, 'sm') }), h('span', { text }));
+  return h('div', { class: 'cl-card cli st-' + l.status },
+    h('div', { class: 'cli-top' }, h('span', { class: 'st-av', text: (l.name || '?').trim()[0].toUpperCase() }),
+      h('div', { class: 'st-tt' }, h('b', { text: l.name }), h('small', { text: [l.referente, l.category, l.town].filter(Boolean).join(' · ') || 'Mancano i dati: aprila e completali' })),
+      h('span', { class: 'st-chip' + (l.status === 'cliente' ? '' : ' soft'), text: l.status === 'cliente' ? 'Cliente' : 'In lavorazione' })),
+    h('div', { class: 'cl-links' },
+      l.phone ? contact('phone', l.phone, 'tel:' + l.phone.replace(/\s+/g, '')) : null,
+      l.email ? contact('mail', l.email, 'mailto:' + l.email) : null,
+      l.address || l.town ? contact('pin', l.address || l.town, l.maps_url || `https://www.google.com/maps/search/${gq}`) : null,
+      l.website ? contact('globe', 'Sito attuale', l.website) : null),
+    sites.length ? h('div', { class: 'cli-sites' }, ...sites.map((p) => { const x = sitoInfo(p), d = x.diary.at(-1);
+      return h('button', { type: 'button', class: 'cli-site', onclick: () => sitoView(p.slug) }, sitoState(x),
+        h('b', { text: p.nome }), h('span', { text: d ? d.testo : 'Ancora niente nel diario' })); }))
+      : h('div', { class: 'cli-nosite', text: 'Nessun sito in lavorazione per questo cliente.' }),
+    h('div', { class: 'cl-acts' },
+      h('button', { class: 'btn primary sm', html: icon('user', 'sm') + 'Scheda cliente', onclick: () => clientView(l) }),
+      sites[0]?.anteprima?.consegnato ? h('a', { class: 'btn sm', href: sites[0].anteprima.consegnato, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + 'Apri il sito' }) : null,
+      !sites.length && CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => sitoTake(l) }) : null));
+}
+function clientView(l) {
+  document.querySelector('.cli-modal')?.remove();
+  const close = () => modal.remove();
+  const inputs = Object.fromEntries(CL_FIELDS.map(([k]) => [k, h('input', { class: 'ag-in', value: l[k] || '', spellcheck: 'false', ...(k === 'email' ? { type: 'email' } : k === 'phone' ? { type: 'tel' } : {}) })]));
+  const status = h('select', { class: 'ag-in', 'aria-label': 'Stato' }, ...CL_STATUS.map(([v, t]) => h('option', { value: v, text: t, selected: l.status === v ? true : null })));
+  const save = h('button', { class: 'btn primary', text: 'Salva', onclick: async () => {
+    const body = Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value.trim()]));
+    if (status.value !== l.status) {
+      if (l.sito && !['lavorazione', 'cliente'].includes(status.value) && !confirm(`«${l.name}» ha un sito in lavorazione: cambiando stato il sito va in archivio (non si perde niente). Continuare?`)) return;
+      body.status = status.value;
+    }
+    save.disabled = true;
+    try { Object.assign(l, await (await api(`/api/clienti/${l.id}`, body, { method: 'PATCH' })).json()); toast('Dati salvati'); close(); renderClienti(); }
+    catch (e) { save.disabled = false; toast(e.message); }
+  } });
+  const nb = leadNotes(l, () => {});
+  const sites = clientSites(l);
+  const field = (k, label) => h('label', { class: 'ag-f' + (['address', 'website'].includes(k) ? ' wide' : '') }, h('span', { text: label }), inputs[k]);
+  const modal = h('div', { class: 'ag-modal cli-modal', onclick: (e) => { if (e.target === modal) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+    h('div', { class: 'ag-sheet st-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Scheda cliente' },
+      h('div', { class: 'ag-sheet-h' }, h('span', { class: 'st-av', text: (l.name || '?').trim()[0].toUpperCase() }), h('b', { text: l.name }), h('span', { class: 'grow' }),
+        h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('div', { class: 'st-body' },
+        h('section', { class: 'st-s' }, h('h3', { text: 'Dati del cliente' }),
+          h('div', { class: 'cli-form' }, ...CL_FIELDS.map(([k, t]) => field(k, t)), h('label', { class: 'ag-f' }, h('span', { text: 'Stato' }), status)),
+          h('p', { class: 'st-hint', text: 'Puoi anche chiederlo ad Aura: «il referente della Pizzeria da Mario è Mario Rossi, telefono…».' })),
+        h('section', { class: 'st-s' }, h('h3', { text: sites.length > 1 ? 'I suoi siti' : 'Il suo sito' }),
+          ...(sites.length ? sites.map((p) => { const x = sitoInfo(p), d = x.diary.at(-1);
+            return h('div', { class: 'cli-sitebox' },
+              h('div', { class: 'cli-sitehead' }, h('b', { text: p.nome }), h('small', { text: x.mine ? 'lo segui tu' : 'lo segue ' + p.chi }), h('span', { class: 'grow' }),
+                h('button', { class: 'btn sm', text: 'Tutti i dettagli', onclick: () => sitoView(p.slug) })),
+              sitoState(x),
+              d ? h('div', { class: 'st-diary' }, h('p', { text: d.testo }), h('small', { text: `${sitoName(d.chi)} · ${agoTs(+d.ts)}` })) : null,
+              h('small', { class: 'st-dim', text: [sitoPending(x).join(' · ') || 'Niente in sospeso', x.last ? `consegnato ${agoTs(+x.last.ts)}` : 'niente consegnato'].join(' · ') }),
+              sitoLinks(p, x)); })
+            : [h('p', { class: 'st-hint', text: 'Nessun sito in lavorazione.' }), CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => { close(); sitoTake(l); } }) : null])),
+        h('section', { class: 'st-s' }, h('h3', { text: 'Note' }), nb.box, h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Aggiungi nota', onclick: () => nb.open() }))),
+      h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Chiudi', onclick: close }), save)));
+  document.body.append(modal);
 }
 // ---- Siti in lavorazione: ogni cliente preso in carico è un progetto sul server dei siti, con una cartella per persona
 const agoTs = (ts) => { if (!ts) return ''; const m = Math.round((Date.now() / 1000 - ts) / 60);
@@ -2870,6 +2942,18 @@ function sitoTake(l) {
   document.body.append(modal);
   nome.focus();
 }
+// i link per vedere il sito nel browser (anteprima sul server dei siti, solo da Tailscale)
+function sitoLinks(p, x = sitoInfo(p)) {
+  const a = p.anteprima;
+  if (!a?.consegnato) return null;
+  const link = (href, label, sub, primary) => h('a', { class: 'st-link' + (primary ? ' primary' : ''), href, target: '_blank', rel: 'noopener' },
+    h('span', { html: icon('globe', 'sm') }), h('span', {}, h('b', { text: label }), h('small', { text: sub })));
+  const who = [p.chi, ...x.helpers.map((g) => g.utente)];
+  return h('div', { class: 'st-links' },
+    link(a.consegnato, 'Apri il sito', 'quello consegnato', true),
+    ...who.filter((u) => a.persone?.[u]).map((u) => link(a.persone[u], u === CL.siti?.me ? 'Il tuo lavoro in corso' : `Lavoro in corso di ${u}`, 'anche le modifiche non consegnate')),
+    h('small', { class: 'st-dim', text: 'Si aprono dai dispositivi collegati a Tailscale.' }));
+}
 async function sitoView(slug) {
   document.querySelector('.st-modal')?.remove();
   let timer = 0;
@@ -2895,6 +2979,7 @@ async function sitoView(slug) {
         p.github ? h('a', { href: `https://github.com/${p.github}`, target: '_blank', rel: 'noopener', html: icon('link', 'sm') + 'GitHub' }) : null),
       p.note ? h('p', { class: 'st-hint', text: p.note }) : null,
       h('div', { class: 'st-now' }, sitoState(x), h('small', { text: sitoPending(x).join(' · ') || 'Niente in sospeso' })),
+      sitoLinks(p, x),
       sec('Diario di Claude', x.diary.length
         ? h('ol', { class: 'st-tl' }, ...[...x.diary].reverse().map((d) => h('li', {}, h('i'), h('div', {}, h('p', { text: d.testo }), h('small', { text: `${sitoName(d.chi)} · ${d.at}` })))))
         : h('p', { class: 'st-hint', text: 'Ancora vuoto: Claude ci scrive quando inizia e quando finisce un lavoro.' })),

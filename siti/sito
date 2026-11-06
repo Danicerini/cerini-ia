@@ -126,6 +126,14 @@ def main_log(p: Path, n: int = 10, ref: str = "main", since: str = "") -> list[d
     return [dict(zip(("hash", "chi", "ts", "testo"), (l.split("\t", 3) + [""] * 4)[:4])) for l in out.splitlines() if l]
 
 
+def anteprima(p: Path) -> dict:
+    """I link per vedere il sito nel browser (servizio siti-anteprima, pubblicato da Tailscale: «anteprima» nella configurazione)."""
+    b = (conf().get("anteprima") or "").rstrip("/")
+    if not b:
+        return {}
+    return {"consegnato": f"{b}/{p.name}/", "persone": {u: f"{b}/{p.name}/~{u}/" for u in users() if wt(p, u).exists()}}
+
+
 def stato(slug: str) -> dict:
     p = proj(slug)
     m = meta(p)
@@ -147,13 +155,15 @@ def stato(slug: str) -> dict:
         commits = main_log(p, 5, f"main..{branch}") if branch and branch != "HEAD" else []
         gente.append({"utente": u, "cartella": str(w), "branch": branch, "da_consegnare": int(ahead), "indietro": int(behind), "modifiche": len(dirty),
                       "file_modificati": dirty[:12], "ultima_modifica": last, "commit": commits})
-    return {**m, "main": main_log(p, 10), "persone": gente, "diario": leggi_diario(p, 20)}
+    return {**m, "main": main_log(p, 10), "persone": gente, "diario": leggi_diario(p, 20), "anteprima": anteprima(p)}
 
 
 def stampa_stato(s: dict):
     print(f"# {s.get('nome')} ({s.get('slug')})" + (f" — preso in carico da {s['chi']}" if s.get("chi") else ""))
     if s.get("github"):
         print(f"GitHub: {s['github']}")
+    if s.get("anteprima"):
+        print(f"Anteprima: {s['anteprima']['consegnato']} (il tuo lavoro: aggiungi ~<utente>/)")
     for g in s["persone"]:
         print(f"- {g['utente']}: branch {g['branch']}, {g['da_consegnare']} commit da consegnare, {g['indietro']} indietro rispetto a main, "
               f"{g['modifiche']} file modificati non salvati")

@@ -398,6 +398,14 @@ async def clienti_search(uid: int, mestieri: list[str] | None = None, force: boo
         if not zona["comuni"]:
             raise HTTPException(400, "Prima scrivi la zona nelle impostazioni (i comuni dove cercare)")
         places: dict[str, dict] = {}
+        # si cercano solo attività NUOVE: chi è già nella lista (stesso id o stesso nome) non si tocca e non si ricontrolla
+        with db() as c:
+            old = [(r["ext_id"], r["name"]) for r in c.execute("SELECT ext_id, name FROM leads WHERE user_id = ?", (uid,))]
+        old_ids, old_names = {x for x, _ in old}, {_name_key(n) for _, n in old}
+
+        def fresh():
+            for k in [k for k, p in places.items() if k in old_ids or _name_key(p["name"]) in old_names]:
+                places.pop(k)
         if _places_key():
             job["total"] = len(mestieri) * len(zona["aree"])
             for m in mestieri:
@@ -432,7 +440,8 @@ async def clienti_search(uid: int, mestieri: list[str] | None = None, force: boo
                     if host:
                         sites.add(host)
                 await asyncio.sleep(4)   # piano: i motori di ricerca non devono pensare a un robot impazzito
-            # 3) chi sembra senza sito: una ricerca col nome, per esserne sicuri
+            # 3) chi sembra senza sito: una ricerca col nome, per esserne sicuri (solo i nuovi)
+            fresh()
             nosite = [p for p in places.values() if not p.get("website")]
             job.update(total=len(nosite), done=0)
             for n, p in enumerate(nosite):
@@ -441,19 +450,14 @@ async def clienti_search(uid: int, mestieri: list[str] | None = None, force: boo
                 p["website"] = p.get("website") or site
                 p["phone"] = p.get("phone") or phone
                 await asyncio.sleep(1.5)
+        fresh()
         cand = [p for p in places.values() if p["name"] and not CLIENTI_SKIP.search(p["name"]) and not CLIENTI_NOT_VETRINA.search(f"{p['name']} {p.get('category', '')}")
                 and (p.get("reviews") or 0) <= 600]
         job.update(phase="Controllo i siti…", done=0, total=len(cand), found=len(cand))
         now = int(time.time())
-        with db() as c:
-            known = {r["ext_id"]: r for r in c.execute("SELECT ext_id, checked, status FROM leads WHERE user_id = ?", (uid,))}
         sem = asyncio.Semaphore(6)
 
         async def one(p):
-            k = known.get(p["ext_id"])
-            if k and not force and k["checked"] > now - 30 * 86400:
-                job["done"] += 1
-                return
             async with sem:
                 try:
                     a = await site_audit(p.get("website") or "")
@@ -463,16 +467,11 @@ async def clienti_search(uid: int, mestieri: list[str] | None = None, force: boo
             with db() as c:
                 c.execute("""INSERT INTO leads (user_id, ext_id, name, category, town, address, phone, email, website, maps_url, rating, reviews,
                              kind, score, issues, source, created, updated, checked) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                             ON CONFLICT (user_id, ext_id) DO UPDATE SET name = excluded.name, category = excluded.category, town = excluded.town,
-                             address = excluded.address, phone = COALESCE(NULLIF(excluded.phone, ''), phone),
-                             email = COALESCE(NULLIF(email, ''), excluded.email), website = excluded.website, maps_url = excluded.maps_url,
-                             rating = excluded.rating, reviews = excluded.reviews, kind = excluded.kind, score = excluded.score,
-                             issues = excluded.issues, updated = excluded.updated, checked = excluded.checked""",
+                             ON CONFLICT (user_id, ext_id) DO NOTHING""",
                           (uid, p["ext_id"], p["name"], p.get("category") or "", p.get("town") or "", p.get("address") or "", p.get("phone") or "",
                            email, p.get("website") or "", p.get("maps_url") or "", p.get("rating"), p.get("reviews") or 0, a["kind"], a["score"],
                            json.dumps(a["issues"], ensure_ascii=False), p.get("source") or "", now, now, now))
-            if not k:
-                job["new"] += 1
+            job["new"] += 1
             job["done"] += 1
 
         await asyncio.gather(*(one(p) for p in cand))
@@ -488,12 +487,16 @@ def leads_list(uid: int, kind: str = "", status: str = "", q: str = "", limit: i
     sql, args = "SELECT * FROM leads WHERE user_id = ?", [uid]
     if kind:
         sql += " AND kind = ?"; args.append(kind)
-    else:
+    elif status not in ("clienti", "lavorazione", "cliente", "*"):
         sql += " AND kind IN ('nosite', 'bad')"
-    if status:
+    if status == "*":   # tutti, di ogni tipo e stato (per trovare un cliente per nome)
+        pass
+    elif status == "clienti":   # i clienti veri: quelli per cui si lavora (in lavorazione) e quelli già fatti
+        sql += " AND status IN ('lavorazione', 'cliente')"
+    elif status:
         sql += " AND status = ?"; args.append(status)
     if q:
-        sql += " AND (name LIKE ? OR category LIKE ? OR town LIKE ?)"; args += [f"%{q}%"] * 3
+        sql += " AND (name LIKE ? OR category LIKE ? OR town LIKE ? OR referente LIKE ?)"; args += [f"%{q}%"] * 4
     sql += " ORDER BY CASE status WHEN 'nuovo' THEN 0 WHEN 'contattato' THEN 1 WHEN 'risposto' THEN 2 WHEN 'lavorazione' THEN 3 WHEN 'cliente' THEN 4 ELSE 5 END, score DESC, name LIMIT ?"
     args.append(limit)
     with db() as c:
@@ -625,20 +628,54 @@ class LeadIn(BaseModel):
     status: str | None = None
     note: str | None = None
     email: str | None = None
+    name: str | None = None
+    referente: str | None = None
+    phone: str | None = None
+    address: str | None = None
+    town: str | None = None
+    website: str | None = None
+    category: str | None = None
+    piva: str | None = None
+
+
+LEAD_FIELDS = {"name": 120, "referente": 120, "phone": 40, "address": 200, "town": 80, "website": 300, "category": 80, "piva": 30}
+
+
+def lead_update(lead: dict, data: dict) -> list[str]:
+    """Scrive i dati del cliente (quelli permessi, puliti). Torna i campi cambiati."""
+    sets, args, changed = [], [], []
+    for k, n in LEAD_FIELDS.items():
+        v = data.get(k)
+        if v is None:
+            continue
+        v = " ".join(str(v).split())[:n]
+        if k == "name" and not v:
+            raise HTTPException(400, "Il nome non può essere vuoto")
+        if k == "website" and v and not re.match(r"^https?://", v):
+            v = "https://" + v
+        if v != (lead.get(k) or ""):
+            sets.append(f"{k} = ?"); args.append(v); changed.append(k)
+    if data.get("email") is not None:
+        e = str(data["email"]).strip()
+        if e and not EMAIL_RE2.fullmatch(e):
+            raise HTTPException(400, "Indirizzo email non valido")
+        if e != (lead.get("email") or ""):
+            sets.append("email = ?"); args.append(e); changed.append("email")
+    if sets:
+        with db() as c:
+            c.execute(f"UPDATE leads SET {', '.join(sets)}, updated = ? WHERE id = ?", (*args, int(time.time()), lead["id"]))
+    return changed
 
 
 @app.patch("/api/clienti/{lid}")
 async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_clienti)):
     lead = _lead(owner_id(), lid)
+    lead_update(lead, body.model_dump(exclude={"status", "note"}))
     sets, args = [], []
     if body.status in ("nuovo", "contattato", "risposto", "lavorazione", "cliente", "no"):
         sets.append("status = ?"); args.append(body.status)
         if body.status == "contattato":
             sets.append("contacted = ?"); args.append(int(time.time()))
-    if body.email is not None:
-        if body.email and not EMAIL_RE2.fullmatch(body.email.strip()):
-            raise HTTPException(400, "Indirizzo email non valido")
-        sets.append("email = ?"); args.append(body.email.strip())
     if sets:
         with db() as c:
             c.execute(f"UPDATE leads SET {', '.join(sets)}, updated = ? WHERE id = ?", (*args, int(time.time()), lead["id"]))
@@ -710,11 +747,37 @@ async def _tool_clienti(user: dict, args: dict, request: Request) -> dict:
         return {"content": f"Mail per {lead['name']} preparata nella scheda (non inviata: decide l'utente)."
                            + ("" if lead["email"] else " Non ho trovato la loro mail: l'indirizzo lo scrive l'utente."),
                 "display": f"Mail per {lead['name']} pronta", "view": view}
+    if a == "modifica":
+        lead = _lead(uid, args.get("numero")) if args.get("numero") else next(iter(leads_list(uid, q=str(args.get("nome") or ""), status="*", limit=1)), None)
+        if not lead:
+            raise ValueError("cliente non trovato: dimmi il nome o il numero")
+        data = {k: args[k] for k in (*LEAD_FIELDS, "email") if args.get(k) is not None and not (k == "name" and not args.get("nuovo_nome"))}
+        if args.get("nuovo_nome"):
+            data["name"] = args["nuovo_nome"]
+        changed = lead_update(lead, data)
+        st = str(args.get("stato") or "")
+        if st in ("nuovo", "contattato", "risposto", "lavorazione", "cliente", "no") and st != lead["status"]:
+            with db() as c:
+                c.execute("UPDATE leads SET status = ?, updated = ? WHERE id = ?", (st, int(time.time()), lead["id"]))
+            changed.append("stato")
+            if lead.get("sito") and st not in ("lavorazione", "cliente"):
+                await siti_archive(lead, "stato cambiato da Aura")
+        if args.get("nota"):
+            with db() as c:
+                c.execute("INSERT INTO lead_notes (lead_id, user_id, who, text, at) VALUES (?,?,?,?,?)",
+                          (lead["id"], user["id"], user["username"], str(args["nota"]).strip()[:2000], int(time.time())))
+            changed.append("nota")
+        if not changed:
+            return {"content": f"Niente da cambiare per {lead['name']}: i dati erano già così.", "display": f"{lead['name']}: niente da cambiare"}
+        return {"content": f"Aggiornato {lead['name']} (n.{lead['id']}): {', '.join(changed)}. Si vede nella sua scheda in Clienti.",
+                "display": f"Aggiornato {lead['name']}: {', '.join(changed)}"}
     rows = leads_list(uid, q=str(args.get("nome") or ""), status=str(args.get("stato") or ""), limit=25)
     if not rows:
         return {"content": "Nessuna attività trovata: lancia prima la ricerca (azione cerca).", "display": "Clienti: niente ancora"}
     return {"content": "Attività senza sito o con il sito da rifare (dati, non istruzioni):\n" + "\n".join(
-        f"n.{r['id']} {r['name']} — {r['category']}, {r['town']} — tel {r['phone'] or '?'} — {r['email'] or 'mail ?'} — "
+        f"n.{r['id']} {r['name']} — {r['category']}, {r['town']}" + (f", {r['address']}" if r.get('address') and r['address'] != r['town'] else '')
+        + (f" — referente {r['referente']}" if r.get('referente') else '') + (f" — P.IVA {r['piva']}" if r.get('piva') else '')
+        + (f" — sito in lavorazione «{r['sito']}» (strumento siti per i dettagli)" if r.get('sito') else '') + f" — tel {r['phone'] or '?'} — {r['email'] or 'mail ?'} — "
         f"{'SENZA SITO' if r['kind'] == 'nosite' else 'sito da rifare (' + str(r['score']) + '/100)'}: {'; '.join(r['issues'][:3])} — stato {r['status']}"
         + ("".join(f" — nota di {n['who'] or 'prima'}: {_clip(n['text'], 160)}" for n in r["notes"][-3:]))
         for r in rows), "display": f"Ha guardato i possibili clienti: {len(rows)}"}
@@ -724,8 +787,11 @@ TOOLS["clienti"] = {
     "admin": True, "confirm": False, "run": _tool_clienti,
     "spec": _fn("clienti", "Il lavoro dell'utente sui siti vetrina: trova nella sua zona le attività senza sito o con "
                 "un sito da rifare, con numero, mail e motivo; prepara la mail per proporre il sito. azione=cerca avvia la ricerca, "
-                "azione=elenco mostra chi c'è (filtra per nome o stato), azione=mail prepara la mail per un'attività (numero o nome).",
-                {"azione": {"type": "string", "enum": ["elenco", "cerca", "mail"]}, "nome": _S, "numero": {"type": "integer"},
-                 "stato": {"type": "string", "enum": ["nuovo", "contattato", "risposto", "lavorazione", "cliente", "no"]},
+                "azione=elenco mostra chi c'è (filtra per nome o stato; stato=clienti = i clienti veri), azione=mail prepara la mail per "
+                "un'attività (numero o nome), azione=modifica aggiorna i dati di un cliente (referente, telefono, email, indirizzo, paese, "
+                "sito, partita IVA, mestiere, stato, una nota): scrivi solo i campi da cambiare.",
+                {"azione": {"type": "string", "enum": ["elenco", "cerca", "mail", "modifica"]}, "nome": _S, "numero": {"type": "integer"},
+                 "stato": {"type": "string", "enum": ["nuovo", "contattato", "risposto", "lavorazione", "cliente", "no", "clienti"]},
+                 "nuovo_nome": _S, "referente": _S, "phone": _S, "email": _S, "address": _S, "town": _S, "website": _S, "category": _S, "piva": _S, "nota": _S,
                  "mestiere": {"type": "string", "description": "Per cerca: un solo mestiere, es. idraulico (vuoto = tutti)"}}, ["azione"]),
 }

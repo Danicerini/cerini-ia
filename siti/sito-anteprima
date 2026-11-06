@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""Anteprima dei siti dei clienti: un piccolo server di sola lettura, da aprire nel browser (solo dalla rete Tailscale).
+  /                       l'elenco dei siti
+  /<sito>/                il sito consegnato (main)
+  /<sito>/~<persona>/     il lavoro in corso nella cartella di quella persona
+Se un sito si costruisce (dist/ o build/ con dentro index.html) si mostra quella cartella. Mai file nascosti (.git, .env…).
+Gira come servizio siti-anteprima su 127.0.0.1:8460; Tailscale lo pubblica in https (tailscale serve).
+"""
+import html, json, os, sys
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import unquote, urlsplit
+
+ROOT = Path("/srv/siti")
+COMUNE = ROOT / ".progetti"
+CONF = Path("/etc/siti/config.json")
+PORT = int(os.environ.get("PORTA", "8460"))
+
+
+def conf() -> dict:
+    try:
+        return json.loads(CONF.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def cartella(u: str) -> Path:
+    return ROOT / ((conf().get("cartelle") or {}).get(u) or u)
+
+
+def base(d: Path) -> Path:
+    """La cartella da mostrare: quella costruita se c'è, altrimenti quella del codice."""
+    if (d / "index.html").exists():
+        return d
+    for sub in ("dist", "build", "public", "out", "_site"):
+        if (d / sub / "index.html").exists():
+            return d / sub
+    return d
+
+
+def meta(slug: str) -> dict:
+    try:
+        return json.loads((COMUNE / slug / "sito.json").read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+class H(SimpleHTTPRequestHandler):
+    server_version = "anteprima"
+
+    def log_message(self, *a):
+        pass
+
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Robots-Tag", "noindex")
+        super().end_headers()
+
+    def page(self, title: str, body: str, code: int = 200):
+        data = (f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>"
+                "<style>body{font:15px system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 16px;color:#222}a{color:#2563eb}"
+                "li{margin:8px 0}small{color:#777}@media(prefers-color-scheme:dark){body{background:#16181c;color:#e6e6e6}a{color:#8ab4ff}}</style>"
+                f"<h1>{html.escape(title)}</h1>{body}").encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def index(self):
+        rows = []
+        for p in sorted(x for x in COMUNE.iterdir() if (x / "sito.json").exists()) if COMUNE.exists() else []:
+            m = meta(p.name)
+            people = " · ".join(f"<a href='/{p.name}/~{html.escape(u)}/'>lavoro di {html.escape(u)}</a>" for u in conf().get("utenti") or [] if (cartella(u) / p.name).exists())
+            rows.append(f"<li><a href='/{p.name}/'><b>{html.escape(m.get('nome') or p.name)}</b></a> <small>di {html.escape(m.get('chi') or '?')}</small><br><small>{people}</small></li>")
+        self.page("Siti in lavorazione", f"<ul>{''.join(rows) or '<li>Nessun sito.</li>'}</ul>")
+
+    def translate_path(self, path):
+        parts = [x for x in unquote(urlsplit(path).path).split("/") if x]
+        if not parts or any(x.startswith(".") or x in ("..",) for x in parts):
+            return ""
+        slug, rest = parts[0], parts[1:]
+        if not (COMUNE / slug / "sito.json").exists():
+            return ""
+        if rest and rest[0].startswith("~"):
+            d = cartella(rest[0][1:]) / slug
+            rest = rest[1:]
+        else:
+            d = COMUNE / slug / "main"
+        b = base(d).resolve()
+        target = (b / "/".join(rest)).resolve()
+        if target != b and b not in target.parents:
+            return ""
+        return str(target)
+
+    def send_head(self):
+        raw = urlsplit(self.path).path
+        if raw in ("", "/"):
+            self.index(); return None
+        p = self.translate_path(self.path)
+        if not p or not os.path.exists(p):
+            self.page("Non trovato", "<p>Questa pagina non c'è (o il sito non ha ancora un <code>index.html</code>). <a href='/'>Tutti i siti</a></p>", 404)
+            return None
+        if os.path.isdir(p) and not raw.endswith("/"):
+            self.send_response(301); self.send_header("Location", raw + "/"); self.end_headers(); return None
+        if os.path.isdir(p) and not os.path.exists(os.path.join(p, "index.html")):
+            self.page("Ancora niente da vedere", "<p>In questa cartella non c'è un <code>index.html</code>. <a href='/'>Tutti i siti</a></p>", 404)
+            return None
+        return super().send_head()
+
+    def list_directory(self, path):
+        self.page("Ancora niente da vedere", "<p><a href='/'>Tutti i siti</a></p>", 404)
+        return None
+
+
+if __name__ == "__main__":
+    srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)
+    print(f"anteprima su 127.0.0.1:{PORT}", file=sys.stderr)
+    srv.serve_forever()

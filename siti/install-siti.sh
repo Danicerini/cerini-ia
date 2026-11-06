@@ -13,6 +13,7 @@ KEY="${1:-}"
 install -m 755 sito /usr/local/bin/sito
 install -m 755 sito-aura /usr/local/bin/sito-aura
 install -m 755 sito-file /usr/local/bin/sito-file
+install -m 755 sito-anteprima /usr/local/bin/sito-anteprima
 
 getent group dev >/dev/null || groupadd dev
 id aura >/dev/null 2>&1 || useradd -m -s /bin/sh -G dev aura
@@ -80,3 +81,26 @@ EOF
 systemctl daemon-reload
 systemctl enable --now siti-github.timer >/dev/null
 echo "Pronto: /srv/siti, comando sito, utente aura, invio su GitHub ogni 2 minuti."
+
+# anteprima dei siti nel browser: solo lettura, solo dalla rete Tailscale (https://<nome del CT>.<tailnet>.ts.net:8460)
+cat > /etc/systemd/system/siti-anteprima.service <<'UNIT'
+[Unit]
+Description=Anteprima dei siti dei clienti (sola lettura)
+After=network.target
+
+[Service]
+User=aura
+Group=dev
+ExecStart=/usr/local/bin/sito-anteprima
+Restart=always
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now siti-anteprima
+command -v tailscale >/dev/null && tailscale serve --bg --https=8460 http://127.0.0.1:8460 >/dev/null || true
+# poi in /etc/siti/config.json: "anteprima": "https://<nome del CT>.<tailnet>.ts.net:8460"

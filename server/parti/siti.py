@@ -82,6 +82,10 @@ def _siti_lead_db():
         cols = {r["name"] for r in c.execute("PRAGMA table_info(leads)")}
         if "sito" not in cols:
             c.execute("ALTER TABLE leads ADD COLUMN sito TEXT NOT NULL DEFAULT ''")
+        # i dati del cliente vero (oltre a quelli trovati dalla ricerca): chi è il referente, partita IVA
+        for col in ("referente", "piva"):
+            if col not in cols:
+                c.execute(f"ALTER TABLE leads ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
 
 async def siti_all() -> list[dict]:
@@ -259,7 +263,12 @@ async def _tool_siti(user: dict, args: dict, request: Request) -> dict:
         if p.get("errore"):
             out.append(f"## {p.get('nome')}: stato non letto ({p['errore']})")
             continue
-        out.append(f"## {p['nome']} ({p['slug']}), preso in carico da {p.get('chi')}" + (f", GitHub {p['github']}" if p.get("github") else ""))
+        out.append(f"## {p['nome']} ({p['slug']}), preso in carico da {p.get('chi')}" + (f", GitHub {p['github']} (solo il codice)" if p.get("github") else ""))
+        ant = p.get("anteprima") or {}
+        if ant.get("consegnato"):
+            out.append(f"Per VEDERE il sito (si apre solo da un dispositivo collegato a Tailscale): consegnato {ant['consegnato']}"
+                       + "".join(f"; lavoro in corso di {u} {url}" for u, url in (ant.get("persone") or {}).items()
+                                 if u == p.get("chi") or any(g["utente"] == u and (g["modifiche"] or g["da_consegnare"]) for g in p.get("persone") or [])))
         for g in p.get("persone") or []:
             out.append(f"- {g['utente']}: branch {g['branch']}, {g['da_consegnare']} commit non ancora consegnati"
                        + (f" ({'; '.join(c['testo'] for c in g['commit'][:3])})" if g.get("commit") else "")
@@ -274,8 +283,9 @@ async def _tool_siti(user: dict, args: dict, request: Request) -> dict:
 TOOLS["siti"] = {
     "admin": False, "confirm": False, "run": _tool_siti,
     "spec": _fn("siti", "I siti dei clienti in lavorazione sul server dei siti: chi l'ha preso in carico, cosa sta facendo e cosa ha fatto "
-                "il suo Claude (diario, commit consegnati e non, file modificati). Usalo quando l'utente chiede a che punto è un sito, "
-                "cosa sta facendo o cosa ha fatto Claude. Sola lettura: ai Claude non si mandano messaggi né compiti.",
+                "il suo Claude (diario, commit consegnati e non, file modificati) e i link per vederlo nel browser. Usalo quando l'utente chiede a che "
+                "punto è un sito, cosa sta facendo o cosa ha fatto Claude, o vuole vederlo: dagli i link di anteprima (non GitHub, che è solo il "
+                "codice), in markdown. Sola lettura: ai Claude non si mandano messaggi né compiti.",
                 {"progetto": {"type": "string", "description": "Nome o slug del progetto (vuoto = tutti)"}}, []),
 }
 
