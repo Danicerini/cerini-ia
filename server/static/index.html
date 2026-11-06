@@ -196,10 +196,12 @@ button:disabled { cursor: default; }
 .chat-item.active { background: var(--active); }
 .chat-item .pin-mark { display: inline-grid; place-items: center; color: var(--text-3); margin-right: 6px; }
 .chat-item .pin-mark .i { width: 14px; height: 14px; }
-.chat-item:hover .pin-mark, .chat-item.active .pin-mark { display: none; }
+.chat-item.active .pin-mark { display: none; }
+@media (hover: hover) { .chat-item:hover .pin-mark { display: none; } .chat-item:hover .acts { display: flex; } }
 .chat-item .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-item .acts { display: none; gap: 0; }
-.chat-item:hover .acts, .chat-item.active .acts, .chat-item.confirm .acts { display: flex; }
+/* col dito il passaggio sopra non esiste: i tasti compaiono solo sulla chat aperta, cosi' il tocco apre e non fissa o rinomina */
+.chat-item.active .acts, .chat-item.confirm .acts { display: flex; }
 .chat-item .icon-btn { width: 28px; height: 28px; border-radius: 7px; }
 .chat-item .icon-btn:hover { background: var(--border); }
 .chat-item.busy::after { content: ""; flex: none; width: 7px; height: 7px; margin: 0 8px 0 6px; border-radius: 50%; background: var(--accent); animation: chatBusy 1.2s ease-in-out infinite; }

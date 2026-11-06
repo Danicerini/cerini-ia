@@ -832,8 +832,24 @@ async def _summary_event_add(args: dict):
         s += f" fino al {args['data_fine']}"
     if args.get("_foto_troppo_grande"):
         raise ValueError("la foto allegata è troppo grande (oltre 2,5 MB): chiedi all'utente di allegarne una più piccola")
-    s += "?" + ("\n\nCon la foto che hai allegato." if args.get("_foto") else "\n\nSenza foto (puoi allegarla al messaggio).")
+    s += "?" + (("\n\nCon l'immagine scelta." if args.get("foto_file") else "\n\nCon la foto che hai allegato.") if args.get("_foto") else "\n\nSenza foto (puoi allegarla al messaggio).")
     return s, site_view({"eventi": [_preview_event(args)]})
+
+
+def site_photo_file(uid: int, fid) -> str:
+    """Un'immagine tra i file dell'utente (es. creata da immagine_crea) come foto per il sito: JPEG ridotto, in base64."""
+    import base64, io
+    from PIL import Image, ImageOps
+    _, data = file_bytes(uid, fid)
+    try:
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            im.thumbnail((1536, 1536))
+            out = io.BytesIO()
+            im.save(out, "JPEG", quality=85)
+    except Exception:
+        raise ValueError(f"il file {fid} non è un'immagine")
+    return base64.b64encode(out.getvalue()).decode()
 
 
 async def _tool_event_add(user: dict, args: dict, request: Request) -> dict:
@@ -860,7 +876,7 @@ async def _summary_event_edit(args: dict):
         old = ", ".join((e.get("piatto") or {}).get("allergeni") or []) or "nessuno"
         changes.append(f"\n- allergeni del piatto: {old} → **{', '.join(_norm_allergens(args['allergeni'])) or 'nessuno'}**")
     if args.get("_foto"):
-        changes.append("\n- foto: **quella che hai allegato**")
+        changes.append("\n- foto: **" + ("l'immagine scelta" if args.get("foto_file") else "quella che hai allegato") + "**")
     if _truthy(args.get("togli_foto")):
         changes.append("\n- foto: **tolta**")
     if not changes:
@@ -915,6 +931,7 @@ _EVENT_PROPS = {
                   "Glutine, Crostacei, Uova, Pesce, Arachidi, Soia, Latte, Frutta a guscio, Sedano, Senape, Sesamo, Solfiti, Lupini, Molluschi"},
     "pubblicato": {"type": "boolean", "description": "false = salvato ma non visibile sul sito"},
     "usa_foto_allegata": {"type": "boolean", "description": "true se l'utente ha allegato una foto per l'evento in questo messaggio"},
+    "foto_file": {"type": "integer", "description": "Numero del file da usare come foto: un'immagine creata prima con immagine_crea (file n.) o un file allegato in chat"},
     "togli_foto": {"type": "boolean", "description": "true per togliere la foto attuale"},
 }
 
@@ -953,6 +970,8 @@ SITE_PROMPT += ("\n\nEVENTI: il sito ha anche la pagina Eventi & novità con due
                 "menu in quei giorni). Prima di creare un evento chiama eventi_leggi: se esiste già uno uguale o simile, anche passato "
                 "o nascosto, chiedi all'utente se vuole ripeterlo per la nuova data (evento_duplica), ripubblicarlo/modificarlo "
                 "(evento_modifica) o crearne uno nuovo. Se l'utente allega una foto all'evento, metti usa_foto_allegata=true. "
+                "Se chiede di mettere un'immagine creata con immagine_crea (o un file di prima), passa foto_file con il suo numero: "
+                "non serve che la scarichi e la rimandi. "
                 "Calcola tu la data esatta (AAAA-MM-GG) da espressioni come 'venerdì prossimo' partendo dalla data di oggi. "
                 "ALLERGENI: se l'utente chiede di metterli leggendo gli ingredienti, deducili tu dalla descrizione, usando solo i "
                 "14 nomi del sito: panino, pane, focaccia, pasta, impanature, farina = Glutine; formaggi, burro, panna, latte = Latte; "

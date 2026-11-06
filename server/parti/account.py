@@ -461,7 +461,7 @@ async def _tool_image(user: dict, args: dict, request: Request) -> dict:
         return {"content": f"L'immagine NON è stata creata. Il modello ha risposto: {_clip(said, 300) or 'niente'}. Dillo all'utente, non dire che è pronta.", "display": "Immagine non creata"}
     f = file_save(user["id"], f"immagine-{local_now().strftime('%Y%m%d-%H%M%S')}.png", data, "image/png", "immagine")
     return {"content": f"L'immagine è stata {'modificata' if start else 'creata'} (file n.{f['id']}) e l'utente la vede nella scheda sopra la tua risposta: non descriverla a lungo, rispondi in una frase. "
-                       f"Se chiede di cambiarla ancora, richiama immagine_crea con file={f['id']}.",
+                       f"Se chiede di cambiarla ancora, richiama immagine_crea con file={f['id']}. Se chiede di metterla in un evento del sito, usa evento_aggiungi o evento_modifica con foto_file={f['id']}.",
             "display": "Immagine modificata" if start else "Immagine creata", "view": {"kind": "image", "id": f["id"], "name": f["name"], "prompt": what[:300]}}
 
 

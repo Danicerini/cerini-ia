@@ -1134,7 +1134,14 @@ async def chat(body: ChatReq, request: Request, user: dict = Depends(require_use
                         args["_files"] = next((m.get("files") or [] for m in reversed(body.messages) if m.get("role") == "user"), [])
                         args["_chat_files"] = [f for m in body.messages if m.get("role") == "user" for f in (m.get("files") or [])]
                     # Foto dell'evento: la prende il server dall'ultimo messaggio dell'utente (il modello non la ricopia)
-                    if name in ("evento_aggiungi", "evento_modifica") and last_images and (
+                    if name in ("evento_aggiungi", "evento_modifica") and _int(args.get("foto_file")):
+                        # un'immagine gia' tra i file (creata da Aura o allegata prima): la prende il server, niente scarica e rimanda
+                        try:
+                            args = {**args, "_foto": site_photo_file(user["id"], args["foto_file"])}
+                        except ValueError as e:
+                            msgs.append({"role": "tool", "tool_name": name, "content": f"Foto non usabile: {e}. L'evento NON è stato toccato: dillo all'utente."})
+                            continue
+                    elif name in ("evento_aggiungi", "evento_modifica") and last_images and (
                             _truthy(args.get("usa_foto_allegata")) or name == "evento_aggiungi"):
                         args = {**args, "_foto": last_images[-1]}
                         # Il browser riduce già le foto (1536 px, JPEG): oltre ~2,5 MB l'hosting potrebbe rifiutarle
