@@ -2992,155 +2992,302 @@ function clientiSettings(d) {
 
 // ================================================================== file del server dei siti
 // Il proprietario vede tutto il server, gli altri solo le loro cartelle: lo decide il server (sito-file), qui si mostra e basta.
-const FX = { path: pref.get('fxPath', ''), data: null };
+// A sinistra la cartella (icone per tipo, filtro, ordine), a destra il file aperto: anteprima o editor con numeri di riga e colori.
+const FX = { path: pref.get('fxPath', ''), data: null, sort: pref.get('fxSort', 'name'), dir: pref.get('fxDir', 1), hidden: pref.get('fxHidden', false), q: '', open: null };
 const fxJoin = (dir, name) => (dir.replace(/\/+$/, '') + '/' + name).replace(/^\/\//, '/');
+const fxParent = (p) => p.replace(/\/[^/]+\/?$/, '') || '/';
 const fxSize = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1).replace('.', ',')} MB`);
-const fxWhen = (t) => (t ? new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
-const FX_IMG = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif)$/i;
+const fxWhen = (t) => {
+  if (!t) return '';
+  const d = new Date(t * 1000), now = new Date();
+  if (d.toDateString() === now.toDateString()) return 'oggi ' + d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+  return d.toLocaleDateString('it-IT', { day: 'numeric', month: 'short', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
+};
+const FX_IMG = /\.(png|jpe?g|gif|webp|avif|ico|bmp)$/i;
+// tipo del file: etichetta, colore (tonalità) e linguaggio per i colori del codice
+const FX_TYPES = [
+  [/\.html?$/i, 'HTML', 28, 'xml'], [/\.(css)$/i, 'CSS', 250, 'css'], [/\.(scss|sass|less)$/i, 'SCSS', 330, 'scss'],
+  [/\.(m?js|cjs)$/i, 'JS', 95, 'javascript'], [/\.jsx$/i, 'JSX', 200, 'javascript'], [/\.tsx?$/i, 'TS', 235, 'typescript'],
+  [/\.json$/i, 'JSON', 140, 'json'], [/\.(md|markdown)$/i, 'MD', 265, 'markdown'], [/\.py$/i, 'PY', 215, 'python'],
+  [/\.php$/i, 'PHP', 285, 'php'], [/\.(sh|bash|zsh)$/i, 'SH', 150, 'bash'], [/\.ya?ml$/i, 'YML', 5, 'yaml'],
+  [/\.sql$/i, 'SQL', 195, 'sql'], [/(^|\/)\.env(\..*)?$|\.(ini|conf|cfg|toml)$/i, 'CFG', 60, 'ini'], [/\.xml$/i, 'XML', 28, 'xml'],
+  [/\.svg$/i, 'SVG', 20, 'xml'], [FX_IMG, 'IMG', 330, ''], [/\.pdf$/i, 'PDF', 25, ''], [/\.(zip|tar|gz|tgz|7z|rar|bz2|xz)$/i, 'ZIP', 50, ''],
+  [/\.(txt|log)$/i, 'TXT', 260, ''], [/\.(lock)$/i, 'LOCK', 260, ''], [/(^|\/)(dockerfile|makefile)$/i, 'BLD', 200, 'makefile'],
+  [/\.(go)$/i, 'GO', 200, 'go'], [/\.(rb)$/i, 'RB', 15, 'ruby'], [/\.(c|h|cpp|hpp)$/i, 'C', 230, 'cpp'], [/\.(java|kt)$/i, 'JAVA', 30, 'java'],
+  [/\.(mp4|webm|mov|mp3|wav|ogg)$/i, 'MEDIA', 300, ''], [/\.(woff2?|ttf|otf)$/i, 'FONT', 180, ''],
+];
+function fxType(name) {
+  const t = FX_TYPES.find(([rx]) => rx.test(name));
+  if (t) return { label: t[1], hue: t[2], lang: t[3] };
+  const ext = (name.match(/\.([a-z0-9]{1,5})$/i) || [])[1];
+  return { label: ext ? ext.toUpperCase().slice(0, 4) : 'FILE', hue: 260, lang: '', plain: true };
+}
+function fxBadge(it) {
+  if (it.type === 'dir') return h('span', { class: 'fx-ico dir' + (/^(\.git|node_modules|\.cache|__pycache__|dist|vendor)$/.test(it.name) ? ' dim' : ''), html: icon('folder', 'sm') });
+  const t = fxType(it.name);
+  return h('span', { class: 'fx-ico' + (t.plain ? ' plain' : ''), style: `--fxh:${t.hue}`, text: t.label });
+}
 function closeFiles() { $('#main').classList.remove('files-open'); }
 async function openFiles(path) {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('files-open');
-  if (typeof path === 'string') FX.path = path;
+  if (typeof path === 'string') { FX.path = path; FX.open = null; }
   navSync();
   await renderFiles();
 }
 $('#filesBtn').onclick = () => openFiles();
 const fxUrl = (p, extra = {}) => '/api/ct/file?' + new URLSearchParams({ path: p, ...extra });
 function fxDownload(p, dir) { const a = h('a', { href: fxUrl(p, { dl: 1, ...(dir ? { cartella: 1 } : {}) }) }); document.body.append(a); a.click(); a.remove(); }
+function fxGo(p) { if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: lasciarle?')) return; FX.path = p; FX.open = null; FX.q = ''; renderFiles(); }
+
 async function renderFiles() {
   const root = $('#filesView');
+  if (!root.querySelector('.fx-app')) root.replaceChildren(h('div', { class: 'fx-app' }, h('div', { class: 'fx-main' }, h('div', { class: 'cl-empty', text: 'Leggo le cartelle…' }))));
   let d;
   try { d = FX.data = await (await api('/api/ct/ls?' + new URLSearchParams({ path: FX.path || '/' }))).json(); }
   catch (e) {
     if (FX.path && FX.path !== '/') { FX.path = ''; pref.set('fxPath', ''); return renderFiles(); }   // la cartella di prima non c'è più (o non è tua)
-    root.replaceChildren(h('div', { class: 'fx-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return;
+    root.replaceChildren(h('div', { class: 'fx-app' }, h('div', { class: 'fx-main' }, h('div', { class: 'cl-empty', text: e.message })))); return;
   }
   FX.path = d.roots ? '' : d.path; pref.set('fxPath', FX.path);
-  const go = (p) => { FX.path = p; renderFiles(); };
   const parts = d.roots ? [] : d.path.split('/').filter(Boolean);
-  const crumbs = h('div', { class: 'fx-crumbs' }, h('button', { text: d.roots ? 'Le tue cartelle' : '/', onclick: () => go(d.roots ? '' : '/') }),
-    ...parts.flatMap((x, i) => [h('span', { text: i ? '/' : '' }), h('button', { text: x, onclick: () => go('/' + parts.slice(0, i + 1).join('/')) })]));
-  const up = !d.roots && d.path !== '/' ? d.path.replace(/\/[^/]+\/?$/, '') || '/' : null;
+  const crumbs = h('nav', { class: 'fx-crumbs', 'aria-label': 'Percorso' },
+    h('button', { class: 'home', title: d.roots ? 'Le tue cartelle' : 'Radice del server', html: icon('home', 'sm'), onclick: () => fxGo(d.roots ? '' : '/') }),
+    ...parts.flatMap((x, i) => [h('span', { class: 'sep', text: '/' }), h('button', { class: i === parts.length - 1 ? 'cur' : '', text: x, onclick: () => fxGo('/' + parts.slice(0, i + 1).join('/')) })]),
+    !d.roots ? h('button', { class: 'copy', title: 'Copia il percorso', 'aria-label': 'Copia il percorso', html: icon('copy', 'sm'), onclick: () => copyText(d.path) }) : null);
   const upload = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => fxUpload([...e.target.files]) });
+  const filter = h('input', { class: 'fx-filter', type: 'search', placeholder: 'Filtra in questa cartella', value: FX.q, 'aria-label': 'Filtra',
+    oninput: (e) => { FX.q = e.target.value; paintList(); } });
+  const tool = (ic, label, fn, extra = {}) => h('button', { class: 'btn sm', html: icon(ic, 'sm') + `<span>${label}</span>`, onclick: fn, ...extra });
   const bar = h('div', { class: 'fx-bar' },
-    d.write ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Nuova cartella', onclick: () => fxNew(true) }) : null,
-    d.write ? h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Nuovo file', onclick: () => fxNew(false) }) : null,
-    d.write ? h('button', { class: 'btn sm', html: icon('up', 'sm') + 'Carica', onclick: () => upload.click() }) : null, upload,
-    !d.roots ? h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica la cartella', onclick: () => fxDownload(d.path, true) }) : null,
-    h('span', { class: 'grow' }),
-    !d.write && !d.roots ? h('span', { class: 'fx-ro', html: icon('eye', 'sm') + 'Solo lettura' }) : null,
+    filter,
+    d.write ? tool('folder', 'Cartella', () => fxNew(true), { title: 'Nuova cartella' }) : null,
+    d.write ? tool('pencil', 'File', () => fxNew(false), { title: 'Nuovo file' }) : null,
+    d.write ? tool('up', 'Carica', () => upload.click(), { title: 'Carica file (o trascinali sulla lista)' }) : null, upload,
+    !d.roots ? h('button', { class: 'icon-btn', title: 'Scarica la cartella (.tar.gz)', 'aria-label': 'Scarica la cartella', html: icon('down'), onclick: () => fxDownload(d.path, true) }) : null,
+    h('button', { class: 'icon-btn' + (FX.hidden ? ' on' : ''), title: FX.hidden ? 'Nascondi i file nascosti' : 'Mostra i file nascosti', 'aria-pressed': String(FX.hidden), html: icon(FX.hidden ? 'eye' : 'eyeOff'),
+      onclick: () => { FX.hidden = !FX.hidden; pref.set('fxHidden', FX.hidden); renderFiles(); } }),
     h('button', { class: 'icon-btn', title: 'Aggiorna', 'aria-label': 'Aggiorna', html: icon('retry'), onclick: () => renderFiles() }));
-  const rowMenu = (it, p, e) => {
-    e.stopPropagation();
-    const r = e.currentTarget.getBoundingClientRect();
-    tkMenu(r.left - 140, r.bottom + 4, [
-      it.type === 'dir' ? ['Apri', () => go(p)] : ['Apri', () => fxOpen(p, it)],
-      ['Scarica', () => fxDownload(p, it.type === 'dir')],
-      ...(d.write || it.write ? [['Rinomina', () => fxRename(p, it)], ['Cancella', () => fxDelete(p, it)]] : []),
-    ], it.name);
-  };
-  const rows = d.items.map((it) => {
-    const p = it.path || fxJoin(d.path, it.name), dir = it.type === 'dir';
-    return h('div', { class: 'fx-row' + (dir ? ' dir' : ''), role: 'button', tabindex: 0, title: p,
-      onclick: () => (dir ? go(p) : fxOpen(p, it)), onkeydown: (e) => { if (e.key === 'Enter') (dir ? go(p) : fxOpen(p, it)); } },
-      h('span', { class: 'ic', html: icon(dir ? 'folder' : 'clip', 'sm') }),
-      h('span', { class: 'nm', text: it.name + (it.type === 'link' ? ' →' : '') }),
-      h('small', { class: 'tnum', text: dir ? '' : fxSize(it.size) }), h('small', { class: 'tnum', text: fxWhen(it.mtime) }),
-      h('button', { class: 'icon-btn sm', 'aria-label': 'Azioni su ' + it.name, html: icon('settings', 'sm'), onclick: (e) => rowMenu(it, p, e) }));
-  });
-  const list = h('div', { class: 'fx-list' },
-    up ? h('div', { class: 'fx-row fx-up', role: 'button', tabindex: 0, onclick: () => go(up) }, h('span', { class: 'ic', html: icon('chevron', 'sm'), style: 'rotate:90deg' }), h('span', { class: 'nm', text: '..' }), h('small'), h('small'), h('span')) : null,
-    ...(rows.length ? rows : [h('div', { class: 'cl-empty', text: 'Cartella vuota.' })]));
-  const wrap = h('div', { class: 'fx-wrap' },
-    h('div', { class: 'fx-head' }, h('h1', { text: 'Server dei siti' }),
-      h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { closeFiles(); navSync(); focusInput(); } })),
-    crumbs, bar, list);
+  const sortBtn = (k, label) => h('button', { class: 'fx-sort' + (FX.sort === k ? ' on' : ''), onclick: () => { FX.dir = FX.sort === k ? -FX.dir : 1; FX.sort = k; pref.set('fxSort', k); pref.set('fxDir', FX.dir); paintList(); } },
+    h('span', { text: label }), FX.sort === k ? h('span', { class: 'arr', text: FX.dir > 0 ? '↑' : '↓' }) : null);
+  const head = h('div', { class: 'fx-row fx-hd' }, h('span'), sortBtn('name', 'Nome'), sortBtn('mtime', 'Modificato'), sortBtn('size', 'Dimensione'), h('span'));
+  const list = h('div', { class: 'fx-rows', role: 'list' });
+  const count = h('small', { class: 'fx-count' });
+  function paintList() {
+    const q = FX.q.trim().toLowerCase();
+    let items = d.items.filter((it) => (FX.hidden || d.roots || !it.name.startsWith('.')) && (!q || it.name.toLowerCase().includes(q)));
+    const key = { name: (x) => x.name.toLowerCase(), mtime: (x) => x.mtime || 0, size: (x) => x.size || 0 }[FX.sort];
+    items = items.sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || (key(a) > key(b) ? FX.dir : key(a) < key(b) ? -FX.dir : 0));
+    head.replaceChildren(h('span'), sortBtn('name', 'Nome'), sortBtn('mtime', 'Modificato'), sortBtn('size', 'Dimensione'), h('span'));
+    const hiddenN = d.items.filter((it) => it.name.startsWith('.')).length;
+    count.textContent = `${items.length} element${items.length === 1 ? 'o' : 'i'}` + (!FX.hidden && hiddenN && !d.roots ? ` · ${hiddenN} nascost${hiddenN === 1 ? 'o' : 'i'}` : '');
+    const up = !d.roots && d.path !== '/' ? h('div', { class: 'fx-row fx-up', role: 'button', tabindex: 0, onclick: () => fxGo(fxParent(d.path)), onkeydown: (e) => { if (e.key === 'Enter') fxGo(fxParent(d.path)); } },
+      h('span', { class: 'fx-ico up', html: icon('chevron', 'sm') }), h('span', { class: 'nm', text: 'Cartella superiore' }), h('small'), h('small'), h('span')) : null;
+    list.replaceChildren(...[up, ...items.map((it) => fxRow(it, d))].filter(Boolean),
+      ...(items.length ? [] : [h('div', { class: 'fx-empty', text: q ? 'Niente con questo nome.' : d.write ? 'Cartella vuota: trascina qui dei file o crea qualcosa.' : 'Cartella vuota.' })]));
+  }
+  paintList();
+  const main = h('div', { class: 'fx-main' },
+    h('div', { class: 'fx-top' }, h('h1', { text: 'Server dei siti' }), !d.write && !d.roots ? h('span', { class: 'fx-ro', html: icon('eye', 'sm') + 'Solo lettura' }) : null,
+      h('span', { class: 'grow' }), count,
+      h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: chiudere?')) return; FX.open = null; closeFiles(); navSync(); focusInput(); } })),
+    crumbs, bar, h('div', { class: 'fx-list' }, head, list));
   // trascinando dei file sulla lista si caricano nella cartella aperta
   if (d.write) {
-    list.addEventListener('dragover', (e) => { e.preventDefault(); list.classList.add('fx-drop'); });
-    list.addEventListener('dragleave', () => list.classList.remove('fx-drop'));
-    list.addEventListener('drop', (e) => { e.preventDefault(); list.classList.remove('fx-drop'); fxUpload([...e.dataTransfer.files]); });
+    main.addEventListener('dragover', (e) => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); main.classList.add('fx-drop'); } });
+    main.addEventListener('dragleave', (e) => { if (!main.contains(e.relatedTarget)) main.classList.remove('fx-drop'); });
+    main.addEventListener('drop', (e) => { e.preventDefault(); main.classList.remove('fx-drop'); fxUpload([...e.dataTransfer.files]); });
   }
-  root.replaceChildren(wrap);
+  const pane = h('aside', { class: 'fx-pane', 'aria-label': 'File aperto' });
+  const app = h('div', { class: 'fx-app' + (FX.open ? ' has-file' : '') }, main, pane);
+  root.replaceChildren(app);
+  if (FX.open) fxPaintPane(FX.open);
+}
+function fxRow(it, d) {
+  const p = it.path || fxJoin(d.path, it.name), dir = it.type === 'dir';
+  const canWrite = d.write || it.write;
+  const open = () => (dir ? fxGo(p) : fxOpen(p, it));
+  const act = (ic, label, fn, cls = '') => h('button', { class: 'icon-btn sm ' + cls, title: label, 'aria-label': `${label} ${it.name}`, html: icon(ic, 'sm'), onclick: (e) => { e.stopPropagation(); fn(); } });
+  return h('div', { class: 'fx-row' + (dir ? ' dir' : '') + (FX.open?.path === p ? ' sel' : ''), role: 'listitem', tabindex: 0, title: p,
+    onclick: open, onkeydown: (e) => { if (e.key === 'Enter') open(); if (e.key === 'Delete' && canWrite) fxDelete(p, it); },
+    oncontextmenu: (e) => {
+      e.preventDefault();
+      tkMenu(e.clientX, e.clientY, [['Apri', open], ['Scarica', () => fxDownload(p, dir)], ['Copia il percorso', () => copyText(p)],
+        ...(canWrite ? [['Rinomina', () => fxRename(p, it)], ['Cancella', () => fxDelete(p, it)]] : [])], it.name);
+    } },
+    fxBadge(it),
+    h('span', { class: 'nm' }, h('span', { class: 'tx', text: it.name }), it.type === 'link' ? h('small', { text: '↗ collegamento' }) : null,
+      d.roots ? h('small', { text: it.write ? 'la tua cartella' : 'solo lettura' }) : null),
+    h('small', { class: 'tnum', text: fxWhen(it.mtime) }), h('small', { class: 'tnum', text: dir ? '—' : fxSize(it.size) }),
+    h('span', { class: 'fx-acts' }, act('down', 'Scarica', () => fxDownload(p, dir)),
+      canWrite ? act('pencil', 'Rinomina', () => fxRename(p, it)) : null, canWrite ? act('trash', 'Cancella', () => fxDelete(p, it), 'danger') : null));
 }
 async function fxUpload(files) {
-  for (const f of files) {
-    try { await api(fxUrl(fxJoin(FX.path, f.name)), undefined, { method: 'PUT', body: f }); toast(`Caricato ${f.name}`); }
+  if (!files.length) return;
+  const dir = FX.path;
+  for (const [i, f] of files.entries()) {
+    toast(`Carico ${f.name}${files.length > 1 ? ` (${i + 1} di ${files.length})` : ''}…`);
+    try { await api(fxUrl(fxJoin(dir, f.name)), undefined, { method: 'PUT', body: f }); }
     catch (e) { toast(`${f.name}: ${e.message}`); }
   }
+  toast(files.length > 1 ? `Caricati ${files.length} file` : `Caricato ${files[0].name}`);
   renderFiles();
 }
 function fxAsk(title, value, okText, onOk) {
   const close = () => modal.remove();
-  const inp = h('input', { class: 'ag-in', value: value || '', onkeydown: (e) => { if (e.key === 'Enter') ok.click(); if (e.key === 'Escape') close(); } });
+  const inp = h('input', { class: 'ag-in', value: value || '', spellcheck: 'false', onkeydown: (e) => { if (e.key === 'Enter') ok.click(); if (e.key === 'Escape') close(); } });
   const ok = h('button', { class: 'btn primary', text: okText, onclick: async () => { const v = inp.value.trim(); if (!v || v.includes('/')) return toast('Nome non valido'); ok.disabled = true; try { await onOk(v); close(); } catch (e) { ok.disabled = false; toast(e.message); } } });
   const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
-    h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+    h('div', { class: 'ag-sheet fx-ask', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
       h('div', { class: 'ag-sheet-h' }, h('b', { text: title }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
       h('label', { class: 'ag-f' }, h('span', { text: 'Nome' }), inp),
       h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), ok)));
   document.body.append(modal);
-  inp.focus(); inp.select();
+  inp.focus();
+  const dot = (value || '').lastIndexOf('.');   // rinominando si seleziona il nome senza l'estensione
+  inp.setSelectionRange(0, dot > 0 ? dot : (value || '').length);
 }
 function fxNew(dir) {
-  fxAsk(dir ? 'Nuova cartella' : 'Nuovo file', '', 'Crea', async (name) => {
+  fxAsk(dir ? 'Nuova cartella' : 'Nuovo file', dir ? '' : 'nuovo.html', 'Crea', async (name) => {
     const p = fxJoin(FX.path, name);
     if (dir) await api('/api/ct/cartella', { path: p });
     else await api(fxUrl(p), undefined, { method: 'PUT', body: '' });
     await renderFiles();
-    if (!dir) fxOpen(p, { name, size: 0 });
+    if (!dir) fxOpen(p, { name, size: 0, mtime: Math.floor(Date.now() / 1000) });
   });
 }
 function fxRename(p, it) {
-  fxAsk('Rinomina ' + it.name, it.name, 'Rinomina', async (name) => {
-    await api('/api/ct/sposta', { path: p, to: fxJoin(p.replace(/\/[^/]+$/, '') || '/', name) });
+  fxAsk('Rinomina', it.name, 'Rinomina', async (name) => {
+    const to = fxJoin(fxParent(p), name);
+    await api('/api/ct/sposta', { path: p, to });
+    if (FX.open?.path === p) { FX.open.path = to; FX.open.name = name; }
     toast('Rinominato'); renderFiles();
   });
 }
 async function fxDelete(p, it) {
   if (!confirm(`Cancellare ${it.type === 'dir' ? 'la cartella' : 'il file'} «${it.name}»${it.type === 'dir' ? ' con tutto quello che c\'è dentro' : ''}? Non si può annullare.`)) return;
-  try { await api('/api/ct/file?' + new URLSearchParams({ path: p }), undefined, { method: 'DELETE' }); toast('Cancellato'); renderFiles(); }
-  catch (e) { toast(e.message); }
+  try {
+    await api('/api/ct/file?' + new URLSearchParams({ path: p }), undefined, { method: 'DELETE' });
+    if (FX.open && (FX.open.path === p || FX.open.path.startsWith(p + '/'))) FX.open = null;
+    toast('Cancellato'); renderFiles();
+  } catch (e) { toast(e.message); }
 }
-// Un file aperto: testo modificabile (Ctrl+S salva), immagine da guardare, il resto si scarica
+// Il file aperto vive nel pannello a destra (sul telefono a tutto schermo): testo con numeri di riga e colori, immagini, il resto si scarica
 async function fxOpen(p, it) {
-  const writable = !!FX.data?.write;
-  const close = () => { if (dirty && !confirm('Ci sono modifiche non salvate: chiudere lo stesso?')) return; modal.remove(); };
-  let dirty = false;
-  const status = h('small', { class: 'fx-ro' });
-  const box = h('div', { class: 'fx-img' }, h('div', { class: 'cl-empty', text: 'Apro…' }));
-  const save = h('button', { class: 'btn primary sm', text: 'Salva', disabled: true });
-  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
-    h('div', { class: 'ag-sheet fx-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': it.name },
-      h('div', { class: 'ag-sheet-h' }, h('b', { text: it.name, title: p }), status, h('span', { class: 'grow' }),
-        h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica', onclick: () => fxDownload(p) }),
-        writable ? save : null,
-        h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })), box));
-  document.body.append(modal);
-  if (FX_IMG.test(it.name) && !/\.svg$/i.test(it.name)) { box.replaceChildren(h('img', { src: fxUrl(p), alt: it.name })); return; }
-  if ((it.size || 0) > 3 * 1048576) { box.replaceChildren(h('div', { class: 'cl-empty', text: 'File grande: scaricalo per aprirlo.' })); return; }
-  let buf;
-  try { buf = new Uint8Array(await (await api(fxUrl(p))).arrayBuffer()); } catch (e) { box.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); return; }
-  if (buf.subarray(0, 8000).includes(0)) { box.replaceChildren(h('div', { class: 'cl-empty', text: 'Non è un file di testo: scaricalo per aprirlo.' })); return; }
-  const ta = h('textarea', { class: 'ag-in', spellcheck: 'false', readonly: writable ? null : true });
-  ta.value = new TextDecoder().decode(buf);
+  if (FX.open?.dirty && FX.open.path !== p && !confirm('Ci sono modifiche non salvate: lasciarle?')) return;
+  FX.open = { path: p, name: it.name, size: it.size, mtime: it.mtime, write: !!FX.data?.write, loading: true };
+  document.querySelector('.fx-app')?.classList.add('has-file');
+  document.querySelectorAll('.fx-row.sel').forEach((r) => r.classList.remove('sel'));
+  [...document.querySelectorAll('.fx-row')].find((r) => r.title === p)?.classList.add('sel');
+  fxPaintPane(FX.open);
+  const f = FX.open;
+  if (FX_IMG.test(it.name) || /\.pdf$/i.test(it.name)) { f.kind = FX_IMG.test(it.name) ? 'img' : 'pdf'; f.loading = false; return fxPaintPane(f); }
+  if ((it.size || 0) > 3 * 1048576) { f.kind = 'big'; f.loading = false; return fxPaintPane(f); }
+  try {
+    const buf = new Uint8Array(await (await api(fxUrl(p))).arrayBuffer());
+    if (FX.open !== f) return;
+    if (buf.subarray(0, 8000).includes(0)) f.kind = 'bin';
+    else { f.kind = 'text'; f.text = f.orig = new TextDecoder().decode(buf); }
+  } catch (e) { f.kind = 'err'; f.err = e.message; }
+  f.loading = false;
+  if (FX.open === f) fxPaintPane(f);
+}
+function fxClosePane() {
+  if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: chiudere?')) return;
+  FX.open = null;
+  document.querySelector('.fx-app')?.classList.remove('has-file');
+  document.querySelectorAll('.fx-row.sel').forEach((r) => r.classList.remove('sel'));
+}
+function fxPaintPane(f) {
+  const pane = document.querySelector('.fx-pane'); if (!pane) return;
+  const t = fxType(f.name);
+  const status = h('small', { class: 'fx-st' + (f.dirty ? ' dirty' : ''), text: f.dirty ? 'Modificato' : f.saved ? 'Salvato' : f.write ? '' : 'Solo lettura' });
+  const save = h('button', { class: 'btn primary sm', html: icon('check', 'sm') + 'Salva', disabled: !f.dirty, title: 'Salva (Ctrl+S)' });
+  const head = h('div', { class: 'fx-ph' },
+    h('button', { class: 'icon-btn fx-back', title: 'Torna alla cartella', 'aria-label': 'Torna alla cartella', html: icon('chevron'), onclick: fxClosePane }),
+    fxBadge({ name: f.name }),
+    h('div', { class: 'fx-pt' }, h('b', { text: f.name }), h('small', { text: [fxSize(f.size), f.mtime ? 'modificato ' + fxWhen(f.mtime) : '', t.lang ? t.label : ''].filter(Boolean).join(' · ') })),
+    status,
+    f.kind === 'text' && f.write ? save : null,
+    h('button', { class: 'icon-btn', title: 'Scarica', 'aria-label': 'Scarica', html: icon('down'), onclick: () => fxDownload(f.path) }),
+    h('button', { class: 'icon-btn', title: 'Chiudi il file', 'aria-label': 'Chiudi il file', html: icon('x'), onclick: fxClosePane }));
+  let body;
+  if (f.loading) body = h('div', { class: 'fx-msg' }, h('span', { class: 'spinner' }), h('span', { text: 'Apro il file…' }));
+  else if (f.kind === 'img') body = h('div', { class: 'fx-img' }, h('img', { src: fxUrl(f.path), alt: f.name }));
+  else if (f.kind === 'pdf') body = h('div', { class: 'fx-msg' }, h('span', { text: 'PDF: aprilo o scaricalo.' }), h('a', { class: 'btn sm', href: fxUrl(f.path), target: '_blank', rel: 'noopener', text: 'Apri' }));
+  else if (f.kind === 'big') body = h('div', { class: 'fx-msg', text: 'File grande (oltre 3 MB): scaricalo per aprirlo.' });
+  else if (f.kind === 'bin') body = h('div', { class: 'fx-msg', text: 'Non è un file di testo: scaricalo per aprirlo.' });
+  else if (f.kind === 'err') body = h('div', { class: 'fx-msg err', text: f.err });
+  else body = fxEditor(f, save, status);
+  pane.replaceChildren(head, body);
+}
+// Editor: un'area di testo trasparente sopra il codice colorato, con i numeri di riga accanto. Ctrl+S salva, Tab rientra.
+function fxEditor(f, save, status) {
+  const lang = fxType(f.name).lang;
+  const big = f.text.length > 400000;   // file enormi: niente colori, resterebbe lento
+  const gutter = h('div', { class: 'fx-gut', 'aria-hidden': 'true' });
+  const code = h('code', { class: 'hljs' });
+  const pre = h('pre', { class: 'fx-pre', 'aria-hidden': 'true' }, code);
+  const ta = h('textarea', { class: 'fx-ta', spellcheck: 'false', autocapitalize: 'off', autocomplete: 'off', wrap: 'off', readonly: f.write ? null : true, 'aria-label': 'Contenuto di ' + f.name });
+  ta.value = f.text;
+  let lines = 0, frame = 0;
+  const paint = () => {
+    frame = 0;
+    const v = ta.value;
+    const n = v.split('\n').length;
+    if (n !== lines) { lines = n; gutter.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n'); }
+    if (!big && window.hljs && lang && hljs.getLanguage(lang)) {
+      try { code.innerHTML = hljs.highlight(v, { language: lang, ignoreIllegals: true }).value + '\n'; } catch { code.textContent = v + '\n'; }
+    } else code.textContent = v + '\n';
+  };
+  paint();
   const doSave = async () => {
-    if (!dirty) return;
-    save.disabled = true; status.textContent = 'Salvo…';
-    try { await api(fxUrl(p), undefined, { method: 'PUT', body: ta.value }); dirty = false; status.textContent = 'Salvato'; }
-    catch (e) { save.disabled = false; status.textContent = ''; toast(e.message); }
+    if (!f.dirty || !f.write) return;
+    save.disabled = true; status.textContent = 'Salvo…'; status.className = 'fx-st';
+    try {
+      const r = await (await api(fxUrl(f.path), undefined, { method: 'PUT', body: ta.value })).json();
+      f.orig = ta.value; f.dirty = false; f.saved = true; f.size = r.size ?? f.size; f.mtime = r.mtime ?? f.mtime;
+      status.textContent = 'Salvato';
+    } catch (e) { save.disabled = false; status.textContent = 'Non salvato'; status.className = 'fx-st dirty'; toast(e.message); }
   };
   save.onclick = doSave;
-  ta.oninput = () => { dirty = true; save.disabled = false; status.textContent = 'Modificato'; };
-  ta.onkeydown = (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); doSave(); }
-    if (e.key === 'Tab' && !e.shiftKey && writable) { e.preventDefault(); ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end'); ta.oninput(); }
-    if (e.key === 'Escape') close();
+  ta.addEventListener('input', () => {
+    f.text = ta.value; f.dirty = ta.value !== f.orig; f.saved = false;
+    save.disabled = !f.dirty; status.textContent = f.dirty ? 'Modificato' : ''; status.className = 'fx-st' + (f.dirty ? ' dirty' : '');
+    if (!frame) frame = requestAnimationFrame(paint);
+  });
+  ta.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); doSave(); return; }
+    if (e.key === 'Tab' && f.write) {
+      e.preventDefault();
+      const s = ta.selectionStart, en = ta.selectionEnd, v = ta.value;
+      if (s === en && !e.shiftKey) ta.setRangeText('  ', s, en, 'end');
+      else {   // più righe: rientra o toglie il rientro a tutte
+        const from = v.lastIndexOf('\n', s - 1) + 1, block = v.slice(from, en);
+        const out = e.shiftKey ? block.replace(/^ {1,2}/gm, '') : block.replace(/^/gm, '  ');
+        ta.setRangeText(out, from, en, 'select');
+      }
+      ta.dispatchEvent(new Event('input'));
+    }
+  });
+  const scroller = h('div', { class: 'fx-ed-scroll' }, gutter, h('div', { class: 'fx-ed-code' }, pre, ta));
+  // l'area di testo è grande quanto il codice e non scorre da sola: scorre il contenitore, e il cursore deve restare in vista
+  ta.addEventListener('scroll', () => { ta.scrollTop = 0; ta.scrollLeft = 0; });
+  let cw = 0;
+  const keep = () => {
+    if (!cw) { const c = document.createElement('canvas').getContext('2d'); c.font = getComputedStyle(ta).font; cw = c.measureText('0'.repeat(50)).width / 50 || 7.8; }
+    const v = ta.value, at = ta.selectionEnd, before = v.slice(0, at);
+    const line = before.split('\n').length - 1, col = at - before.lastIndexOf('\n') - 1;
+    const g = gutter.offsetWidth, y = 12 + line * 20, x = g + 16 + col * cw;
+    if (y < scroller.scrollTop + 4) scroller.scrollTop = Math.max(0, y - 30);
+    else if (y + 20 > scroller.scrollTop + scroller.clientHeight - 4) scroller.scrollTop = y + 50 - scroller.clientHeight;
+    if (x < scroller.scrollLeft + g + 8) scroller.scrollLeft = Math.max(0, x - g - 60);
+    else if (x > scroller.scrollLeft + scroller.clientWidth - 24) scroller.scrollLeft = x - scroller.clientWidth + 80;
   };
-  if (!writable) status.textContent = 'Solo lettura';
-  box.replaceWith(ta);
-  ta.focus();
+  ta.addEventListener('keyup', (e) => { if (/^(Arrow|Page|Home|End|Enter|Backspace|Delete)/.test(e.key) || e.key.length === 1) keep(); });
+  ta.addEventListener('input', () => requestAnimationFrame(keep));
+  setTimeout(() => ta.focus({ preventScroll: true }), 0);
+  return h('div', { class: 'fx-ed' + (f.write ? '' : ' ro') }, scroller);
 }
 
 // ================================================================== agenda
