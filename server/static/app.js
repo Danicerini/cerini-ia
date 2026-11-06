@@ -2699,7 +2699,7 @@ async function soloRender(root, no) {
 // ================================================================== clienti (siti vetrina)
 // Le attivita' della zona (scelta nelle impostazioni) senza sito o con un sito da rifare: numero, mail, motivo e una mail pronta da mandare.
 const CL = { tab: 'nuovo', q: '', town: '', shown: 60 };
-const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['clienti', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
+const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['lavorazione', 'In lavorazione'], ['clienti', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
 const CL_STATUS = [['nuovo', 'Da contattare'], ['contattato', 'Contattato'], ['risposto', 'Ha risposto'], ['lavorazione', 'In lavorazione'], ['cliente', 'Cliente'], ['no', 'Non interessa']];
 function closeClienti() { $('#main').classList.remove('clienti-open'); clearTimeout(CL.timer); }
 async function openClienti() {
@@ -2742,7 +2742,7 @@ async function renderClienti() {
     stat('s-nosite', 'Senza sito', cnt((k, s) => k === 'nosite' && s === 'nuovo'), 'nosite', 'nuovo'),
     stat('s-bad', 'Sito da rifare', cnt((k, s) => k === 'bad' && s === 'nuovo'), 'bad', 'nuovo'),
     stat('s-cont', 'Contattati', cnt((k, s) => k !== 'ok' && ['contattato', 'risposto'].includes(s)), '', 'contattato'),
-    stat('s-lav', 'In lavorazione', cnt((k, s) => s === 'lavorazione'), '', 'lavorazione'),
+    stat('s-lav', 'In lavorazione', CL.siti?.on && !CL.siti.error ? (CL.siti.progetti || []).length : cnt((k, s) => s === 'lavorazione'), '', 'lavorazione'),
     stat('s-cli', 'Clienti', cnt((k, s) => s === 'cliente' || s === 'lavorazione'), '', 'clienti'));
   const towns = [...new Set((d.leads || []).map((l) => l.town).filter(Boolean))].sort();
   const search = h('input', { class: 'ag-in', type: 'search', placeholder: 'Cerca per nome, mestiere o paese', value: CL.q, 'aria-label': 'Cerca',
@@ -2761,7 +2761,13 @@ async function renderClienti() {
       rows.length > CL.shown ? h('button', { class: 'btn cl-more', text: `Mostra altre ${Math.min(60, rows.length - CL.shown)} (di ${rows.length - CL.shown})`, onclick: () => { CL.shown += 60; paintList(); } }) : '');
   }
   paintList();
-  root.replaceChildren(h('div', { class: 'cl-wrap' }, head, jobEl, sitiSection(), stats, h('div', { class: 'cl-bar' }, tabs), h('div', { class: 'cl-bar' }, search, towns.length ? town : null), list));
+  const projects = CL.tab === 'lavorazione';
+  if (projects) {   // i progetti: i siti in lavorazione; sotto, chi è in lavorazione ma non ha ancora un sito sul server
+    const noSite = (d.leads || []).filter((l) => !l.sito);
+    list.replaceChildren(sitiSection() || h('div', { class: 'cl-empty', text: 'Il server dei siti non è collegato.' }),
+      ...(noSite.length ? [h('div', { class: 'st-h' }, h('h2', { text: 'In lavorazione senza sito' }), h('small', { text: String(noSite.length) })), ...noSite.map(clientCard)] : []));
+  }
+  root.replaceChildren(h('div', { class: 'cl-wrap' }, head, jobEl, stats, h('div', { class: 'cl-bar' }, tabs), projects ? null : h('div', { class: 'cl-bar' }, search, towns.length ? town : null), list));
   if (job?.running) CL.timer = setTimeout(() => { if ($('#main').classList.contains('clienti-open')) renderClienti(); }, 2500);
 }
 function leadCard(l) {
@@ -2814,12 +2820,15 @@ function clientCard(l) {
       l.email ? contact('mail', l.email, 'mailto:' + l.email) : null,
       l.address || l.town ? contact('pin', l.address || l.town, l.maps_url || `https://www.google.com/maps/search/${gq}`) : null,
       l.website ? contact('globe', 'Sito attuale', l.website) : null),
-    sites.length ? h('div', { class: 'cli-sites' }, ...sites.map((p) => { const x = sitoInfo(p), d = x.diary.at(-1);
-      return h('button', { type: 'button', class: 'cli-site', onclick: () => sitoView(p.slug) }, sitoState(x),
-        h('b', { text: p.nome }), h('span', { text: d ? d.testo : 'Ancora niente nel diario' })); }))
-      : h('div', { class: 'cli-nosite', text: 'Nessun sito in lavorazione per questo cliente.' }),
+    l.piva ? h('small', { class: 'cli-meta', text: 'P.IVA ' + l.piva }) : null,
+    sites.length ? h('div', { class: 'cli-sites' }, ...sites.map((p) => { const x = sitoInfo(p);
+      return h('button', { type: 'button', class: 'cli-site' + (x.live ? ' live' : ''), title: 'Apri il progetto', onclick: () => sitoView(p.slug) },
+        h('i', { class: 'dot' }), h('span', { text: `Sito: ${p.nome}` }), h('small', { text: x.live ? 'ci stanno lavorando' : x.last ? `consegnato ${agoTs(+x.last.ts)}` : 'appena iniziato' })); }))
+      : null,
+    l.notes?.length ? h('div', { class: 'cli-note', text: l.notes.at(-1).text }) : null,
     h('div', { class: 'cl-acts' },
       h('button', { class: 'btn primary sm', html: icon('user', 'sm') + 'Scheda cliente', onclick: () => clientView(l) }),
+      h('button', { class: 'btn sm', html: icon('mail', 'sm') + 'Mail', onclick: () => clientiMail(l) }),
       sites[0]?.anteprima?.consegnato ? h('a', { class: 'btn sm', href: sites[0].anteprima.consegnato, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + 'Apri il sito' }) : null,
       !sites.length && CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => sitoTake(l) }) : null));
 }
@@ -2905,7 +2914,6 @@ function sitiSection() {
   if (s.error) return h('div', { class: 'cl-job err', text: 'Siti in lavorazione non letti: ' + s.error });
   const list = [...(s.progetti || [])].sort((a, b) => (b.chi === s.me) - (a.chi === s.me) || sitoInfo(b).lastTs - sitoInfo(a).lastTs);
   return h('section', { class: 'st-sec' },
-    h('div', { class: 'st-h' }, h('h2', { text: 'Siti in lavorazione' }), h('small', { text: list.length ? `${list.length}` : '' })),
     list.length ? h('div', { class: 'st-grid' }, ...list.map((p) => {
       const x = sitoInfo(p), d = x.diary.at(-1), pend = sitoPending(x);
       const sub = p.lead ? [p.lead.town].filter(Boolean).join('') : '';
