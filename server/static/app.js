@@ -2694,8 +2694,8 @@ async function soloRender(root, no) {
 // ================================================================== clienti (siti vetrina)
 // Le attivita' della zona (scelta nelle impostazioni) senza sito o con un sito da rifare: numero, mail, motivo e una mail pronta da mandare.
 const CL = { tab: 'nuovo', q: '', town: '', shown: 60 };
-const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['cliente', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
-const CL_STATUS = [['nuovo', 'Da contattare'], ['contattato', 'Contattato'], ['risposto', 'Ha risposto'], ['cliente', 'Cliente'], ['no', 'Non interessa']];
+const CL_TABS = [['nuovo', 'Da contattare'], ['contattato', 'Contattati'], ['risposto', 'Hanno risposto'], ['lavorazione', 'In lavorazione'], ['cliente', 'Clienti'], ['no', 'Non interessa'], ['tutti', 'Tutti']];
+const CL_STATUS = [['nuovo', 'Da contattare'], ['contattato', 'Contattato'], ['risposto', 'Ha risposto'], ['lavorazione', 'In lavorazione'], ['cliente', 'Cliente'], ['no', 'Non interessa']];
 function closeClienti() { $('#main').classList.remove('clienti-open'); clearTimeout(CL.timer); }
 async function openClienti() {
   closeSide(); togglePicker(false); closeViews();
@@ -2738,6 +2738,7 @@ async function renderClienti() {
     stat('s-nosite', 'Senza sito', cnt((k, s) => k === 'nosite' && s === 'nuovo'), 'nosite', 'nuovo'),
     stat('s-bad', 'Sito da rifare', cnt((k, s) => k === 'bad' && s === 'nuovo'), 'bad', 'nuovo'),
     stat('s-cont', 'Contattati', cnt((k, s) => k !== 'ok' && ['contattato', 'risposto'].includes(s)), '', 'contattato'),
+    stat('s-lav', 'In lavorazione', cnt((k, s) => s === 'lavorazione'), '', 'lavorazione'),
     stat('s-cli', 'Clienti', cnt((k, s) => s === 'cliente'), '', 'cliente'));
   const towns = [...new Set((d.leads || []).map((l) => l.town).filter(Boolean))].sort();
   const search = h('input', { class: 'ag-in', type: 'search', placeholder: 'Cerca per nome, mestiere o paese', value: CL.q, 'aria-label': 'Cerca',
@@ -2778,6 +2779,7 @@ function leadCard(l) {
       l.website ? h('a', { class: 'cl-link', href: l.website, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + `<span>${l.kind === 'nosite' ? 'La loro pagina' : 'Il loro sito'}</span>` }) : null,
       h('a', { class: 'cl-link', href: l.maps_url || `https://www.google.com/maps/search/${gq}`, target: '_blank', rel: 'noopener', html: icon('pin', 'sm') + '<span>Maps</span>' }),
       !l.website || l.kind === 'nosite' ? h('a', { class: 'cl-link', href: `https://www.google.com/search?q=${gq}`, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + '<span>Cerca su Google</span>' }) : null),
+    l.sito ? sitoLine(l.sito) : null,
     notes,
     h('div', { class: 'cl-acts' },
       h('button', { class: 'btn primary sm', html: icon('mail', 'sm') + 'Prepara mail', onclick: () => clientiMail(l) }), st,
@@ -2796,6 +2798,17 @@ function sitoPerson(g) {
   const live = g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800;
   return h('div', { class: 'st-p' + (live ? ' live' : '') }, h('i', { class: 'dot', title: live ? 'Ci sta lavorando adesso' : '' }),
     h('b', { text: g.utente === CL.siti?.me ? 'Tu' : g.utente }), h('span', { text: bits.join(' · ') || 'niente in sospeso' }));
+}
+// la riga del sito sulla scheda del cliente: chi lo segue, chi ci sta lavorando adesso, l'ultima consegna
+function sitoLine(slug) {
+  const p = (CL.siti?.progetti || []).find((x) => x.slug === slug);
+  if (!p) return h('div', { class: 'cl-sito' }, h('b', { text: 'Sito in lavorazione' }));
+  const me = CL.siti.me, last = (p.main || []).find((c) => c.chi !== 'sito');
+  const live = (p.persone || []).filter((g) => g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800).map((g) => (g.utente === me ? 'tu' : g.utente));
+  const open = (p.task || []).filter((t) => t.stato !== 'fatto').length;
+  return h('button', { type: 'button', class: 'cl-sito', onclick: () => sitoView(slug) },
+    h('b', { text: `In lavorazione · ${p.chi === me ? 'lo segui tu' : 'lo segue ' + p.chi}` }),
+    h('span', { text: [live.length ? `ci sta lavorando ${live.join(' e ')}` : '', last ? `ultima consegna ${agoTs(+last.ts)} (${last.chi})` : 'niente consegnato ancora', open ? `${open} task aperti` : ''].filter(Boolean).join(' · ') }));
 }
 function sitiSection() {
   const s = CL.siti;
@@ -2828,7 +2841,7 @@ function sitoTake(l) {
   const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
     h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Prendo in carico' },
       h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Prendo in carico ' + l.name }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
-      h('p', { class: 'st-hint', text: 'Sul server dei siti nasce il progetto: la cartella comune, una cartella per ognuno di voi, il canale per i Claude e il repository privato su GitHub. Il cliente passa a «Cliente».' }),
+      h('p', { class: 'st-hint', text: 'Sul server dei siti nasce il sito: una cartella per ognuno di voi (dentro la vostra cartella in /srv/siti), la parte in comune, il canale per i Claude e il repository privato su GitHub. Il cliente passa a «In lavorazione».' }),
       h('label', { class: 'ag-f' }, h('span', { text: 'Nome del sito' }), nome), h('label', { class: 'ag-f' }, h('span', { text: 'Note per il progetto' }), note),
       h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), ok)));
   document.body.append(modal);

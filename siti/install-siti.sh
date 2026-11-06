@@ -19,8 +19,22 @@ id aura >/dev/null 2>&1 || useradd -m -s /bin/sh -G dev aura
 usermod -aG dev aura
 passwd -l aura >/dev/null
 
-mkdir -p /srv/siti /etc/siti
-chown root:dev /srv/siti; chmod 2775 /srv/siti
+mkdir -p /srv/siti/.progetti /etc/siti
+chown root:dev /srv/siti /srv/siti/.progetti; chmod 2775 /srv/siti /srv/siti/.progetti
+# la guida per chi ci lavora, persona o IA: anche coi nomi che le IA cercano da sole
+install -m 644 LEGGIMI.md /srv/siti/LEGGIMI.md
+ln -sfn LEGGIMI.md /srv/siti/CLAUDE.md
+ln -sfn LEGGIMI.md /srv/siti/AGENTS.md
+# la cartella di ogni persona (il nome è in «cartelle» nella configurazione), sua e leggibile dal gruppo
+python3 - <<'PY'
+import json, os, pwd, grp
+c = json.load(open("/etc/siti/config.json"))
+for u in c.get("utenti") or []:
+    d = "/srv/siti/" + ((c.get("cartelle") or {}).get(u) or u)
+    os.makedirs(d, exist_ok=True)
+    os.chown(d, pwd.getpwnam(u).pw_uid, grp.getgrnam("dev").gr_gid)
+    os.chmod(d, 0o2755)   # ognuno scrive solo nella sua; gli altri (e Aura) leggono
+PY
 [ -f /etc/siti/config.json ] && chmod 644 /etc/siti/config.json
 [ -f /etc/siti/github.token ] && { chown aura:aura /etc/siti/github.token; chmod 600 /etc/siti/github.token; }
 chown root:root /etc/siti; chmod 755 /etc/siti   # la configurazione la leggono tutti, il token resta 600 di aura

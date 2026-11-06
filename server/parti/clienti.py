@@ -494,7 +494,7 @@ def leads_list(uid: int, kind: str = "", status: str = "", q: str = "", limit: i
         sql += " AND status = ?"; args.append(status)
     if q:
         sql += " AND (name LIKE ? OR category LIKE ? OR town LIKE ?)"; args += [f"%{q}%"] * 3
-    sql += " ORDER BY CASE status WHEN 'nuovo' THEN 0 WHEN 'contattato' THEN 1 WHEN 'risposto' THEN 2 WHEN 'cliente' THEN 3 ELSE 4 END, score DESC, name LIMIT ?"
+    sql += " ORDER BY CASE status WHEN 'nuovo' THEN 0 WHEN 'contattato' THEN 1 WHEN 'risposto' THEN 2 WHEN 'lavorazione' THEN 3 WHEN 'cliente' THEN 4 ELSE 5 END, score DESC, name LIMIT ?"
     args.append(limit)
     with db() as c:
         rows = [_lead_row(r) for r in c.execute(sql, args)]
@@ -631,7 +631,7 @@ class LeadIn(BaseModel):
 async def clienti_patch(lid: int, body: LeadIn, user: dict = Depends(require_clienti)):
     lead = _lead(owner_id(), lid)
     sets, args = [], []
-    if body.status in ("nuovo", "contattato", "risposto", "cliente", "no"):
+    if body.status in ("nuovo", "contattato", "risposto", "lavorazione", "cliente", "no"):
         sets.append("status = ?"); args.append(body.status)
         if body.status == "contattato":
             sets.append("contacted = ?"); args.append(int(time.time()))
@@ -720,6 +720,6 @@ TOOLS["clienti"] = {
                 "un sito da rifare, con numero, mail e motivo; prepara la mail per proporre il sito. azione=cerca avvia la ricerca, "
                 "azione=elenco mostra chi c'è (filtra per nome o stato), azione=mail prepara la mail per un'attività (numero o nome).",
                 {"azione": {"type": "string", "enum": ["elenco", "cerca", "mail"]}, "nome": _S, "numero": {"type": "integer"},
-                 "stato": {"type": "string", "enum": ["nuovo", "contattato", "risposto", "cliente", "no"]},
+                 "stato": {"type": "string", "enum": ["nuovo", "contattato", "risposto", "lavorazione", "cliente", "no"]},
                  "mestiere": {"type": "string", "description": "Per cerca: un solo mestiere, es. idraulico (vuoto = tutti)"}}, ["azione"]),
 }

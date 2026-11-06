@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""I siti dei clienti sul server dei siti: un progetto per sito, una cartella per persona, un canale tra i Claude.
+"""I siti dei clienti sul server dei siti: una cartella per persona, un sito per sottocartella, un canale tra i Claude.
 
-Struttura di un progetto (/srv/siti/<slug>/):
-  main/            il progetto "vero" (branch main). Non si tocca a mano: ci si arriva con «sito consegna».
-  <utente>/        la cartella di lavoro di ognuno (worktree git, branch <utente>/lavoro o <utente>/<argomento>)
-  team/canale.json messaggi e task tra i Claude (si scrive solo con «sito team …», con un lock)
-  sito.json        nome, cliente, chi l'ha preso in carico, porte, repository GitHub
+Struttura (la guida per chi ci lavora è /srv/siti/LEGGIMI.md):
+  /srv/siti/<persona>/<slug>/         la cartella di lavoro di ognuno su quel sito (worktree git, branch <utente>/…)
+  /srv/siti/.progetti/<slug>/main/    il sito "vero" (branch main). Non si tocca a mano: ci si arriva con «sito consegna».
+  /srv/siti/.progetti/<slug>/team/    canale.json: messaggi e task tra i Claude (si scrive solo con «sito team …», con un lock)
+  /srv/siti/.progetti/<slug>/sito.json  nome, cliente, chi l'ha preso in carico, porte, repository GitHub
 
 Comandi per le persone (e i loro Claude):
   sito elenco                                   i progetti
@@ -31,6 +31,7 @@ from pathlib import Path
 os.environ.setdefault("TZ", "Europe/Rome")   # orari come li leggono le persone (il server sta in UTC)
 time.tzset()
 ROOT = Path("/srv/siti")
+COMUNE = ROOT / ".progetti"                    # la parte in comune di ogni sito: main, canale, dati
 CONF = Path("/etc/siti/config.json")          # utenti, account GitHub, collaboratori
 TOKEN = Path("/etc/siti/github.token")        # solo l'utente aura la legge
 SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,40}$")
@@ -45,6 +46,20 @@ def conf() -> dict:
 
 def users() -> list[str]:
     return conf().get("utenti") or []
+
+
+def cartella(u: str) -> Path:
+    """La cartella di una persona in /srv/siti (il nome lo sceglie lei: «cartelle» nella configurazione)."""
+    return ROOT / ((conf().get("cartelle") or {}).get(u) or u)
+
+
+def wt(p: Path, u: str) -> Path:
+    """La cartella di lavoro di una persona su un sito."""
+    return cartella(u) / p.name
+
+
+def progetti() -> list[Path]:
+    return sorted(x for x in COMUNE.iterdir() if (x / "sito.json").exists()) if COMUNE.exists() else []
 
 
 def die(msg: str, code: int = 1):
@@ -62,7 +77,7 @@ def git(*a, cwd=None, check=True) -> str:
 def proj(slug: str) -> Path:
     if not SLUG.match(slug or ""):
         die("nome di progetto non valido (minuscole, numeri e trattini)")
-    p = ROOT / slug
+    p = COMUNE / slug
     if not (p / "main" / ".git").exists():
         die(f"progetto «{slug}» non trovato")
     return p
@@ -131,21 +146,21 @@ def stato(slug: str) -> dict:
     m = meta(p)
     gente = []
     for u in users():
-        wt = p / u
-        if not wt.exists():
+        w = wt(p, u)
+        if not w.exists():
             continue
-        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt, check=False)
-        dirty = [l[3:] for l in git("status", "--porcelain", cwd=wt, check=False).splitlines()]
-        ahead = git("rev-list", "--count", f"main..{branch}", cwd=wt, check=False) or "0"
-        behind = git("rev-list", "--count", f"{branch}..main", cwd=wt, check=False) or "0"
+        branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=w, check=False)
+        dirty = [l[3:] for l in git("status", "--porcelain", cwd=w, check=False).splitlines()]
+        ahead = git("rev-list", "--count", f"main..{branch}", cwd=w, check=False) or "0"
+        behind = git("rev-list", "--count", f"{branch}..main", cwd=w, check=False) or "0"
         last = 0
         for f in dirty[:50]:
             try:
-                last = max(last, int((wt / f).stat().st_mtime))
+                last = max(last, int((w / f).stat().st_mtime))
             except OSError:
                 pass
         commits = main_log(p, 5, f"main..{branch}") if branch and branch != "HEAD" else []
-        gente.append({"utente": u, "branch": branch, "da_consegnare": int(ahead), "indietro": int(behind), "modifiche": len(dirty),
+        gente.append({"utente": u, "cartella": str(w), "branch": branch, "da_consegnare": int(ahead), "indietro": int(behind), "modifiche": len(dirty),
                       "file_modificati": dirty[:12], "ultima_modifica": last, "commit": commits})
     c = leggi_canale(p)
     return {**m, "main": main_log(p, 10), "persone": gente,
@@ -246,18 +261,19 @@ def me() -> str:
 
 # ------------------------------------------------------------------ consegna
 def consegna():
-    wt = Path(git("rev-parse", "--show-toplevel")).resolve()
-    p = wt.parent
-    if wt.name == "main" or not (p / "main" / ".git").exists():
-        die("lancia «sito consegna» dalla tua cartella del progetto, non da main")
-    if git("status", "--porcelain", cwd=wt):
+    w = Path(git("rev-parse", "--show-toplevel")).resolve()
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir", cwd=w)).resolve()   # …/.progetti/<slug>/main/.git
+    p = common.parent.parent
+    if w == p / "main" or p.parent != COMUNE.resolve():
+        die("lancia «sito consegna» dalla tua cartella del sito (/srv/siti/<la tua cartella>/<sito>), non da main")
+    if git("status", "--porcelain", cwd=w):
         die("hai modifiche non salvate: fai commit prima")
-    branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt)
+    branch = git("rev-parse", "--abbrev-ref", "HEAD", cwd=w)
     if branch in ("main", "HEAD"):
         die("lavora su un tuo branch (es. <utente>/lavoro), non su main")
     lock = open(p / "main" / ".git" / "consegna.lock", "a")
     fcntl.flock(lock, fcntl.LOCK_EX)
-    r = subprocess.run(["git", "rebase", "main"], cwd=wt)
+    r = subprocess.run(["git", "rebase", "main"], cwd=w)
     if r.returncode:
         die("il rebase su main ha dei conflitti: risolvili (git status), poi «git rebase --continue» e rilancia")
     git("merge", "--ff-only", "-q", branch, cwd=p / "main")
@@ -270,13 +286,15 @@ CLAUDE_MD = """# {nome} — regole per i Claude
 Sito per il cliente: {note}
 Preso in carico da: **{chi}**. Ci lavorano {tutti}, ognuno col suo Claude, nello stesso momento se serve.
 
+Le regole generali stanno in `/srv/siti/LEGGIMI.md`: leggile prima. Qui solo quello che vale per questo sito.
+
 ## Cartelle (server dei siti)
-- `/srv/siti/{slug}/main` — il progetto vero (branch `main`). **Mai modificarlo a mano.**
-- `/srv/siti/{slug}/<utente>` — la cartella di lavoro di ognuno (worktree git dello stesso repository).
+{cartelle}
+- `/srv/siti/.progetti/{slug}/main` — il sito vero (branch `main`). **Mai modificarlo a mano.**
 - GitHub: `{github}` (si aggiorna da solo da main e dai branch: non serve fare push).
 
 ## Come si lavora
-1. Lavora **solo nella tua cartella** `/srv/siti/{slug}/<tuo utente>`, su branch `<utente>/<argomento>`. Mai nella cartella dell'altro né in main.
+1. Lavora **solo nella tua cartella** di questo sito, su branch `<utente>/<argomento>`. Mai nella cartella dell'altro né in main.
 2. Prima di iniziare: `git rebase main`. Commit piccoli e frequenti.
 3. Consegna spesso: `sito consegna` dalla tua cartella (rebase su main e main avanza).
 4. Porte per provare il sito: {porte}. Mai usare le porte dell'altro, mai fermare processi dell'altro.
@@ -306,11 +324,14 @@ def nuovo(args: list[str]):
     us = users()
     if chi not in us:
         die(f"utente sconosciuto: {chi}")
-    p = ROOT / slug
+    p = COMUNE / slug
     if p.exists():
         die(f"il progetto «{slug}» esiste già")
     c = conf()
-    n = len([x for x in ROOT.iterdir() if (x / "sito.json").exists()]) + 1
+    if not COMUNE.exists():
+        COMUNE.mkdir(parents=True)
+        subprocess.run(["chgrp", "dev", str(COMUNE)], check=True); os.chmod(COMUNE, 0o2775)
+    n = len(progetti()) + 1
     porte = {u: 4000 + 100 * i + 10 * n for i, u in enumerate(us)}   # ogni persona un blocco di 10 porte per progetto
     gh = f"{c.get('github_owner')}/{c.get('github_prefix', 'sito-')}{slug}" if c.get("github_owner") else ""
     p.mkdir(parents=True)
@@ -322,26 +343,32 @@ def nuovo(args: list[str]):
     git("config", "extensions.worktreeConfig", "true", cwd=main)
     git("config", "user.name", "sito", cwd=main); git("config", "user.email", "sito@localhost", cwd=main)
     (main / "CLAUDE.md").write_text(CLAUDE_MD.format(nome=nome, slug=slug, chi=chi, note=note or nome, tutti=" e ".join(us), github=gh or "(da creare)",
-                                                     porte=", ".join(f"{u} {v}–{v + 9}" for u, v in porte.items())))
+                                                     porte=", ".join(f"{u} {v}–{v + 9}" for u, v in porte.items()),
+                                                     cartelle="\n".join(f"- `{wt(p, u)}` — la cartella di lavoro di **{u}**" for u in us)))
     (main / "README.md").write_text(f"# {nome}\n\n{note}\n")
     (main / ".gitignore").write_text(".env\nnode_modules/\n.venv/\ndist/\n__pycache__/\n.DS_Store\n")
     git("add", "-A", cwd=main)
     git("commit", "-q", "-m", f"Inizio del progetto {nome}", cwd=main)
     for u in us:
-        git("worktree", "add", "-q", "-b", f"{u}/lavoro", str(p / u), "main", cwd=main)
-        git("config", "--worktree", "user.name", u, cwd=p / u)
+        home = cartella(u)
+        if not home.exists():
+            home.mkdir(parents=True)
+        subprocess.run(["chown", f"{u}:dev", str(home)], check=True); os.chmod(home, 0o2755)
+        git("worktree", "add", "-q", "-b", f"{u}/lavoro", str(wt(p, u)), "main", cwd=main)
+        git("config", "--worktree", "user.name", u, cwd=wt(p, u))
     m = {"slug": slug, "nome": nome, "chi": chi, "note": note, "creato": int(time.time()), "creato_il": now(), "porte": porte, "github": gh}
     (p / "sito.json").write_text(json.dumps(m, ensure_ascii=False, indent=1))
     with Canale(p) as d:
         d["n_msg"] += 1
         d["messaggi"].append({"n": 1, "at": now(), "ts": int(time.time()), "da": "aura", "a": "tutti",
-                              "testo": f"Progetto creato: {nome}. Preso in carico da {chi}. Leggete CLAUDE.md in main prima di iniziare."})
+                              "testo": f"Progetto creato: {nome}. Preso in carico da {chi}. Leggete /srv/siti/LEGGIMI.md e il CLAUDE.md del sito prima di iniziare."})
     # permessi: tutto del gruppo dev, ogni cartella di lavoro del suo utente
     subprocess.run(["chgrp", "-R", "dev", str(p)], check=True)
     subprocess.run(["chmod", "-R", "g+rwX", str(p)], check=True)
     subprocess.run(["find", str(p), "-type", "d", "-exec", "chmod", "g+s", "{}", "+"], check=True)
-    for u in us:
-        subprocess.run(["chown", "-R", f"{u}:dev", str(p / u)], check=True)
+    for u in us:   # la cartella di lavoro è della persona: gli altri leggono, non scrivono
+        subprocess.run(["chown", "-R", f"{u}:dev", str(wt(p, u))], check=True)
+        subprocess.run(["find", str(wt(p, u)), "-type", "d", "-exec", "chmod", "g-w", "{}", "+"], check=True)
     print(json.dumps(m, ensure_ascii=False))
 
 
@@ -364,7 +391,7 @@ def github():
         return
     c = conf()
     owner = c.get("github_owner")
-    for p in sorted(x for x in ROOT.iterdir() if (x / "sito.json").exists()):
+    for p in progetti():
         m = meta(p)
         repo = m.get("github") or (f"{owner}/{c.get('github_prefix', 'sito-')}{p.name}" if owner else "")
         if not repo:
@@ -391,16 +418,16 @@ def github():
 # ------------------------------------------------------------------ attività per Aura
 def attivita(since: int) -> dict:
     out = []
-    for p in sorted(x for x in ROOT.iterdir() if (x / "sito.json").exists()):
+    for p in progetti():
         m = meta(p)
         ev = []
         for c in main_log(p, 30, "main", f"--since=@{since}"):
             ev.append({"tipo": "consegna", "ts": int(c["ts"] or 0), "chi": c["chi"], "testo": c["testo"]})
         for u in users():   # i commit nella cartella di ognuno, non ancora consegnati
-            wt = p / u
-            if not wt.exists():
+            w = wt(p, u)
+            if not w.exists():
                 continue
-            br = git("rev-parse", "--abbrev-ref", "HEAD", cwd=wt, check=False)
+            br = git("rev-parse", "--abbrev-ref", "HEAD", cwd=w, check=False)
             if br and br not in ("HEAD", "main"):
                 for c in main_log(p, 20, f"main..{br}", f"--since=@{since}"):
                     ev.append({"tipo": "lavoro", "ts": int(c["ts"] or 0), "chi": u, "branch": br, "testo": c["testo"]})
@@ -413,10 +440,8 @@ def attivita(since: int) -> dict:
 
 
 def elenco() -> list[dict]:
-    if not ROOT.exists():
-        return []
     res = []
-    for p in sorted(x for x in ROOT.iterdir() if (x / "sito.json").exists()):
+    for p in progetti():
         m = meta(p)
         last = main_log(p, 1)
         res.append({**{k: m.get(k) for k in ("slug", "nome", "chi", "note", "creato", "github", "porte")}, "ultimo": last[0] if last else None})
@@ -424,7 +449,7 @@ def elenco() -> list[dict]:
 
 
 def novita_tutti(u: str):
-    for p in sorted(x for x in ROOT.iterdir() if (x / "sito.json").exists()):
+    for p in progetti():
         r = subprocess.run([sys.argv[0], "team", p.name, "novita", u], capture_output=True, text=True)
         if r.stdout.strip():
             print(f"=== {meta(p).get('nome')} ({p.name}) ===\n{r.stdout.strip()}")
@@ -453,9 +478,12 @@ def main():
     elif cmd == "avvio-tutti":   # all'apertura di Claude sul PC: i progetti, poi le novità di ognuno
         u = a[1] if len(a) > 1 else me()
         lst = elenco()
-        print(f"=== Siti dei clienti sul server — situazione per {u} ===")
-        print("\n".join(f"- {x['slug']}: {x['nome']} (preso in carico da {x['chi']}) — la tua cartella: /srv/siti/{x['slug']}/{u}" for x in lst) or "Nessun progetto ancora: si creano da Aura (Clienti → Prendo in carico).")
-        print("Prima di lavorare su un progetto: sito team <slug> avvio " + u + " (regole e canale). Consegna: sito consegna.")
+        guida = ROOT / "LEGGIMI.md"
+        if guida.exists():
+            print("--- Come si lavora (/srv/siti/LEGGIMI.md) ---\n" + guida.read_text().strip() + "\n")
+        print(f"=== Siti dei clienti sul server — situazione per {u} (la tua cartella: {cartella(u)}) ===")
+        print("\n".join(f"- {x['slug']}: {x['nome']} (preso in carico da {x['chi']}) — ci lavori in {cartella(u) / x['slug']}" for x in lst) or "Nessun sito ancora: si creano da Aura (Clienti → Prendo in carico).")
+        print("Prima di lavorare su un sito: sito team <slug> avvio " + u + " (regole del sito e canale). Consegna: sito consegna.")
         novita_tutti(u)
     elif cmd == "consegna":
         consegna()

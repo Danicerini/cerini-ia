@@ -140,7 +140,9 @@ async def siti_new(body: SitoNuovoIn, user: dict = Depends(require_siti)):
     _siti_forget()
     if lead:
         with db() as c:
-            c.execute("UPDATE leads SET sito = ?, status = 'cliente', updated = ? WHERE id = ?", (slug, int(time.time()), lead["id"]))
+            c.execute("UPDATE leads SET sito = ?, status = 'lavorazione', updated = ? WHERE id = ?", (slug, int(time.time()), lead["id"]))
+            c.execute("INSERT INTO lead_notes (lead_id, user_id, who, text, at) VALUES (?,?,?,?,?)",
+                      (lead["id"], user["id"], user["username"], f"Preso in carico: sito «{nome}» in lavorazione.", int(time.time())))
     return d
 
 
