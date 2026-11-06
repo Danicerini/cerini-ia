@@ -921,7 +921,18 @@ button:disabled { cursor: default; }
 .cl-link.tel { border-color: color-mix(in oklch, var(--ok) 50%, var(--border)); color: var(--ok); font-weight: 600; }
 .cl-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .cl-acts select { height: 34px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 0 8px; }
-.cl-note { font-size: 13px; color: var(--text-2); }
+.cl-notes { display: flex; flex-direction: column; gap: 6px; }
+.cl-n { padding: 8px 10px; border-radius: 10px; background: var(--hover); border-left: 3px solid var(--warn); }
+.cl-n-h { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-3); }
+.cl-n-h b { color: var(--text-2); font-weight: 600; }
+.cl-n-h .icon-btn { margin-left: auto; width: 24px; height: 24px; }
+.cl-n-t { font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.cl-n-form { display: flex; flex-direction: column; gap: 6px; }
+.cl-n-form textarea { resize: vertical; min-height: 64px; }
+.cl-n-acts { display: flex; gap: 8px; justify-content: flex-end; }
+.cl-shared { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-2); padding: 0 6px; }
+.cl-share { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.cl-share-u { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
 .cl-empty { padding: 30px 20px; text-align: center; color: var(--text-2); border: 1px dashed var(--border-strong); border-radius: 16px; }
 .cl-more { justify-self: center; }
 .cl-sheet { width: min(640px, 100%); }

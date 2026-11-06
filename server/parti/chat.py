@@ -482,6 +482,8 @@ def tool_allowed(name: str, tool: dict, user: dict) -> bool:
     """Gli strumenti da amministratore lavorano sui servizi del proprietario (Homebase, sito, clienti): solo suoi. Gli inviti di ogni amministratore."""
     if not tool["admin"]:
         return True
+    if name == "clienti" and clienti_can(user["id"]):   # la pagina Clienti condivisa: anche lo strumento
+        return True
     return user["role"] == "admin" and (name in ADMIN_TOOLS or is_owner(user["id"]))
 
 

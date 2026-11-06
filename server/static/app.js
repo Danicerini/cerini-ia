@@ -214,7 +214,7 @@ async function showApp() {
   S.currentId = null; closeViews(); refreshMemoryCount();
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
-  $('#clientiBtn').classList.toggle('hidden', !isAdmin());
+  $('#clientiBtn').classList.toggle('hidden', !S.me.clienti);   // del proprietario, o condivisa con te
   $('#ticketsBtn').classList.toggle('hidden', !S.me?.crm);
   refreshAuraBadge();
   if (new URLSearchParams(location.search).get('aura')) { history.replaceState(history.state, '', '/'); openAura(); }
@@ -2702,6 +2702,9 @@ async function openClienti() {
   await renderClienti();
 }
 $('#clientiBtn').onclick = openClienti;
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && $('#main').classList.contains('clienti-open') && !document.querySelector('.cl-n-form, .ag-modal')) renderClienti();
+});
 async function renderClienti() {
   const root = $('#clientiView');
   clearTimeout(CL.timer);
@@ -2719,9 +2722,9 @@ async function renderClienti() {
       h('div', { class: 'cl-src' + (d.has_key ? '' : ' warn'), html: icon(d.has_key ? 'check' : 'globe', 'sm') +
         (d.has_key ? 'Dati da Google Maps' : 'Dati dai siti dei Comuni e dalle ricerche sul web (Google, DuckDuckGo, Brave)') })),
     h('div', { class: 'acts' },
-      h('button', { class: 'btn primary', html: icon('retry', 'sm') + (job?.running ? 'Sto cercando…' : 'Cerca in zona'), disabled: !!job?.running, onclick: async () => {
-        try { await api('/api/clienti/cerca', {}); } catch (e) { toast(e.message); } renderClienti(); } }),
-      h('button', { class: 'icon-btn', title: 'Impostazioni', 'aria-label': 'Impostazioni dei clienti', html: icon('settings'), onclick: () => clientiSettings(d) }),
+      d.owner ? h('button', { class: 'btn primary', html: icon('retry', 'sm') + (job?.running ? 'Sto cercando…' : 'Cerca in zona'), disabled: !!job?.running, onclick: async () => {
+        try { await api('/api/clienti/cerca', {}); } catch (e) { toast(e.message); } renderClienti(); } }) : h('span', { class: 'cl-shared', html: icon('user', 'sm') + 'Pagina condivisa' }),
+      d.owner ? h('button', { class: 'icon-btn', title: 'Impostazioni e condivisione', 'aria-label': 'Impostazioni dei clienti', html: icon('settings'), onclick: () => clientiSettings(d) }) : null,
       h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { closeClienti(); focusInput(); } })));
   const jobEl = job && (job.running || job.error) ? h('div', { class: 'cl-job' + (job.error ? ' err' : '') },
     h('div', { text: job.error ? 'La ricerca si è fermata: ' + job.error : `${job.phase} ${job.total ? job.done + ' di ' + job.total : ''}` }),
@@ -2759,6 +2762,7 @@ function leadCard(l) {
   const gq = encodeURIComponent(`${l.name} ${l.town || ''}`);
   const st = h('select', { 'aria-label': 'Stato', onchange: (e) => patch({ status: e.target.value }) },
     ...CL_STATUS.map(([v, t]) => h('option', { value: v, text: t, selected: l.status === v ? true : null })));
+  const nb = leadNotes(l, () => {}), notes = nb.box, noteOpen = nb.open;
   return h('div', { class: `cl-card k-${l.kind} st-${l.status}` },
     h('div', { class: 'cl-top' },
       h('div', { class: 'cl-name' }, h('b', { text: l.name }), h('small', { text: [l.category, l.town].filter(Boolean).join(' · ') + (l.reviews ? ` · ${l.rating ?? ''}★ (${l.reviews})` : '') })),
@@ -2771,10 +2775,43 @@ function leadCard(l) {
       l.website ? h('a', { class: 'cl-link', href: l.website, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + `<span>${l.kind === 'nosite' ? 'La loro pagina' : 'Il loro sito'}</span>` }) : null,
       h('a', { class: 'cl-link', href: l.maps_url || `https://www.google.com/maps/search/${gq}`, target: '_blank', rel: 'noopener', html: icon('pin', 'sm') + '<span>Maps</span>' }),
       !l.website || l.kind === 'nosite' ? h('a', { class: 'cl-link', href: `https://www.google.com/search?q=${gq}`, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + '<span>Cerca su Google</span>' }) : null),
-    l.note ? h('div', { class: 'cl-note', text: '📝 ' + l.note }) : null,
+    notes,
     h('div', { class: 'cl-acts' },
       h('button', { class: 'btn primary sm', html: icon('mail', 'sm') + 'Prepara mail', onclick: () => clientiMail(l) }), st,
-      h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Nota', onclick: () => { const n = prompt('Nota su ' + l.name, l.note || ''); if (n !== null) patch({ note: n }); } })));
+      h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Aggiungi nota', onclick: () => noteOpen() })));
+}
+// Le note di un cliente: piu' d'una, con chi l'ha scritta e quando. La pagina e' condivisa: le vede chiunque la usa.
+function leadNotes(l, refresh) {
+  const me = CL.data?.me, owner = CL.data?.owner;
+  const when = (t) => new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const box = h('div', { class: 'cl-notes' });
+  const send = async (ta, b) => {
+    const text = ta.value.trim(); if (!text) return;
+    b.disabled = true;
+    try { Object.assign(l, await (await api(`/api/clienti/${l.id}/note`, { text })).json()); paint(false); refresh(); }
+    catch (e) { b.disabled = false; toast(e.message); }
+  };
+  const del = async (n) => {
+    try { Object.assign(l, await (await api(`/api/clienti/${l.id}/note/${n.id}`, undefined, { method: 'DELETE' })).json()); paint(false); refresh(); } catch (e) { toast(e.message); }
+  };
+  function paint(writing) {
+    const items = (l.notes || []).map((n) => h('div', { class: 'cl-n' },
+      h('div', { class: 'cl-n-h' }, h('b', { text: n.uid === me ? 'Tu' : n.who || 'Nota di prima' }), h('small', { class: 'tnum', text: when(n.at) }),
+        n.uid === me || owner ? h('button', { class: 'icon-btn sm', title: 'Togli la nota', 'aria-label': 'Togli la nota', html: icon('x', 'sm'), onclick: () => del(n) }) : null),
+      h('div', { class: 'cl-n-t', text: n.text })));
+    let form = null;
+    if (writing) {
+      const ta = h('textarea', { class: 'ag-in', rows: 3, placeholder: 'Es. richiamare giovedì, vuole il preventivo per il sito con le prenotazioni',
+        onkeydown: (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) send(ta, ok); if (e.key === 'Escape') paint(false); } });
+      const ok = h('button', { class: 'btn primary sm', text: 'Salva nota', onclick: () => send(ta, ok) });
+      form = h('div', { class: 'cl-n-form' }, ta, h('div', { class: 'cl-n-acts' }, h('button', { class: 'btn sm', text: 'Annulla', onclick: () => paint(false) }), ok));
+      setTimeout(() => ta.focus(), 0);
+    }
+    box.replaceChildren(...items, form || '');
+    box.classList.toggle('hidden', !items.length && !form);
+  }
+  paint(false);
+  return { box, open: () => paint(true) };
 }
 // La mail per proporre il sito: Aura la scrive, tu la guardi, la cambi e la mandi (o la salvi in bozze)
 async function clientiMail(l) {
@@ -2825,6 +2862,7 @@ function clientiSettings(d) {
   const zAree = h('input', { class: 'ag-in', value: (z.aree || []).join(', '), placeholder: 'Facoltativo: dove fare le ricerche web (di base i comuni)' });
   const zProv = h('input', { class: 'ag-in', value: z.provincia || '', maxlength: 2, placeholder: 'Es. mi' });
   const csv = (el) => el.value.split(',').map((x) => x.trim()).filter(Boolean);
+  const shareBoxes = (d.users || []).map((u) => h('label', { class: 'cl-share-u' }, h('input', { type: 'checkbox', value: u.id, checked: (d.shared || []).includes(u.id) ? true : null }), h('span', { text: u.name })));
   const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
     h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Impostazioni clienti' },
       h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Impostazioni' }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
@@ -2836,12 +2874,15 @@ function clientiSettings(d) {
       h('label', { class: 'ag-f' }, h('span', { text: 'Sito o portfolio' }), sito),
       h('label', { class: 'ag-f' }, h('span', { text: 'Offerta da citare nella mail' }), off),
       h('label', { class: 'ag-f' }, h('span', { text: 'Mestieri da cercare (con Google), separati da virgola' }), mest),
+      (d.users || []).length ? h('div', { class: 'ag-f' }, h('span', { text: 'Condividi la pagina con (vedono e cambiano gli stessi clienti, stati e note)' }),
+        h('div', { class: 'cl-share' }, ...shareBoxes)) : null,
       h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }),
         h('button', { class: 'btn primary', text: 'Salva', onclick: async () => {
           try {
             await api('/api/clienti/config', { places_key: key.value.trim(), firma: { nome: nome.value, telefono: tel.value, sito: sito.value }, offerta: off.value,
               mestieri: mest.value.split(',').map((x) => x.trim()).filter(Boolean),
               zona: { nome: zNome.value, comuni: csv(zCom), aree: csv(zAree), provincia: zProv.value } }, { method: 'PUT' });
+            if (shareBoxes.length) await api('/api/clienti/condivisa', { users: shareBoxes.map((b) => b.querySelector('input')).filter((i) => i.checked).map((i) => Number(i.value)) }, { method: 'PUT' });
             toast('Salvato'); close(); renderClienti();
           } catch (e) { toast(e.message); } } }))));
   document.body.append(modal);

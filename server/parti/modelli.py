@@ -240,7 +240,7 @@ async def me(user: dict = Depends(require_user)):
             "wol": is_owner(user["id"]) and bool(WOL_MAC), "power": is_owner(user["id"]) and bool(ESP32_URL), "mail": bool(SMTP_HOST), "voice": bool((WHISPER_TOKEN and is_owner(user["id"])) or cloud_stt_model() or eleven_usable()), "voice_cloud": bool(cloud_stt_model()),
             "eleven": is_owner(user["id"]) and eleven_on(),
             "gmail": bool(_gmail_row(user["id"])), "calendar": True,
-            "homebase": is_owner(user["id"]) and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]),
+            "homebase": is_owner(user["id"]) and homebase_on(), "crm": crm_on(), "owner": is_owner(user["id"]), "clienti": clienti_can(user["id"]),
             "needs_provider": not is_owner(user["id"]) and not cloud_ready(),
             "autonomy": autonomy(user), "autonomy_groups": [g for g, d in AUTONOMY.items() if admin or not d["admin"]], "aura_chat": aura_chat_id(user["id"]),
             "mem_display": _prefs(user).get("mem_display", "list"), "start_model": _prefs(user).get("start_model", "local"), "private_mode": _prefs(user).get("private_mode") is not False}
