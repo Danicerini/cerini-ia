@@ -3689,6 +3689,8 @@ function feedCard(it) {
   } else if (it.kind === 'reminder' && !done) {
     chips.push(chip('Fatto', 'check', async () => { await feedAct(it, 'dismiss'); loadToday(); if (BP.tree) renderBrainPanel(); }, true),
       chip('Tra 10 minuti', 'calendar', () => feedAct(it, 'snooze')));
+  } else if (it.kind === 'sito' && d.slug) {   // consegne, messaggi e task di un sito in lavorazione
+    chips.push(chip('Apri il progetto', 'folder', async () => { await openClienti(); sitoView(d.slug); }, true));
   } else if (link && !['deadline', 'parcel'].includes(it.kind)) chips.push(link);
   if (done) body.push(h('div', { class: 'feed-done', html: icon('check', 'sm') + done }));
   if (chips.length) body.push(h('div', { class: 'au-chips' }, ...chips));

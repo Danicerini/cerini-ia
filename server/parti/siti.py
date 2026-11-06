@@ -231,7 +231,8 @@ async def _tool_siti(user: dict, args: dict, request: Request) -> dict:
         progetti = [p for p in progetti if want in _flat(p.get("nome", "")) or want in p.get("slug", "")] or progetti
     if not progetti:
         return {"content": "Nessun sito in lavorazione: si crea dalla pagina Clienti con «Prendo in carico».", "display": "Nessun sito in lavorazione"}
-    when = lambda ts: datetime.fromtimestamp(int(ts or 0)).strftime("%d/%m %H:%M") if ts else "?"   # noqa: E731
+    from zoneinfo import ZoneInfo
+    when = lambda ts: datetime.fromtimestamp(int(ts or 0), ZoneInfo("Europe/Rome")).strftime("%d/%m %H:%M") if ts else "?"   # noqa: E731
     out = []
     for p in progetti:
         if p.get("errore"):
