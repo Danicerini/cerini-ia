@@ -438,6 +438,7 @@ async def lifespan(_app):
     init_usage_db()
     init_hb_db()
     init_clienti_db()
+    _siti_lead_db()
     init_mask_db()
     backfill = asyncio.create_task(conv_backfill())
     watcher = asyncio.create_task(mail_watch_loop())
@@ -450,7 +451,9 @@ async def lifespan(_app):
     tk_watch = asyncio.create_task(crm_watch_loop())
     tk_new = asyncio.create_task(crm_new_loop())
     parcel_track = asyncio.create_task(parcel_track_loop())
+    siti_watch = asyncio.create_task(siti_watch_loop())
     yield
+    siti_watch.cancel()
     backfill.cancel()
     watcher.cancel()
     fastmail.cancel()
@@ -559,7 +562,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 # Il resto dell'app sta in parti/, un file per argomento. Ogni parte viene eseguita qui dentro, nello stesso spazio
 # di nomi di app.py: per il codice e' come se fosse ancora un file solo (e «import app» vede tutto, come prima).
 # L'ordine conta: le rotte si registrano in quest'ordine.
-PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "account", "cervello", "conversazioni", "procedure", "clienti", "whatsapp", "crm", "voce", "riservato"]
+PARTI = ["modelli", "strumenti", "chat", "gmail", "agenda", "web", "file", "homebase", "aura_scrive", "homebase_admin", "cloud", "account", "cervello", "conversazioni", "procedure", "clienti", "whatsapp", "crm", "siti", "voce", "riservato"]
 for _parte in PARTI:
     _f = Path(__file__).parent / "parti" / f"{_parte}.py"
     exec(compile(_f.read_text(encoding="utf-8"), str(_f), "exec"))

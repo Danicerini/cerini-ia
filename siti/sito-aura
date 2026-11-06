@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+"""La porta di Aura sul server dei siti: la sua chiave SSH può lanciare SOLO questo (command= in authorized_keys).
+Elenco chiuso di azioni: niente terminale, niente altri comandi."""
+import os, shlex, subprocess, sys
+
+SITO = "/usr/local/bin/sito"
+try:
+    a = shlex.split(os.environ.get("SSH_ORIGINAL_COMMAND", ""))
+except ValueError:
+    a = []
+ok = {
+    "elenco": lambda: [SITO, "elenco", "--json"],
+    "stato": lambda: [SITO, "stato", a[1], "--json"] if len(a) == 2 else None,
+    "attivita": lambda: [SITO, "attivita", a[1]] if len(a) == 2 and a[1].isdigit() else None,
+    # creare un progetto vuol dire cartelle di altri utenti: passa da sudo, solo per questo comando
+    "nuovo": lambda: ["sudo", "-n", SITO, "nuovo", *a[1:]] if 4 <= len(a) <= 5 else None,
+    # un messaggio nel canale a nome di chi lo scrive da Aura (sito controlla che sia uno degli utenti)
+    "scrivi": lambda: [SITO, "team", a[1], "scrivi", a[2], a[3], a[4]] if len(a) == 5 else None,
+}
+cmd = ok.get(a[0] if a else "", lambda: None)()
+if not cmd:
+    print("azione non permessa", file=sys.stderr)
+    sys.exit(2)
+sys.exit(subprocess.run(cmd).returncode)

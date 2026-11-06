@@ -482,8 +482,8 @@ def tool_allowed(name: str, tool: dict, user: dict) -> bool:
     """Gli strumenti da amministratore lavorano sui servizi del proprietario (Homebase, sito, clienti): solo suoi. Gli inviti di ogni amministratore."""
     if not tool["admin"]:
         return True
-    if name == "clienti" and clienti_can(user["id"]):   # la pagina Clienti condivisa: anche lo strumento
-        return True
+    if name in ("clienti", "siti") and clienti_can(user["id"]):   # la pagina Clienti condivisa: anche i suoi strumenti
+        return name != "siti" or bool(siti_on() and siti_user(user))
     return user["role"] == "admin" and (name in ADMIN_TOOLS or is_owner(user["id"]))
 
 
@@ -552,7 +552,7 @@ TECH_TOPIC = re.compile(r"\b(subnet\w*|cidr|netmask|maschera|password|passphrase
 ADMIN_TOPIC = re.compile(r"\b(utent[ei]|invit\w*|account)\b", re.I)
 CRM_TOPIC = re.compile(r"\b(ticket\w*|tiket\w*|tichet\w*|tk[-\s]?\d+|tk|crm)\b", re.I)
 PARCEL_TOPIC = re.compile(r"\b(pacc\w*|ordin\w*|spedi\w*|spedizion\w*|consegn\w*|corrier\w*|tracking|amazon|aliexpress|ups|brt|gls|dhl|sda|temu)\b", re.I)
-CLIENTI_TOPIC = re.compile(r"\b(clienti|vetrin\w*|siti|senza sito|attivit\w* della zona)\b", re.I)
+CLIENTI_TOPIC = re.compile(r"\b(clienti|vetrin\w*|siti|senza sito|attivit\w* della zona|a che punto|sta facendo|sta lavorando|ha consegnato|in lavorazione)\b", re.I)
 CONS_TOPIC = re.compile(r"\b(consuntiv\w*|ore lavorat\w*|riepilogo (delle ore|della giornata|di oggi|di ieri)|quante ore)\b", re.I)
 
 
@@ -563,6 +563,8 @@ def _tool_group(name: str) -> str:
         return "admin"
     if name in ("pacchi", "clienti"):
         return name
+    if name == "siti":
+        return "clienti"
     if name.startswith("consuntivo"):
         return "cons"
     if name == "briefing":

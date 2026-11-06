@@ -2712,8 +2712,10 @@ async function renderClienti() {
   if (['nosite', 'bad'].includes(CL.kind)) ps.set('kind', CL.kind);
   if (CL.tab !== 'tutti') ps.set('status', CL.tab);
   let d;
+  const sitiReq = api('/api/siti').then((r) => r.json()).catch((e) => ({ on: true, error: e.message }));
   try { d = CL.data = await (await api('/api/clienti?' + ps)).json(); }
   catch (e) { root.replaceChildren(h('div', { class: 'cl-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return; }
+  CL.siti = await sitiReq;
   const cnt = (f) => Object.entries(d.counts || {}).filter(([k]) => f(...k.split(':'))).reduce((t, [, n]) => t + n, 0);
   const job = d.job;
   const head = h('div', { class: 'cl-head' },
@@ -2751,7 +2753,7 @@ async function renderClienti() {
       rows.length > CL.shown ? h('button', { class: 'btn cl-more', text: `Mostra altre ${Math.min(60, rows.length - CL.shown)} (di ${rows.length - CL.shown})`, onclick: () => { CL.shown += 60; paintList(); } }) : '');
   }
   paintList();
-  root.replaceChildren(h('div', { class: 'cl-wrap' }, head, jobEl, stats, h('div', { class: 'cl-bar' }, tabs), h('div', { class: 'cl-bar' }, search, towns.length ? town : null), list));
+  root.replaceChildren(h('div', { class: 'cl-wrap' }, head, jobEl, sitiSection(), stats, h('div', { class: 'cl-bar' }, tabs), h('div', { class: 'cl-bar' }, search, towns.length ? town : null), list));
   if (job?.running) CL.timer = setTimeout(() => { if ($('#main').classList.contains('clienti-open')) renderClienti(); }, 2500);
 }
 function leadCard(l) {
@@ -2778,7 +2780,106 @@ function leadCard(l) {
     notes,
     h('div', { class: 'cl-acts' },
       h('button', { class: 'btn primary sm', html: icon('mail', 'sm') + 'Prepara mail', onclick: () => clientiMail(l) }), st,
-      h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Aggiungi nota', onclick: () => noteOpen() })));
+      h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Aggiungi nota', onclick: () => noteOpen() }),
+      l.sito ? h('button', { class: 'btn sm cl-sito-on', html: icon('folder', 'sm') + 'Sito in lavorazione', onclick: () => sitoView(l.sito) })
+        : CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => sitoTake(l) }) : null));
+}
+// ---- Siti in lavorazione: ogni cliente preso in carico è un progetto sul server dei siti, con una cartella per persona
+const agoTs = (ts) => { if (!ts) return ''; const m = Math.round((Date.now() / 1000 - ts) / 60);
+  return m < 1 ? 'adesso' : m < 60 ? `${m} min fa` : m < 1440 ? `${Math.round(m / 60)} h fa` : new Date(ts * 1000).toLocaleDateString('it-IT', { day: 'numeric', month: 'short' }); };
+function sitoPerson(g) {
+  const bits = [];
+  if (g.modifiche) bits.push(`${g.modifiche} file in modifica` + (g.ultima_modifica ? ` · ${agoTs(g.ultima_modifica)}` : ''));
+  if (g.da_consegnare) bits.push(`${g.da_consegnare} da consegnare`);
+  if (g.indietro) bits.push(`${g.indietro} indietro`);
+  const live = g.ultima_modifica && Date.now() / 1000 - g.ultima_modifica < 1800;
+  return h('div', { class: 'st-p' + (live ? ' live' : '') }, h('i', { class: 'dot', title: live ? 'Ci sta lavorando adesso' : '' }),
+    h('b', { text: g.utente === CL.siti?.me ? 'Tu' : g.utente }), h('span', { text: bits.join(' · ') || 'niente in sospeso' }));
+}
+function sitiSection() {
+  const s = CL.siti;
+  if (!s?.on) return null;
+  if (s.error) return h('div', { class: 'cl-job err', text: 'Siti in lavorazione non letti: ' + s.error });
+  const list = s.progetti || [];
+  return h('section', { class: 'st-sec' },
+    h('div', { class: 'st-h' }, h('h2', { text: 'Siti in lavorazione' }), h('small', { text: list.length ? `${list.length}` : '' })),
+    list.length ? h('div', { class: 'st-grid' }, ...list.map((p) => {
+      const last = (p.main || [])[0];
+      const open = (p.task || []).filter((t) => t.stato !== 'fatto').length;
+      return h('button', { type: 'button', class: 'st-card', onclick: () => sitoView(p.slug) },
+        h('div', { class: 'st-top' }, h('b', { text: p.nome }), h('small', { text: p.chi === s.me ? 'tuo' : `di ${p.chi}` })),
+        p.errore ? h('small', { class: 'st-err', text: p.errore }) : null,
+        ...(p.persone || []).map(sitoPerson),
+        h('div', { class: 'st-foot' }, h('span', { text: last ? `Ultima consegna: ${last.chi} · ${agoTs(+last.ts)}` : '' }), open ? h('span', { class: 'st-badge', text: `${open} task` }) : null));
+    })) : h('div', { class: 'cl-empty', text: 'Nessun sito in lavorazione. Su un cliente premi «Prendo in carico»: nasce il progetto sul server, con una cartella per te e una per i colleghi, e il suo repository su GitHub.' }));
+}
+function sitoTake(l) {
+  const close = () => modal.remove();
+  const nome = h('input', { class: 'ag-in', value: l.name, 'aria-label': 'Nome del sito' });
+  const note = h('textarea', { class: 'ag-in', rows: 3, placeholder: 'Cosa vuole il cliente (facoltativo): finisce nelle regole del progetto per i Claude' });
+  const ok = h('button', { class: 'btn primary', text: 'Crea il progetto', onclick: async () => {
+    ok.disabled = true; ok.textContent = 'Creo…';
+    try {
+      const d = await (await api('/api/siti', { lead: l.id, nome: nome.value.trim(), note: note.value.trim() })).json();
+      toast(`Progetto «${d.nome}» creato: cartelle pronte sul server`); close(); await renderClienti(); sitoView(d.slug);
+    } catch (e) { ok.disabled = false; ok.textContent = 'Crea il progetto'; toast(e.message); }
+  } });
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Prendo in carico' },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Prendo in carico ' + l.name }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('p', { class: 'st-hint', text: 'Sul server dei siti nasce il progetto: la cartella comune, una cartella per ognuno di voi, il canale per i Claude e il repository privato su GitHub. Il cliente passa a «Cliente».' }),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Nome del sito' }), nome), h('label', { class: 'ag-f' }, h('span', { text: 'Note per il progetto' }), note),
+      h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), ok)));
+  document.body.append(modal);
+  nome.focus();
+}
+async function sitoView(slug) {
+  document.querySelector('.st-modal')?.remove();
+  let timer = 0;
+  const close = () => { clearTimeout(timer); modal.remove(); };
+  const body = h('div', { class: 'st-body' }, h('div', { class: 'cl-empty', text: 'Leggo il progetto dal server…' }));
+  const title = h('b', { text: 'Sito' });
+  const modal = h('div', { class: 'ag-modal st-modal', onclick: (e) => { if (e.target === modal) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+    h('div', { class: 'ag-sheet st-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Sito in lavorazione' },
+      h('div', { class: 'ag-sheet-h' }, title, h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })), body));
+  document.body.append(modal);
+  const me = CL.siti?.me;
+  const paint = (p) => {
+    title.textContent = p.nome;
+    const when = (ts) => agoTs(+ts);
+    const sec = (t, ...kids) => h('section', { class: 'st-s' }, h('h3', { text: t }), ...kids);
+    const people = (p.persone || []).map((g) => h('div', { class: 'st-pp' }, sitoPerson(g),
+      g.commit?.length ? h('ul', { class: 'st-list' }, ...g.commit.map((c) => h('li', {}, h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : null,
+      g.file_modificati?.length ? h('div', { class: 'st-files', text: g.file_modificati.join(' · ') }) : null));
+    const tasks = (p.task || []);
+    const to = h('select', { class: 'ag-in', 'aria-label': 'A chi' }, h('option', { value: 'tutti', text: 'A tutti' }),
+      ...(p.persone || []).filter((g) => g.utente !== me).map((g) => h('option', { value: g.utente, text: 'A ' + g.utente })));
+    const txt = h('textarea', { class: 'ag-in', rows: 2, placeholder: 'Un messaggio nel canale del progetto: lo leggono i Claude e i colleghi' });
+    const send = h('button', { class: 'btn primary sm', text: 'Manda', onclick: async () => {
+      if (!txt.value.trim()) return; send.disabled = true;
+      try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}/messaggio`, { a: to.value, testo: txt.value.trim() })).json()); toast('Messaggio nel canale'); }
+      catch (e) { send.disabled = false; toast(e.message); }
+    } });
+    body.replaceChildren(
+      h('div', { class: 'st-meta' }, h('span', { text: `Preso in carico da ${p.chi === me ? 'te' : p.chi}` + (p.creato_il ? ` · ${p.creato_il}` : '') }),
+        p.github ? h('a', { href: `https://github.com/${p.github}`, target: '_blank', rel: 'noopener', html: icon('link', 'sm') + 'GitHub' }) : null),
+      p.note ? h('p', { class: 'st-hint', text: p.note }) : null,
+      sec('Chi ci lavora', ...people),
+      sec('Consegnato (main)', (p.main || []).length ? h('ul', { class: 'st-list' }, ...(p.main || []).map((c) => h('li', {}, h('b', { text: c.chi }), h('span', { text: c.testo }), h('small', { text: when(c.ts) })))) : h('small', { text: 'Ancora niente' })),
+      sec('Task', tasks.length ? h('ul', { class: 'st-list' }, ...tasks.map((t) => h('li', { class: 'st-t ' + t.stato.replace(' ', '-') }, h('b', { text: `#${t.n}` }), h('span', { text: `${t.testo}` }), h('small', { text: `${t.stato} · ${t.per}` })))) : h('small', { text: 'Nessun task' })),
+      sec('Messaggi tra i Claude', (p.messaggi || []).length ? h('ul', { class: 'st-list st-msgs' }, ...[...p.messaggi].reverse().map((m) => h('li', {}, h('b', { text: `${m.da} → ${m.a}` }), h('span', { text: m.testo }), h('small', { text: m.at })))) : h('small', { text: 'Nessun messaggio' }),
+        h('div', { class: 'st-send' }, to, txt, send)));
+  };
+  // si aggiorna da sola mentre è aperta, ma non sotto le dita di chi sta scrivendo un messaggio
+  const load = async (first) => {
+    const writing = !first && (body.querySelector('.st-send textarea')?.value.trim() || document.activeElement?.closest?.('.st-send'));
+    if (!writing) {
+      try { paint(await (await api(`/api/siti/${encodeURIComponent(slug)}`)).json()); }
+      catch (e) { if (first) body.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); }
+    }
+    if (modal.isConnected) timer = setTimeout(load, 20000);
+  };
+  await load(true);
 }
 // Le note di un cliente: piu' d'una, con chi l'ha scritta e quando. La pagina e' condivisa: le vede chiunque la usa.
 function leadNotes(l, refresh) {
