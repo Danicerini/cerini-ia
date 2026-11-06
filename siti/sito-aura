@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """La porta di Aura sul server dei siti: la sua chiave SSH può lanciare SOLO questo (command= in authorized_keys).
 Elenco chiuso di azioni: niente terminale, niente altri comandi."""
-import os, shlex, subprocess, sys
+import json, os, shlex, subprocess, sys
 
 SITO = "/usr/local/bin/sito"
 try:
@@ -17,6 +17,25 @@ ok = {
     # un messaggio nel canale a nome di chi lo scrive da Aura (sito controlla che sia uno degli utenti)
     "scrivi": lambda: [SITO, "team", a[1], "scrivi", a[2], a[3], a[4]] if len(a) == 5 else None,
 }
+
+
+def file_cmd():
+    """file <utente> <azione> <percorso> [destinazione]: il proprietario come root (tutto il server), gli altri come se stessi."""
+    if len(a) not in (4, 5) or a[2] not in ("ls", "leggi", "scrivi", "cancella", "cartella", "sposta", "scarica"):
+        return None
+    try:
+        c = json.load(open("/etc/siti/config.json"))
+    except (OSError, ValueError):
+        return None
+    u = a[1]
+    if u == c.get("proprietario"):
+        return ["sudo", "-n", "/usr/local/bin/sito-file", *a[2:]]
+    if u in (c.get("utenti") or []) and u in (c.get("file") or {}):
+        return ["sudo", "-n", "-u", u, "/usr/local/bin/sito-file", *a[2:]]
+    return None
+
+
+ok["file"] = file_cmd
 cmd = ok.get(a[0] if a else "", lambda: None)()
 if not cmd:
     print("azione non permessa", file=sys.stderr)

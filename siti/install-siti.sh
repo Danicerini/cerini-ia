@@ -2,7 +2,9 @@
 # Prepara il server dei siti (un CT Debian) per i progetti dei clienti. Da lanciare come root, si può rilanciare.
 # Uso: bash install-siti.sh "<chiave pubblica SSH di Aura>"
 # Prima crea /etc/siti/config.json, es.:
-#   {"utenti": ["utente1", "utente2"], "github_owner": "account", "github_prefix": "sito-", "collaboratori": {"utente2": "account-github-2"}}
+#   {"utenti": ["utente1", "utente2"], "proprietario": "utente1", "github_owner": "account", "github_prefix": "sito-",
+#    "collaboratori": {"utente2": "account-github-2"},
+#    "file": {"utente2": {"scrivi": ["/srv/siti/*/utente2"], "leggi": []}}}   <- cosa vede chi non è il proprietario
 # La chiave di GitHub (token con permesso di creare repository) va in /etc/siti/github.token (la legge solo aura).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -10,6 +12,7 @@ KEY="${1:-}"
 
 install -m 755 sito /usr/local/bin/sito
 install -m 755 sito-aura /usr/local/bin/sito-aura
+install -m 755 sito-file /usr/local/bin/sito-file
 
 getent group dev >/dev/null || groupadd dev
 id aura >/dev/null 2>&1 || useradd -m -s /bin/sh -G dev aura
@@ -24,7 +27,13 @@ chown root:root /etc/siti; chmod 755 /etc/siti   # la configurazione la leggono 
 git config --system --get-all safe.directory | grep -qx '\*' || git config --system --add safe.directory '*'
 
 # aura può usare sudo SOLO per creare un progetto
-echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito nuovo *' > /etc/sudoers.d/aura-siti
+# e per i file: come root per il proprietario, come ognuno degli utenti per gli altri (i permessi li controlla sito-file)
+UTENTI=$(python3 -c 'import json; print(",".join(json.load(open("/etc/siti/config.json")).get("utenti") or []))' 2>/dev/null || true)
+{
+  echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito nuovo *'
+  echo 'aura ALL=(root) NOPASSWD: /usr/local/bin/sito-file *'
+  [ -n "$UTENTI" ] && echo "aura ALL=($UTENTI) NOPASSWD: /usr/local/bin/sito-file *"
+} > /etc/sudoers.d/aura-siti
 chmod 440 /etc/sudoers.d/aura-siti
 visudo -cf /etc/sudoers.d/aura-siti >/dev/null
 

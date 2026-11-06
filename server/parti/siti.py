@@ -261,3 +261,78 @@ TOOLS["siti"] = {
                 {"azione": {"type": "string", "enum": ["stato", "scrivi"]}, "progetto": {"type": "string", "description": "Nome o slug del progetto (vuoto = tutti)"},
                  "a": {"type": "string", "description": "Per scrivi: a chi (utente del server dei siti o «tutti»)"}, "testo": _S}, ["azione"]),
 }
+
+
+# ---- i file del server dei siti: il proprietario vede tutto il server, gli altri solo le loro cartelle (lo decide il server, sito-file)
+
+async def siti_bytes(*args: str, data: bytes | None = None, timeout: float = 120) -> bytes:
+    p = await asyncio.create_subprocess_exec(
+        "ssh", "-i", str(SITI_KEY), "-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "-o", "StrictHostKeyChecking=accept-new",
+        "-o", f"UserKnownHostsFile={SITI_HOSTS}", "-o", "LogLevel=ERROR", SITI_SSH, shlex.join(args),
+        stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    try:
+        out, err = await asyncio.wait_for(p.communicate(data), timeout)
+    except asyncio.TimeoutError:
+        p.kill()
+        raise HTTPException(504, "il server dei siti non risponde")
+    if p.returncode:
+        msg = err.decode(errors="replace").strip()[:300] or "errore sul server dei siti"
+        raise HTTPException({3: 403, 4: 404}.get(p.returncode, 400), msg)
+    return out
+
+
+def _ct_path(path: str) -> str:
+    path = str(path or "/").strip() or "/"
+    if not path.startswith("/") or "\x00" in path or len(path) > 1000:
+        raise HTTPException(400, "Percorso non valido")
+    return path
+
+
+@app.get("/api/ct/ls")
+async def ct_ls(path: str = "/", user: dict = Depends(require_siti)):
+    return json.loads(await siti_bytes("file", siti_user(user), "ls", _ct_path(path), timeout=30) or b"{}")
+
+
+@app.get("/api/ct/file")
+async def ct_read(path: str, dl: int = 0, cartella: int = 0, user: dict = Depends(require_siti)):
+    path = _ct_path(path)
+    data = await siti_bytes("file", siti_user(user), "scarica" if dl else "leggi", path, timeout=300)
+    name = path.rstrip("/").rsplit("/", 1)[-1] or "server"
+    if cartella:
+        name += ".tar.gz"
+    mime = "application/gzip" if cartella else (_guess_mime(name) if not dl else "application/octet-stream")
+    # il browser non deve eseguire niente di quello che arriva dal server: i file si vedono come testo o immagini, mai come pagine
+    if not dl and not mime.startswith("image/") and mime != "application/pdf":
+        mime = "text/plain; charset=utf-8"
+    from urllib.parse import quote
+    disp = f"{'attachment' if dl else 'inline'}; filename*=UTF-8''{quote(name)}"
+    return Response(data, media_type=mime, headers={"Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"})
+
+
+@app.put("/api/ct/file")
+async def ct_write(path: str, request: Request, user: dict = Depends(require_siti)):
+    body = await request.body()
+    if len(body) > 50 * 1024 * 1024:
+        raise HTTPException(413, "File troppo grande (massimo 50 MB)")
+    return json.loads(await siti_bytes("file", siti_user(user), "scrivi", _ct_path(path), data=body, timeout=300) or b"{}")
+
+
+@app.delete("/api/ct/file")
+async def ct_delete(path: str, user: dict = Depends(require_siti)):
+    await siti_bytes("file", siti_user(user), "cancella", _ct_path(path))
+    return {"ok": True}
+
+
+class CtPathIn(BaseModel):
+    path: str
+    to: str = ""
+
+
+@app.post("/api/ct/cartella")
+async def ct_mkdir(body: CtPathIn, user: dict = Depends(require_siti)):
+    return json.loads(await siti_bytes("file", siti_user(user), "cartella", _ct_path(body.path)) or b"{}")
+
+
+@app.post("/api/ct/sposta")
+async def ct_move(body: CtPathIn, user: dict = Depends(require_siti)):
+    return json.loads(await siti_bytes("file", siti_user(user), "sposta", _ct_path(body.path), _ct_path(body.to)) or b"{}")

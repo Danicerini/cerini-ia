@@ -215,6 +215,7 @@ async function showApp() {
   $('#mailBtn').classList.toggle('hidden', !S.me.gmail); refreshMailBadge();
   $('#agendaBtn').classList.toggle('hidden', !S.me.calendar); loadToday();
   $('#clientiBtn').classList.toggle('hidden', !S.me.clienti);   // del proprietario, o condivisa con te
+  $('#filesBtn').classList.toggle('hidden', !S.me.siti);
   $('#ticketsBtn').classList.toggle('hidden', !S.me?.crm);
   refreshAuraBadge();
   if (new URLSearchParams(location.search).get('aura')) { history.replaceState(history.state, '', '/'); openAura(); }
@@ -2989,6 +2990,159 @@ function clientiSettings(d) {
   document.body.append(modal);
 }
 
+// ================================================================== file del server dei siti
+// Il proprietario vede tutto il server, gli altri solo le loro cartelle: lo decide il server (sito-file), qui si mostra e basta.
+const FX = { path: pref.get('fxPath', ''), data: null };
+const fxJoin = (dir, name) => (dir.replace(/\/+$/, '') + '/' + name).replace(/^\/\//, '/');
+const fxSize = (n) => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1).replace('.', ',')} MB`);
+const fxWhen = (t) => (t ? new Date(t * 1000).toLocaleString('it-IT', { day: 'numeric', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+const FX_IMG = /\.(png|jpe?g|gif|webp|svg|ico|bmp|avif)$/i;
+function closeFiles() { $('#main').classList.remove('files-open'); }
+async function openFiles(path) {
+  closeSide(); togglePicker(false); closeViews();
+  $('#main').classList.add('files-open');
+  if (typeof path === 'string') FX.path = path;
+  navSync();
+  await renderFiles();
+}
+$('#filesBtn').onclick = () => openFiles();
+const fxUrl = (p, extra = {}) => '/api/ct/file?' + new URLSearchParams({ path: p, ...extra });
+function fxDownload(p, dir) { const a = h('a', { href: fxUrl(p, { dl: 1, ...(dir ? { cartella: 1 } : {}) }) }); document.body.append(a); a.click(); a.remove(); }
+async function renderFiles() {
+  const root = $('#filesView');
+  let d;
+  try { d = FX.data = await (await api('/api/ct/ls?' + new URLSearchParams({ path: FX.path || '/' }))).json(); }
+  catch (e) {
+    if (FX.path && FX.path !== '/') { FX.path = ''; pref.set('fxPath', ''); return renderFiles(); }   // la cartella di prima non c'è più (o non è tua)
+    root.replaceChildren(h('div', { class: 'fx-wrap' }, h('div', { class: 'cl-empty', text: e.message }))); return;
+  }
+  FX.path = d.roots ? '' : d.path; pref.set('fxPath', FX.path);
+  const go = (p) => { FX.path = p; renderFiles(); };
+  const parts = d.roots ? [] : d.path.split('/').filter(Boolean);
+  const crumbs = h('div', { class: 'fx-crumbs' }, h('button', { text: d.roots ? 'Le tue cartelle' : '/', onclick: () => go(d.roots ? '' : '/') }),
+    ...parts.flatMap((x, i) => [h('span', { text: i ? '/' : '' }), h('button', { text: x, onclick: () => go('/' + parts.slice(0, i + 1).join('/')) })]));
+  const up = !d.roots && d.path !== '/' ? d.path.replace(/\/[^/]+\/?$/, '') || '/' : null;
+  const upload = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => fxUpload([...e.target.files]) });
+  const bar = h('div', { class: 'fx-bar' },
+    d.write ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Nuova cartella', onclick: () => fxNew(true) }) : null,
+    d.write ? h('button', { class: 'btn sm', html: icon('pencil', 'sm') + 'Nuovo file', onclick: () => fxNew(false) }) : null,
+    d.write ? h('button', { class: 'btn sm', html: icon('up', 'sm') + 'Carica', onclick: () => upload.click() }) : null, upload,
+    !d.roots ? h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica la cartella', onclick: () => fxDownload(d.path, true) }) : null,
+    h('span', { class: 'grow' }),
+    !d.write && !d.roots ? h('span', { class: 'fx-ro', html: icon('eye', 'sm') + 'Solo lettura' }) : null,
+    h('button', { class: 'icon-btn', title: 'Aggiorna', 'aria-label': 'Aggiorna', html: icon('retry'), onclick: () => renderFiles() }));
+  const rowMenu = (it, p, e) => {
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    tkMenu(r.left - 140, r.bottom + 4, [
+      it.type === 'dir' ? ['Apri', () => go(p)] : ['Apri', () => fxOpen(p, it)],
+      ['Scarica', () => fxDownload(p, it.type === 'dir')],
+      ...(d.write || it.write ? [['Rinomina', () => fxRename(p, it)], ['Cancella', () => fxDelete(p, it)]] : []),
+    ], it.name);
+  };
+  const rows = d.items.map((it) => {
+    const p = it.path || fxJoin(d.path, it.name), dir = it.type === 'dir';
+    return h('div', { class: 'fx-row' + (dir ? ' dir' : ''), role: 'button', tabindex: 0, title: p,
+      onclick: () => (dir ? go(p) : fxOpen(p, it)), onkeydown: (e) => { if (e.key === 'Enter') (dir ? go(p) : fxOpen(p, it)); } },
+      h('span', { class: 'ic', html: icon(dir ? 'folder' : 'clip', 'sm') }),
+      h('span', { class: 'nm', text: it.name + (it.type === 'link' ? ' →' : '') }),
+      h('small', { class: 'tnum', text: dir ? '' : fxSize(it.size) }), h('small', { class: 'tnum', text: fxWhen(it.mtime) }),
+      h('button', { class: 'icon-btn sm', 'aria-label': 'Azioni su ' + it.name, html: icon('settings', 'sm'), onclick: (e) => rowMenu(it, p, e) }));
+  });
+  const list = h('div', { class: 'fx-list' },
+    up ? h('div', { class: 'fx-row fx-up', role: 'button', tabindex: 0, onclick: () => go(up) }, h('span', { class: 'ic', html: icon('chevron', 'sm'), style: 'rotate:90deg' }), h('span', { class: 'nm', text: '..' }), h('small'), h('small'), h('span')) : null,
+    ...(rows.length ? rows : [h('div', { class: 'cl-empty', text: 'Cartella vuota.' })]));
+  const wrap = h('div', { class: 'fx-wrap' },
+    h('div', { class: 'fx-head' }, h('h1', { text: 'Server dei siti' }),
+      h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { closeFiles(); navSync(); focusInput(); } })),
+    crumbs, bar, list);
+  // trascinando dei file sulla lista si caricano nella cartella aperta
+  if (d.write) {
+    list.addEventListener('dragover', (e) => { e.preventDefault(); list.classList.add('fx-drop'); });
+    list.addEventListener('dragleave', () => list.classList.remove('fx-drop'));
+    list.addEventListener('drop', (e) => { e.preventDefault(); list.classList.remove('fx-drop'); fxUpload([...e.dataTransfer.files]); });
+  }
+  root.replaceChildren(wrap);
+}
+async function fxUpload(files) {
+  for (const f of files) {
+    try { await api(fxUrl(fxJoin(FX.path, f.name)), undefined, { method: 'PUT', body: f }); toast(`Caricato ${f.name}`); }
+    catch (e) { toast(`${f.name}: ${e.message}`); }
+  }
+  renderFiles();
+}
+function fxAsk(title, value, okText, onOk) {
+  const close = () => modal.remove();
+  const inp = h('input', { class: 'ag-in', value: value || '', onkeydown: (e) => { if (e.key === 'Enter') ok.click(); if (e.key === 'Escape') close(); } });
+  const ok = h('button', { class: 'btn primary', text: okText, onclick: async () => { const v = inp.value.trim(); if (!v || v.includes('/')) return toast('Nome non valido'); ok.disabled = true; try { await onOk(v); close(); } catch (e) { ok.disabled = false; toast(e.message); } } });
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: title }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('label', { class: 'ag-f' }, h('span', { text: 'Nome' }), inp),
+      h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), ok)));
+  document.body.append(modal);
+  inp.focus(); inp.select();
+}
+function fxNew(dir) {
+  fxAsk(dir ? 'Nuova cartella' : 'Nuovo file', '', 'Crea', async (name) => {
+    const p = fxJoin(FX.path, name);
+    if (dir) await api('/api/ct/cartella', { path: p });
+    else await api(fxUrl(p), undefined, { method: 'PUT', body: '' });
+    await renderFiles();
+    if (!dir) fxOpen(p, { name, size: 0 });
+  });
+}
+function fxRename(p, it) {
+  fxAsk('Rinomina ' + it.name, it.name, 'Rinomina', async (name) => {
+    await api('/api/ct/sposta', { path: p, to: fxJoin(p.replace(/\/[^/]+$/, '') || '/', name) });
+    toast('Rinominato'); renderFiles();
+  });
+}
+async function fxDelete(p, it) {
+  if (!confirm(`Cancellare ${it.type === 'dir' ? 'la cartella' : 'il file'} «${it.name}»${it.type === 'dir' ? ' con tutto quello che c\'è dentro' : ''}? Non si può annullare.`)) return;
+  try { await api('/api/ct/file?' + new URLSearchParams({ path: p }), undefined, { method: 'DELETE' }); toast('Cancellato'); renderFiles(); }
+  catch (e) { toast(e.message); }
+}
+// Un file aperto: testo modificabile (Ctrl+S salva), immagine da guardare, il resto si scarica
+async function fxOpen(p, it) {
+  const writable = !!FX.data?.write;
+  const close = () => { if (dirty && !confirm('Ci sono modifiche non salvate: chiudere lo stesso?')) return; modal.remove(); };
+  let dirty = false;
+  const status = h('small', { class: 'fx-ro' });
+  const box = h('div', { class: 'fx-img' }, h('div', { class: 'cl-empty', text: 'Apro…' }));
+  const save = h('button', { class: 'btn primary sm', text: 'Salva', disabled: true });
+  const modal = h('div', { class: 'ag-modal', onclick: (e) => { if (e.target === modal) close(); } },
+    h('div', { class: 'ag-sheet fx-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': it.name },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: it.name, title: p }), status, h('span', { class: 'grow' }),
+        h('button', { class: 'btn sm', html: icon('down', 'sm') + 'Scarica', onclick: () => fxDownload(p) }),
+        writable ? save : null,
+        h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })), box));
+  document.body.append(modal);
+  if (FX_IMG.test(it.name) && !/\.svg$/i.test(it.name)) { box.replaceChildren(h('img', { src: fxUrl(p), alt: it.name })); return; }
+  if ((it.size || 0) > 3 * 1048576) { box.replaceChildren(h('div', { class: 'cl-empty', text: 'File grande: scaricalo per aprirlo.' })); return; }
+  let buf;
+  try { buf = new Uint8Array(await (await api(fxUrl(p))).arrayBuffer()); } catch (e) { box.replaceChildren(h('div', { class: 'cl-empty', text: e.message })); return; }
+  if (buf.subarray(0, 8000).includes(0)) { box.replaceChildren(h('div', { class: 'cl-empty', text: 'Non è un file di testo: scaricalo per aprirlo.' })); return; }
+  const ta = h('textarea', { class: 'ag-in', spellcheck: 'false', readonly: writable ? null : true });
+  ta.value = new TextDecoder().decode(buf);
+  const doSave = async () => {
+    if (!dirty) return;
+    save.disabled = true; status.textContent = 'Salvo…';
+    try { await api(fxUrl(p), undefined, { method: 'PUT', body: ta.value }); dirty = false; status.textContent = 'Salvato'; }
+    catch (e) { save.disabled = false; status.textContent = ''; toast(e.message); }
+  };
+  save.onclick = doSave;
+  ta.oninput = () => { dirty = true; save.disabled = false; status.textContent = 'Modificato'; };
+  ta.onkeydown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); doSave(); }
+    if (e.key === 'Tab' && !e.shiftKey && writable) { e.preventDefault(); ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end'); ta.oninput(); }
+    if (e.key === 'Escape') close();
+  };
+  if (!writable) status.textContent = 'Solo lettura';
+  box.replaceWith(ta);
+  ta.focus();
+}
+
 // ================================================================== agenda
 // I prossimi giorni del calendario Google: gli impegni li crea Aura (o tu, da Google Calendar).
 function closeAgenda() { $('#main').classList.remove('agenda-open'); }
@@ -5480,7 +5634,7 @@ const hueOf = (name) => [...name].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 
 const avatar = (name, cls = '') => h('span', { class: 'avatar c ' + cls, style: `--h:${hueOf(name)}`, text: (name[0] || '?') });
 
 function closeSettings() { $('#main').classList.remove('settings-open'); }
-function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeClienti === 'function') closeClienti(); if (typeof closeTickets === 'function') closeTickets(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
+function closeViews() { closeSettings(); if (typeof closeMemory === 'function') closeMemory(); if (typeof closeMail === 'function') closeMail(); if (typeof closeAgenda === 'function') closeAgenda(); if (typeof closeClienti === 'function') closeClienti(); if (typeof closeFiles === 'function') closeFiles(); if (typeof closeTickets === 'function') closeTickets(); if (typeof closeAura === 'function') closeAura(); if (typeof closeBrainView === 'function') closeBrainView(); }
 async function openSettings(tab) {
   closeSide(); togglePicker(false); closeViews();
   $('#main').classList.add('settings-open');
@@ -6074,7 +6228,7 @@ function sharePending() {
 // Il tasto Indietro del browser (o del mouse, o Alt+freccia) torna alla pagina di prima dentro l'app: ogni cambio di vista è un passo della cronologia.
 // Anche Ctrl+Z, quando non si sta scrivendo in una casella
 const NAV = { on: false, busy: false, timer: 0, i: 0 };
-const NAV_OPEN = { tickets: () => openTickets(), memory: () => openMemory(), mail: () => openMail(), agenda: () => openAgenda(), clienti: () => openClienti(), settings: () => openSettings(), aura: () => openAuraSettings(), brain: () => closeViews() };   // brain: una scheda del cervello non si riapre da qui, si torna alla chat
+const NAV_OPEN = { tickets: () => openTickets(), memory: () => openMemory(), mail: () => openMail(), agenda: () => openAgenda(), clienti: () => openClienti(), files: () => openFiles(), settings: () => openSettings(), aura: () => openAuraSettings(), brain: () => closeViews() };   // brain: una scheda del cervello non si riapre da qui, si torna alla chat
 const navNow = () => {
   const v = Object.keys(NAV_OPEN).find((k) => $('#main').classList.contains(k + '-open')) || null;
   return { v, t: v === 'tickets' ? TKP.sel || null : null, c: v ? null : S.currentId || null };

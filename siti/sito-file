@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""I file del server dei siti visti da Aura: sfogliare, leggere, scrivere, cancellare, spostare, scaricare.
+Lo lancia solo la porta di Aura (sito-aura), con sudo: come root per il proprietario (tutto il server), come l'utente
+stesso per gli altri, che vedono solo le cartelle scritte per loro in /etc/siti/config.json («file»):
+  "file": {"utente": {"scrivi": ["/srv/siti/*/utente"], "leggi": ["/srv/altro"]}}
+Uso: sito-file ls|leggi|scrivi|cancella|cartella|sposta|scarica <percorso> [destinazione]
+  scrivi legge i byte da stdin; leggi e scarica li mandano su stdout (scarica: una cartella diventa tar.gz).
+"""
+import fnmatch, io, json, os, pwd, shutil, stat, sys, tarfile
+from pathlib import Path
+
+CONF = Path("/etc/siti/config.json")
+MAX_READ = 200 * 1024 * 1024
+MAX_WRITE = 50 * 1024 * 1024
+
+
+def die(msg: str, code: int = 1):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def policy():
+    """None = tutto (root); altrimenti (cartelle in scrittura, cartelle in sola lettura) dell'utente."""
+    if os.getuid() == 0:
+        return None
+    me = pwd.getpwuid(os.getuid()).pw_name
+    try:
+        p = (json.loads(CONF.read_text()).get("file") or {}).get(me) or {}
+    except (OSError, ValueError):
+        p = {}
+    def expand(globs):
+        out = []
+        for g in globs or []:
+            out += [str(Path(x).resolve()) for x in sorted(__import__("glob").glob(g)) if Path(x).is_dir()]
+        return out
+    return expand(p.get("scrivi")), expand(p.get("leggi"))
+
+
+def inside(path: str, roots: list[str]) -> str | None:
+    for r in roots:
+        if path == r or path.startswith(r.rstrip("/") + "/"):
+            return r
+    return None
+
+
+def check(raw: str, write: bool) -> Path:
+    pol = policy()
+    p = Path(os.path.abspath(raw or "/"))
+    # i collegamenti si seguono: conta dove portano davvero
+    real = Path(os.path.realpath(p))
+    if pol is None:
+        return p
+    rw, ro = pol
+    if inside(str(real), rw):
+        return p
+    if not write and inside(str(real), ro):
+        return p
+    die("cartella non permessa" if not write else "qui non puoi scrivere", 3)
+
+
+def entry(p: Path) -> dict:
+    try:
+        st = p.lstat()
+    except OSError:
+        return {"name": p.name, "type": "?"}
+    t = "dir" if stat.S_ISDIR(st.st_mode) else "link" if stat.S_ISLNK(st.st_mode) else "file"
+    if t == "link" and p.is_dir():
+        t = "dir"
+    try:
+        owner = pwd.getpwuid(st.st_uid).pw_name
+    except KeyError:
+        owner = str(st.st_uid)
+    return {"name": p.name, "type": t, "size": st.st_size, "mtime": int(st.st_mtime), "mode": stat.filemode(st.st_mode), "owner": owner}
+
+
+def ls(raw: str):
+    pol = policy()
+    if pol is not None and (not raw or raw == "/"):
+        rw, ro = pol   # chi non è il proprietario parte dalle sue cartelle
+        roots = [{**entry(Path(r)), "name": r, "path": r, "write": True} for r in rw] + [{**entry(Path(r)), "name": r, "path": r, "write": False} for r in ro if r not in rw]
+        print(json.dumps({"path": "/", "roots": True, "write": False, "items": roots}, ensure_ascii=False))
+        return
+    p = check(raw, False)
+    if not p.is_dir():
+        die("non è una cartella")
+    items = []
+    try:
+        for x in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))[:3000]:
+            items.append(entry(x))
+    except PermissionError:
+        die("permesso negato", 3)
+    can_write = pol is None or bool(inside(os.path.realpath(p), pol[0]))
+    print(json.dumps({"path": str(p), "write": can_write, "items": items}, ensure_ascii=False))
+
+
+def main():
+    a = sys.argv[1:]
+    if len(a) < 2:
+        die(__doc__)
+    cmd, path = a[0], a[1]
+    if cmd == "ls":
+        ls(path)
+    elif cmd == "leggi":
+        p = check(path, False)
+        if not p.is_file():
+            die("non è un file")
+        if p.stat().st_size > MAX_READ:
+            die("file troppo grande da aprire qui")
+        with open(p, "rb") as f:
+            shutil.copyfileobj(f, sys.stdout.buffer)
+    elif cmd == "scarica":
+        p = check(path, False)
+        if p.is_file():
+            with open(p, "rb") as f:
+                shutil.copyfileobj(f, sys.stdout.buffer)
+        elif p.is_dir():
+            with tarfile.open(fileobj=sys.stdout.buffer, mode="w|gz") as t:
+                t.add(str(p), arcname=p.name)
+        else:
+            die("non trovato")
+    elif cmd == "scrivi":
+        p = check(path, True)
+        if p.is_dir():
+            die("è una cartella")
+        data = sys.stdin.buffer.read(MAX_WRITE + 1)
+        if len(data) > MAX_WRITE:
+            die("file troppo grande (massimo 50 MB)")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_name(f".{p.name}.aura-tmp")
+        tmp.write_bytes(data)
+        if p.exists():
+            shutil.copymode(p, tmp)
+        os.replace(tmp, p)
+        print(json.dumps(entry(p)))
+    elif cmd == "cartella":
+        p = check(path, True)
+        p.mkdir(parents=True, exist_ok=False)
+        print(json.dumps(entry(p)))
+    elif cmd == "cancella":
+        p = check(path, True)
+        pol = policy()
+        real = os.path.realpath(p)
+        if real in ("/", "/srv", "/srv/siti", "/etc", "/usr", "/root", "/home", "/var") or (pol is not None and real in pol[0]):
+            die("questa cartella non si cancella da qui", 3)
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        print("{}")
+    elif cmd == "sposta":
+        if len(a) < 3:
+            die("serve la destinazione")
+        src, dst = check(path, True), check(a[2], True)
+        if dst.exists():
+            die("c'è già un file con quel nome")
+        os.rename(src, dst)
+        print(json.dumps(entry(dst)))
+    else:
+        die("azione sconosciuta")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except FileNotFoundError:
+        die("non trovato", 4)
+    except PermissionError:
+        die("permesso negato", 3)
+    except OSError as e:
+        die(str(e)[:200])
