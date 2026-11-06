@@ -3036,7 +3036,14 @@ async function openFiles(path) {
 $('#filesBtn').onclick = () => openFiles();
 const fxUrl = (p, extra = {}) => '/api/ct/file?' + new URLSearchParams({ path: p, ...extra });
 function fxDownload(p, dir) { const a = h('a', { href: fxUrl(p, { dl: 1, ...(dir ? { cartella: 1 } : {}) }) }); document.body.append(a); a.click(); a.remove(); }
-function fxGo(p) { if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: lasciarle?')) return; FX.path = p; FX.open = null; FX.q = ''; renderFiles(); }
+function fxGo(p, typed) { if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: lasciarle?')) return; FX.back = typed ? FX.path : null; FX.path = p; FX.open = null; FX.q = ''; renderFiles(); }
+// lo spazio del disco del server: barretta piena come in Esplora risorse, rossa quando è quasi pieno
+function fxDisk(k) {
+  if (!k?.totale) return null;
+  const pct = Math.round((k.usato / k.totale) * 100);
+  return h('span', { class: 'fx-disk' + (pct >= 90 ? ' full' : pct >= 75 ? ' warn' : ''), title: `Disco del server: ${gb(k.usato)} usati, ${gb(k.libero)} liberi su ${gb(k.totale)} (${pct}%)` },
+    h('i', {}, h('b', { style: `width:${pct}%` })), h('span', { text: `${gb(k.libero)} liberi di ${gb(k.totale)}` }));
+}
 
 async function renderFiles() {
   const root = $('#filesView');
@@ -3044,15 +3051,43 @@ async function renderFiles() {
   let d;
   try { d = FX.data = await (await api('/api/ct/ls?' + new URLSearchParams({ path: FX.path || '/' }))).json(); }
   catch (e) {
+    if (FX.back != null) { toast(`${FX.path}: ${e.message}`); FX.path = FX.back; FX.back = null; return renderFiles(); }   // percorso scritto a mano che non va
     if (FX.path && FX.path !== '/') { FX.path = ''; pref.set('fxPath', ''); return renderFiles(); }   // la cartella di prima non c'è più (o non è tua)
     root.replaceChildren(h('div', { class: 'fx-app' }, h('div', { class: 'fx-main' }, h('div', { class: 'cl-empty', text: e.message })))); return;
   }
-  FX.path = d.roots ? '' : d.path; pref.set('fxPath', FX.path);
+  FX.path = d.roots ? '' : d.path; FX.back = null; pref.set('fxPath', FX.path);
   const parts = d.roots ? [] : d.path.split('/').filter(Boolean);
   const crumbs = h('nav', { class: 'fx-crumbs', 'aria-label': 'Percorso' },
     h('button', { class: 'home', title: d.roots ? 'Le tue cartelle' : 'Radice del server', html: icon('home', 'sm'), onclick: () => fxGo(d.roots ? '' : '/') }),
     ...parts.flatMap((x, i) => [h('span', { class: 'sep', text: '/' }), h('button', { class: i === parts.length - 1 ? 'cur' : '', text: x, onclick: () => fxGo('/' + parts.slice(0, i + 1).join('/')) })]),
-    !d.roots ? h('button', { class: 'copy', title: 'Copia il percorso', 'aria-label': 'Copia il percorso', html: icon('copy', 'sm'), onclick: () => copyText(d.path) }) : null);
+    !d.roots ? h('button', { class: 'copy', title: 'Copia il percorso completo', 'aria-label': 'Copia il percorso', html: icon('copy', 'sm'), onclick: (e) => { e.stopPropagation(); copyText(d.path).then(() => toast('Copiato: ' + d.path)); } }) : null);
+  // come in Windows: un clic nello spazio vuoto della barra la fa diventare una casella col percorso, da copiare o riscrivere
+  const editPath = () => {
+    if (crumbs.querySelector('input')) return;
+    const keep = [...crumbs.childNodes];
+    const back = () => { if (inp.isConnected) crumbs.replaceChildren(...keep); crumbs.classList.remove('editing'); };
+    const inp = h('input', { class: 'fx-path', value: d.roots ? '/' : d.path, spellcheck: 'false', autocomplete: 'off', 'aria-label': 'Percorso',
+      onkeydown: (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); back(); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          let v = inp.value.trim().replace(/\\/g, '/');
+          if (!v) return back();
+          if (!v.startsWith('/')) v = fxJoin(d.roots ? '/' : d.path, v);
+          v = v.replace(/\/+$/, '') || '/';
+          if (v === d.path) return back();
+          fxGo(v, true);
+        }
+      },
+      onblur: () => setTimeout(back, 120) });
+    crumbs.classList.add('editing');
+    crumbs.replaceChildren(inp);
+    inp.focus(); inp.select();
+  };
+  crumbs.title = 'Clic nello spazio vuoto per scrivere o copiare il percorso';
+  crumbs.addEventListener('click', (e) => { if (e.target === crumbs) editPath(); });
+  // selezionando i pezzi del percorso con il mouse, Ctrl+C copia il percorso intero e pulito
+  crumbs.addEventListener('copy', (e) => { if (e.target.closest?.('input') || d.roots) return; e.preventDefault(); e.clipboardData.setData('text/plain', d.path); toast('Copiato: ' + d.path); });
   const upload = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => fxUpload([...e.target.files]) });
   const filter = h('input', { class: 'fx-filter', type: 'search', placeholder: 'Filtra in questa cartella', value: FX.q, 'aria-label': 'Filtra',
     oninput: (e) => { FX.q = e.target.value; paintList(); } });
@@ -3087,7 +3122,7 @@ async function renderFiles() {
   paintList();
   const main = h('div', { class: 'fx-main' },
     h('div', { class: 'fx-top' }, h('h1', { text: 'Server dei siti' }), !d.write && !d.roots ? h('span', { class: 'fx-ro', html: icon('eye', 'sm') + 'Solo lettura' }) : null,
-      h('span', { class: 'grow' }), count,
+      h('span', { class: 'grow' }), fxDisk(d.disco), count,
       h('button', { class: 'icon-btn', title: 'Chiudi', 'aria-label': 'Chiudi', html: icon('x'), onclick: () => { if (FX.open?.dirty && !confirm('Ci sono modifiche non salvate: chiudere?')) return; FX.open = null; closeFiles(); navSync(); focusInput(); } })),
     crumbs, bar, h('div', { class: 'fx-list' }, head, list));
   // trascinando dei file sulla lista si caricano nella cartella aperta

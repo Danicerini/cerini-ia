@@ -73,12 +73,21 @@ def entry(p: Path) -> dict:
     return {"name": p.name, "type": t, "size": st.st_size, "mtime": int(st.st_mtime), "mode": stat.filemode(st.st_mode), "owner": owner}
 
 
+def disco() -> dict:
+    """Lo spazio del disco del server (tutti lo vedono: non dice niente dei file)."""
+    try:
+        d = shutil.disk_usage("/")
+        return {"totale": d.total, "usato": d.used, "libero": d.free}
+    except OSError:
+        return {}
+
+
 def ls(raw: str):
     pol = policy()
     if pol is not None and (not raw or raw == "/"):
         rw, ro = pol   # chi non è il proprietario parte dalle sue cartelle
         roots = [{**entry(Path(r)), "name": r, "path": r, "write": True} for r in rw] + [{**entry(Path(r)), "name": r, "path": r, "write": False} for r in ro if r not in rw]
-        print(json.dumps({"path": "/", "roots": True, "write": False, "items": roots}, ensure_ascii=False))
+        print(json.dumps({"path": "/", "roots": True, "write": False, "items": roots, "disco": disco()}, ensure_ascii=False))
         return
     p = check(raw, False)
     if not p.is_dir():
@@ -90,7 +99,7 @@ def ls(raw: str):
     except PermissionError:
         die("permesso negato", 3)
     can_write = pol is None or bool(inside(os.path.realpath(p), pol[0]))
-    print(json.dumps({"path": str(p), "write": can_write, "items": items}, ensure_ascii=False))
+    print(json.dumps({"path": str(p), "write": can_write, "items": items, "disco": disco()}, ensure_ascii=False))
 
 
 def main():
