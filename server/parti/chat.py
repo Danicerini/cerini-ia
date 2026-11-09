@@ -59,11 +59,35 @@ def memory_rows(user_id: int, kind: str | None = None) -> list[dict]:
         return [dict(r) for r in c.execute(q, (user_id, kind) if kind else (user_id,))]
 
 
-async def memory_search(user_id: int, query: str, k: int = 5, kind: str | None = None, min_score: float = 0.0) -> list[dict]:
-    rows = [r for r in memory_rows(user_id, kind) if r["embedding"]]
-    if not rows or not query.strip():
+def _memory_by_words(rows: list[dict], query: str, k: int, min_score: float) -> list[dict]:
+    """Riserva col PC spento: niente vettori, conta quante parole della domanda stanno nel testo."""
+    words = lambda s: set(re.findall(r"\w{3,}", s.lower()))
+    want = words(query)
+    if not want:
         return []
-    qv = (await embed([query], query=True))[0]
+    found = []
+    for r in rows:
+        score = len(want & words(f"{r['title']} {r['text']}")) / len(want)
+        if score > 0 and score >= min_score:
+            found.append({**{x: r[x] for x in ("id", "kind", "title", "text", "doc_id", "updated")}, "score": round(score, 3)})
+    return sorted(found, key=lambda r: -r["score"])[:k]
+
+
+async def memory_search(user_id: int, query: str, k: int = 5, kind: str | None = None, min_score: float = 0.0,
+                        per_parole: bool = False) -> list[dict]:
+    """per_parole: se il PC non risponde cerca per parole invece di dare errore (solo per chi cerca davvero, non per chi poi modifica)."""
+    every = memory_rows(user_id, kind)
+    rows = [r for r in every if r["embedding"]]
+    if not query.strip():
+        return []
+    if not rows:
+        return _memory_by_words(every, query, k, min_score) if per_parole else []
+    try:
+        qv = (await embed([query], query=True))[0]
+    except HTTPException:
+        if not per_parole:
+            raise
+        return _memory_by_words(every, query, k, min_score)
     m = np.stack([_vec(r["embedding"]) for r in rows])
     scores = m @ qv
     order = np.argsort(-scores)[:k]
@@ -250,15 +274,18 @@ async def memory_document_delete(doc_id: str, user: dict = Depends(require_user)
 
 @app.post("/api/memory/search")
 async def memory_search_api(body: SearchIn, user: dict = Depends(require_user)):
-    return {"results": await memory_search(user["id"], body.q, k=8)}
+    return {"results": await memory_search(user["id"], body.q, k=8, per_parole=True)}
 
 
 # ---- strumenti di Gemma per la memoria (ogni utente ha la sua)
 
 async def _tool_memory_search(user: dict, args: dict, request: Request) -> dict:
     q = str(args.get("domanda") or args.get("query") or "").strip()
-    hits = await memory_search(user["id"], q, k=6, min_score=0.25)
-    conv = await conv_search(user, q, 4, None, 0.4)
+    hits = await memory_search(user["id"], q, k=6, min_score=0.25, per_parole=True)
+    try:
+        conv = await conv_search(user, q, 4, None, 0.4)
+    except HTTPException:
+        conv = []   # PC spento: le chat vecchie si cercano solo coi vettori
     if not hits and not conv:
         return {"content": "Nella memoria non c'è niente di pertinente.", "display": "Ho cercato nella memoria: niente di pertinente"}
     lines = [f"#{h['id']} ({h['kind']}{', ' + h['title'] if h['title'] else ''}) {h['text']}" for h in hits]
