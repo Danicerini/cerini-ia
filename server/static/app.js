@@ -24,6 +24,7 @@ const ICONS = {
   eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   eyeOff: '<path d="M10.7 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.7 9.7 0 0 0 5.4-1.6M9.9 9.9a3 3 0 0 0 4.2 4.2M2 2l20 20"/>',
   tool: '<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>',
+  plus: '<path d="M5 12h14"/><path d="M12 5v14"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/>',
   key: '<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>',
   pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
@@ -2728,6 +2729,7 @@ async function renderClienti() {
     h('div', { class: 'tx' }, h('h1', { text: 'Clienti per siti vetrina' }),
       h('p', { text: `Attività ${d.zona?.nome ? d.zona.nome + ' ' : 'della tua zona '}senza un sito o con un sito da rifare. Contattale una per volta: la mail la prepara Aura, la mandi tu.` })),
     h('div', { class: 'acts' },
+      h('button', { class: 'btn', html: icon('plus', 'sm') + 'Aggiungi', onclick: clientNew }),
       d.owner ? h('button', { class: 'btn primary', html: icon('retry', 'sm') + (job?.running ? 'Sto cercando…' : 'Cerca in zona'), disabled: !!job?.running, onclick: async () => {
         try { await api('/api/clienti/cerca', {}); } catch (e) { toast(e.message); } renderClienti(); } }) : h('span', { class: 'cl-shared', html: icon('user', 'sm') + 'Pagina condivisa' }),
       d.owner ? h('button', { class: 'icon-btn', title: 'Impostazioni e condivisione', 'aria-label': 'Impostazioni dei clienti', html: icon('settings'), onclick: () => clientiSettings(d) }) : null,
@@ -2831,6 +2833,31 @@ function clientCard(l) {
       h('button', { class: 'btn sm', html: icon('mail', 'sm') + 'Mail', onclick: () => clientiMail(l) }),
       sites[0]?.anteprima?.consegnato ? h('a', { class: 'btn sm', href: sites[0].anteprima.consegnato, target: '_blank', rel: 'noopener', html: icon('globe', 'sm') + 'Apri il sito' }) : null,
       !sites.length && CL.siti?.on && !CL.siti.error ? h('button', { class: 'btn sm', html: icon('folder', 'sm') + 'Prendo in carico', onclick: () => sitoTake(l) }) : null));
+}
+function clientNew() {   // un cliente aggiunto a mano: basta il nome, il resto si completa dalla scheda
+  document.querySelector('.cli-modal')?.remove();
+  const close = () => modal.remove();
+  const inputs = Object.fromEntries(CL_FIELDS.map(([k]) => [k, h('input', { class: 'ag-in', spellcheck: 'false', ...(k === 'email' ? { type: 'email' } : k === 'phone' ? { type: 'tel' } : {}) })]));
+  const status = h('select', { class: 'ag-in', 'aria-label': 'Stato' }, ...CL_STATUS.map(([v, t]) => h('option', { value: v, text: t })));
+  const save = h('button', { class: 'btn primary', text: 'Aggiungi', onclick: async () => {
+    if (!inputs.name.value.trim()) { toast('Scrivi almeno il nome'); inputs.name.focus(); return; }
+    save.disabled = true;
+    try {
+      await api('/api/clienti', { ...Object.fromEntries(Object.entries(inputs).map(([k, el]) => [k, el.value.trim()])), status: status.value });
+      toast('Cliente aggiunto');
+      CL.tab = ['lavorazione', 'cliente'].includes(status.value) ? 'clienti' : 'tutti'; CL.kind = ''; CL.q = ''; CL.town = '';
+      close(); renderClienti();
+    } catch (e) { save.disabled = false; toast(e.message); }
+  } });
+  const field = (k, label) => h('label', { class: 'ag-f' + (['address', 'website'].includes(k) ? ' wide' : '') }, h('span', { text: label }), inputs[k]);
+  const modal = h('div', { class: 'ag-modal cli-modal', onclick: (e) => { if (e.target === modal) close(); }, onkeydown: (e) => { if (e.key === 'Escape') close(); } },
+    h('div', { class: 'ag-sheet st-sheet', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Aggiungi cliente' },
+      h('div', { class: 'ag-sheet-h' }, h('b', { text: 'Aggiungi cliente' }), h('span', { class: 'grow' }), h('button', { class: 'icon-btn sm', 'aria-label': 'Chiudi', html: icon('x', 'sm'), onclick: close })),
+      h('div', { class: 'st-body' }, h('section', { class: 'st-s' },
+        h('div', { class: 'cli-form' }, ...CL_FIELDS.map(([k, t]) => field(k, t)), h('label', { class: 'ag-f' }, h('span', { text: 'Stato' }), status)))),
+      h('div', { class: 'ag-sheet-f' }, h('span', { class: 'grow' }), h('button', { class: 'btn', text: 'Annulla', onclick: close }), save)));
+  document.body.append(modal);
+  inputs.name.focus();
 }
 function clientView(l) {
   document.querySelector('.cli-modal')?.remove();

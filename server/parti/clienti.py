@@ -538,6 +538,7 @@ async def lead_mail(user: dict, lead: dict) -> dict:
               f"Chi scrive: {nome}, fa siti vetrina per le attività locali. Destinatario: {lead['name']} ({lead['category']}"
               f"{', ' + lead['town'] if lead['town'] else ''}). "
               + (f"Non ha un sito{': ' + issues[0] if issues else ''}. " if lead["kind"] == "nosite" else
+                 "Ha già un sito che nessuno ha controllato: non citare difetti. " if not issues else   # aggiunto a mano
                  "Ha un sito con questi problemi (citane al massimo 2-3, in parole semplici, senza offendere): " + "; ".join(issues) + ". ")
               + (f"Offerta da citare: {cfg.get('offerta')}. " if cfg.get("offerta") else "Non citare prezzi. ")
               + "Proponi una bozza gratuita e senza impegno. Chiudi con una riga: se non interessa basta rispondere «no grazie» e non scrive più. "
@@ -665,6 +666,27 @@ def lead_update(lead: dict, data: dict) -> list[str]:
         with db() as c:
             c.execute(f"UPDATE leads SET {', '.join(sets)}, updated = ? WHERE id = ?", (*args, int(time.time()), lead["id"]))
     return changed
+
+
+@app.post("/api/clienti")
+async def clienti_add(body: LeadIn, user: dict = Depends(require_clienti)):
+    """Un cliente aggiunto a mano (chi non si trova con «Cerca in zona»). Il nome basta, il resto si completa dopo."""
+    uid, name = owner_id(), " ".join((body.name or "").split())[:120]
+    if not name:
+        raise HTTPException(400, "Il nome non può essere vuoto")
+    if body.email and body.email.strip() and not EMAIL_RE2.fullmatch(body.email.strip()):
+        raise HTTPException(400, "Indirizzo email non valido")
+    status = body.status if body.status in ("nuovo", "contattato", "risposto", "lavorazione", "cliente", "no") else "nuovo"
+    now = int(time.time())
+    with db() as c:
+        twin = next((r["name"] for r in c.execute("SELECT name FROM leads WHERE user_id = ?", (uid,)) if r["name"].casefold() == name.casefold()), None)
+        if twin:
+            raise HTTPException(409, f"C'è già «{twin}» tra i clienti")
+        lid = c.execute("INSERT INTO leads (user_id, ext_id, name, kind, score, status, source, created, updated, contacted) VALUES (?,?,?,?,100,?,'manuale',?,?,?)",
+                        (uid, "m:" + secrets.token_hex(8), name, "bad" if (body.website or "").strip() else "nosite", status, now, now,
+                         now if status == "contattato" else 0)).lastrowid
+    lead_update(_lead(uid, lid), body.model_dump(exclude={"status", "note", "name"}))
+    return _lead(uid, lid)
 
 
 @app.patch("/api/clienti/{lid}")
