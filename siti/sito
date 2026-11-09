@@ -372,7 +372,8 @@ def github():
             tmp.write_text(json.dumps(m, ensure_ascii=False, indent=1)); tmp.replace(p / "sito.json")
         url = f"https://x-access-token:{token}@github.com/{repo}.git"
         # main normale, i branch delle persone anche dopo un rebase (sono loro, non si perde niente: la storia vera è sul server)
-        r = subprocess.run(["git", "push", "-q", url, "main:main", "+refs/heads/*/*:refs/heads/*/*"], cwd=p / "main", capture_output=True, text=True)
+        rami = [f"+{x}:{x}" for x in git("for-each-ref", "--format=%(refname)", "refs/heads/", cwd=p / "main").split() if x != "refs/heads/main"]   # git non accetta due * in una regola
+        r = subprocess.run(["git", "push", "-q", url, "main:main", *rami], cwd=p / "main", capture_output=True, text=True)
         if r.returncode:
             print(f"{p.name}: push non riuscito: {r.stderr.replace(token, '***').strip()[:300]}")
 
