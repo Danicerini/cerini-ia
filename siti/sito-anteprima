@@ -6,10 +6,10 @@
 Se un sito si costruisce (dist/ o build/ con dentro index.html) si mostra quella cartella. Mai file nascosti (.git, .env…).
 Gira come servizio siti-anteprima su 127.0.0.1:8460; Tailscale lo pubblica in https (tailscale serve).
 """
-import html, json, os, sys
+import html, json, os, re, sys
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path("/srv/siti")
 COMUNE = ROOT / ".progetti"
@@ -30,12 +30,25 @@ def cartella(u: str) -> Path:
 
 def base(d: Path) -> Path:
     """La cartella da mostrare: quella costruita se c'è, altrimenti quella del codice."""
-    if (d / "index.html").exists():
-        return d
-    for sub in ("dist", "build", "public", "out", "_site"):
+    for sub in ("dist", "build", "out", "_site"):
         if (d / sub / "index.html").exists():
             return d / sub
+    if not (d / "index.html").exists() and (d / "public" / "index.html").exists():
+        return d / "public"
     return d
+
+
+def unbuilt(d: Path) -> bool:
+    """Un index.html che punta ai sorgenti (Vite e simili): nel browser sarebbe una pagina bianca."""
+    try:
+        return bool(re.search(r"""src=["']/?src/""", (d / "index.html").read_text(errors="ignore")))
+    except OSError:
+        return False
+
+
+def viewable(d: Path) -> bool:
+    b = base(d)
+    return (b / "index.html").exists() and not unbuilt(b)
 
 
 def meta(slug: str) -> dict:
@@ -54,7 +67,36 @@ class H(SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Robots-Tag", "noindex")
+        if getattr(self, "ctx", None):
+            self.send_header("Set-Cookie", f"anteprima={quote('/'.join(self.ctx), safe='')}; Path=/; SameSite=Lax")
         super().end_headers()
+
+    def known(self, path: str) -> list[str]:
+        """I pezzi iniziali di un indirizzo che indicano un sito: [sito] oppure [sito, ~persona]."""
+        parts = [x for x in unquote(path).split("/") if x]
+        if not parts or parts[0].startswith(".") or not (COMUNE / parts[0] / "sito.json").exists():
+            return []
+        return parts[:2] if len(parts) > 1 and parts[1][1:] in (conf().get("utenti") or []) and parts[1][0] == "~" else parts[:1]
+
+    def context(self) -> list[str]:
+        """Il sito da cui arriva una richiesta con indirizzo assoluto (/assets/…): la pagina che la fa, o l'ultimo sito aperto."""
+        m = re.search(r"(?:^|;\s*)anteprima=([^;]+)", self.headers.get("Cookie") or "")
+        for c in (urlsplit(self.headers.get("Referer") or "").path, unquote(m[1]) if m else ""):
+            if ctx := self.known(c):
+                return ctx
+        return []
+
+    def auto(self, slug: str) -> str:
+        """Dove mandare chi apre il sito: un indirizzo a parte (WordPress) o, se non è consegnato niente da vedere, il lavoro di chi lo segue."""
+        m = meta(slug)
+        if m.get("anteprima_url"):
+            return m["anteprima_url"]
+        if viewable(COMUNE / slug / "main"):
+            return ""
+        for u in [m.get("chi"), *(conf().get("utenti") or [])]:
+            if u and viewable(cartella(u) / slug):
+                return f"/{slug}/~{u}/"
+        return ""
 
     def page(self, title: str, body: str, code: int = 200):
         data = (f"<!doctype html><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>"
@@ -79,10 +121,15 @@ class H(SimpleHTTPRequestHandler):
         parts = [x for x in unquote(urlsplit(path).path).split("/") if x]
         if not parts or any(x.startswith(".") or x in ("..",) for x in parts):
             return ""
+        if not (COMUNE / parts[0] / "sito.json").exists():   # /assets/… di un sito fatto per stare nella radice
+            ctx = self.context()
+            if not ctx:
+                return ""
+            parts = ctx + parts
         slug, rest = parts[0], parts[1:]
-        if not (COMUNE / slug / "sito.json").exists():
-            return ""
         if rest and rest[0].startswith("~"):
+            if rest[0][1:] not in (conf().get("utenti") or []):
+                return ""
             d = cartella(rest[0][1:]) / slug
             rest = rest[1:]
         else:
@@ -95,8 +142,13 @@ class H(SimpleHTTPRequestHandler):
 
     def send_head(self):
         raw = urlsplit(self.path).path
+        self.ctx = []
         if raw in ("", "/"):
             self.index(); return None
+        site = self.known(raw)
+        if len(site) == 1 and unquote(raw).strip("/") == site[0] and (go := self.auto(site[0])):
+            self.send_response(302); self.send_header("Location", go); self.end_headers(); return None
+        self.ctx = site
         p = self.translate_path(self.path)
         if not p or not os.path.exists(p):
             self.page("Non trovato", "<p>Questa pagina non c'è (o il sito non ha ancora un <code>index.html</code>). <a href='/'>Tutti i siti</a></p>", 404)
@@ -105,6 +157,9 @@ class H(SimpleHTTPRequestHandler):
             self.send_response(301); self.send_header("Location", raw + "/"); self.end_headers(); return None
         if os.path.isdir(p) and not os.path.exists(os.path.join(p, "index.html")):
             self.page("Ancora niente da vedere", "<p>In questa cartella non c'è un <code>index.html</code>. <a href='/'>Tutti i siti</a></p>", 404)
+            return None
+        if os.path.isdir(p) and unbuilt(Path(p)):
+            self.page("Sito da costruire", "<p>Qui ci sono i sorgenti: si vedrà dopo la build (<code>npm run build</code> nella cartella del sito). <a href='/'>Tutti i siti</a></p>", 404)
             return None
         return super().send_head()
 
