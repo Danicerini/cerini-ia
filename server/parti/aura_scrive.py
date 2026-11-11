@@ -418,9 +418,12 @@ def _parcel_found(uid: int, info: dict, sp: dict):
     now = int(time.time())
     with db() as c:
         rows = c.execute("SELECT * FROM parcels WHERE user_id = ? AND updated > ? ORDER BY id DESC", (uid, now - 45 * 86400)).fetchall()
+    # anche un pacco consegnato da meno di una settimana: le mail che arrivano dopo (consegna senza codice, «ordine confermato»,
+    # «lascia una recensione») parlano di quello, non di un pacco nuovo. Prima però quelli ancora in viaggio.
+    alike = [r for r in rows if (r["status"] != "consegnato" or r["updated"] > now - 7 * 86400)
+             and (not sp["negozio"] or not r["shop"] or sp["negozio"].lower() == r["shop"].lower()) and _same_thing(r["title"], sp["cosa"])]
     same = next((r for r in rows if sp["tracking"] and r["tracking"] == sp["tracking"]), None) or next(
-        (r for r in rows if r["status"] != "consegnato" and (not sp["negozio"] or not r["shop"] or sp["negozio"].lower() == r["shop"].lower())
-         and _same_thing(r["title"], sp["cosa"])), None)
+        (r for r in alike if r["status"] != "consegnato"), None) or next(iter(alike), None)
     if same and sp["tracking"] and sp["negozio"]:   # il corriere scrive con il suo nome: il negozio ora dice che quel tracciamento è di un suo ordine
         twins = [r for r in rows if r["id"] != same["id"] and r["status"] != "consegnato" and not r["tracking"] and (r["shop"] or "").lower() == sp["negozio"].lower()]
         if len(twins) == 1 and (same["shop"] or "").lower() != sp["negozio"].lower():
@@ -429,9 +432,14 @@ def _parcel_found(uid: int, info: dict, sp: dict):
         if same:
             status = _parcel_next(same["status"], sp["stato"])
             changed = status != same["status"]
-            c.execute("UPDATE parcels SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking = COALESCE(NULLIF(?, ''), tracking), "
-                      "eta = COALESCE(NULLIF(?, ''), eta), mid = ?, updated = ? WHERE id = ?",
-                      (status, sp["corriere"], sp["tracking"], sp["arrivo"], info["mid"], now, same["id"]))
+            done = same["status"] == "consegnato"   # già consegnato: resta com'è, e sparisce 2 giorni dopo la consegna, non dopo l'ultima mail
+            if done:   # si riempie solo quello che manca
+                c.execute("UPDATE parcels SET carrier = COALESCE(NULLIF(carrier, ''), ?), tracking = COALESCE(NULLIF(tracking, ''), ?) WHERE id = ?",
+                          (sp["corriere"], sp["tracking"], same["id"]))
+            else:
+                c.execute("UPDATE parcels SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking = COALESCE(NULLIF(?, ''), tracking), "
+                          "eta = COALESCE(NULLIF(?, ''), eta), mid = ?, updated = ? WHERE id = ?",
+                          (status, sp["corriere"], sp["tracking"], sp["arrivo"], info["mid"], now, same["id"]))
             pid, title = same["id"], same["title"]
         else:
             status, changed, title = sp["stato"], True, sp["cosa"]
