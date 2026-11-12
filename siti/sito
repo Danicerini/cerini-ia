@@ -23,7 +23,7 @@ Comandi di servizio (root o aura):
   sito github                                   crea i repository mancanti e manda main e i branch su GitHub
   sito attivita <da-timestamp>                  cosa è successo in tutti i progetti da quel momento (JSON, per Aura)
 """
-import fcntl, json, os, pwd, re, shutil, subprocess, sys, time, urllib.request, urllib.error
+import fcntl, json, os, pwd, re, shutil, subprocess, sys, time, unicodedata, urllib.request, urllib.error
 from datetime import datetime
 from pathlib import Path
 
@@ -345,6 +345,26 @@ def gh_api(method: str, path: str, token: str, body: dict | None = None):
         return e.code, json.loads(e.read() or b"{}")
 
 
+def _chiave_repo(s: str) -> str:
+    """«divinporcello-sito», «sito-divin-porcello», «divin-porcello» -> «divinporcello»: per riconoscere lo stesso sito."""
+    s = unicodedata.normalize("NFKD", s.lower()).encode("ascii", "ignore").decode()
+    s = re.sub(r"[^a-z0-9]", "", s)
+    return re.sub(r"(sito|web)$", "", re.sub(r"^sito", "", s))
+
+
+def repo_esistenti(token: str, slug: str, nome: str = "") -> list:
+    """I repository dell'utente GitHub che sembrano lo stesso sito: stesso slug a meno di trattini e della parola «sito»."""
+    chiavi = {k for k in (_chiave_repo(slug),) if len(k) >= 4}
+    trovati, pagina = [], 1
+    while pagina <= 10:
+        st, d = gh_api("GET", f"/user/repos?per_page=100&affiliation=owner&page={pagina}", token)
+        if st != 200 or not d:
+            break
+        trovati += [r["full_name"] for r in d if _chiave_repo(r["name"]) in chiavi]
+        pagina += 1
+    return trovati
+
+
 def github():
     try:
         token = TOKEN.read_text().strip()
@@ -360,6 +380,15 @@ def github():
             continue
         if not m.get("github_ok"):
             st, d = gh_api("GET", f"/repos/{repo}", token)
+            if st == 404:
+                # Prima di crearne uno nuovo: se per questo sito esiste gia' un repository (es. «nomesito-sito» fatto a mano), si usa quello
+                simili = repo_esistenti(token, p.name, m.get("nome", ""))
+                if len(simili) > 1:
+                    print(f"{p.name}: piu' repository simili ({', '.join(simili)}): non ne creo un altro, scegline uno in sito.json")
+                    continue
+                if simili:
+                    repo, st = simili[0], 200
+                    print(f"{p.name}: uso il repository che esiste gia', {repo}")
             if st == 404:
                 st, d = gh_api("POST", "/user/repos", token, {"name": repo.split("/")[1], "private": True, "description": m.get("nome", "")[:300]})
                 if st not in (200, 201):
