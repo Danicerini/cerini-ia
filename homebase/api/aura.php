@@ -109,6 +109,8 @@ $OPS = [
     'adm_proc_visibility' => ['admin.php', 'toggle_procedure_visibility', ['POST']],
     'adm_defaults'        => ['admin.php', 'default_services_list', ['GET']],
     'adm_defaults_sync'   => ['admin.php', 'sync_default_services_to_users', ['POST']],
+    // Homelab: solo lettura dello stato (accensione e spegnimento restano nel pannello admin)
+    'homelab_status'      => ['homelab.php', 'status', ['GET']],
 ];
 // Le password le genera sempre la Homebase: Aura non puo' sceglierne una
 if (str_starts_with((string)($_GET['op'] ?? ''), 'adm_')) {

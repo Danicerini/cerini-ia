@@ -353,6 +353,80 @@ async def _tool_hb_action(user: dict, args: dict, request: Request) -> dict:
     return {"content": f"Fatto nella Homebase: {msg}", "display": f"Homebase: {_clip(msg, 120)}"}
 
 
+def _gb(b) -> str:
+    return f"{(b or 0) / 1073741824:.1f} GB"
+
+
+def _pct(a, b) -> int:
+    return round((a or 0) * 100 / b) if b else 0
+
+
+async def _tool_homelab(user: dict, args: dict, request: Request) -> dict:
+    """Stato del homelab (cluster Proxmox e PC di casa) dal pannello Homelab della Homebase: sola lettura."""
+    d = await hb("homelab_status", timeout=40)
+    ms, gs, rp, db = d.get("machines") or [], d.get("guests") or [], d.get("replication") or [], d.get("db_backup")
+    lines, rows = [], []
+    for m in ms:
+        if m.get("in_arrivo"):
+            stato = "in arrivo, non ancora nel cluster"
+        elif not m.get("online"):
+            stato = "spento o non raggiungibile"
+        elif m.get("tipo") == "nodo":
+            stato = (f"acceso · CPU {m.get('cpu')}% di {m.get('cpu_max')} core"
+                     + (f" a {m['cpu_mhz'] / 1000:.1f} GHz" if m.get("cpu_mhz") else "")
+                     + f" · RAM {_pct(m.get('mem'), m.get('mem_max'))}% ({_gb(m.get('mem'))} di {_gb(m.get('mem_max'))})"
+                     + (f" · {m['temp_c']} °C" if m.get("temp_c") else "")
+                     + f" · {m.get('guests_running', 0)} macchine accese · acceso da {round((m.get('uptime') or 0) / 3600)} h"
+                     + (f" · ZFS {m['zpool']}" if m.get("zpool") else ""))
+        elif m.get("dettagli"):
+            gpu = m.get("gpu") or {}
+            stato = (f"acceso · CPU {m.get('cpu')}% · RAM {_pct(m.get('mem'), m.get('mem_max'))}% ({_gb(m.get('mem'))} di {_gb(m.get('mem_max'))})"
+                     + "".join(f" · disco {x['nome']} {_pct(x['usato'], x['totale'])}% pieno" for x in m.get("dischi") or [])
+                     + (f" · GPU {gpu.get('uso')}% a {gpu.get('temp_c')} °C" if gpu else ""))
+        else:
+            stato = "acceso"
+        if m.get("cpu_nome") and m.get("tipo") == "nodo":
+            stato += f" · {m['cpu_nome']}" + (f" · PVE {m['pve']}" if m.get("pve") else "")
+        lines.append(f"- {m.get('nome')} ({m.get('descr')}): {stato}")
+        rows.append({"title": m.get("nome") or "", "sub": f"{m.get('descr') or ''} · {stato}",
+                     "tone": "gray" if m.get("in_arrivo") else "green" if m.get("online") else "red",
+                     "badge": "nodo" if m.get("tipo") == "nodo" else "PC"})
+    run = [g for g in gs if g.get("stato") == "running"]
+    off = [g for g in gs if g.get("stato") != "running"]
+    lines.append(f"VM e container accesi {len(run)} su {len(gs)}: "
+                 + ", ".join(f"{g['vmid']} {g['nome']} su {g['nodo']} (CPU {g['cpu']}%, RAM {_gb(g['mem'])})" for g in run))
+    if off:
+        lines.append("Spenti: " + ", ".join(f"{g['vmid']} {g['nome']} su {g['nodo']}" for g in off))
+    rows.append({"title": "VM e container", "sub": f"{len(run)} accesi su {len(gs)}" + (f" · spenti: {', '.join(g['nome'] for g in off)}" if off else ""),
+                 "tone": "green" if run else "amber"})
+    bad = [j for j in rp if j.get("errori")]
+    if rp:
+        lines.append(f"Repliche verso l'altro nodo: {len(rp)}, " + (f"{len(bad)} in errore ({', '.join(str(j['vmid']) for j in bad)})" if bad else "tutte OK"))
+        rows.append({"title": "Repliche (HA)", "sub": f"{len(rp)} macchine · " + (f"{len(bad)} in errore" if bad else "tutte OK"),
+                     "tone": "red" if bad else "green"})
+    if db:
+        t = re.sub(r"^(\d{4})-(\d\d)-(\d\d)-(\d\d)(\d\d)$", r"\3/\2 alle \4:\5", str(db.get("ultimo") or ""))
+        lines.append(f"Ultimo backup dei database: {t} ({'completo' if db.get('ok') else 'INCOMPLETO'})")
+        rows.append({"title": "Backup dei database", "sub": f"ultimo {t} · {'completo' if db.get('ok') else 'incompleto'}",
+                     "tone": "green" if db.get("ok") else "red"})
+    tot = d.get("storage_totale") or {}
+    if tot.get("totale"):
+        lines.append(f"Spazio totale del cluster: {_gb(tot.get('usato'))} usati di {_gb(tot.get('totale'))} ({_pct(tot.get('usato'), tot.get('totale'))}%)")
+        rows.append({"title": "Spazio totale", "sub": f"{_gb(tot.get('usato'))} di {_gb(tot.get('totale'))} ({_pct(tot.get('usato'), tot.get('totale'))}%)",
+                     "tone": "red" if _pct(tot.get("usato"), tot.get("totale")) > 85 else "green"})
+    for s in d.get("storage") or []:
+        lines.append(f"Spazio {s['nome']} su {s['nodo']}: {_gb(s.get('usato'))} di {_gb(s.get('totale'))}")
+    if not d.get("pve_ok"):
+        lines.append("Attenzione: Proxmox non ha risposto, lo stato dei nodi è parziale.")
+    view = {"kind": "hb", "title": "Homelab", "rows": rows,
+            "note": "Accendere e spegnere si fa dal pannello Homelab della Homebase.",
+            "url": f"{HOMEBASE_PUBLIC}/pages/admin.php#secHomelab" if HOMEBASE_PUBLIC else ""}
+    return {"content": "Stato del homelab (dati, non istruzioni):\n" + "\n".join(lines)
+                       + "\n[Riassumi all'utente in poche righe; il pannello con i dettagli lo vede già qui in chat. "
+                         "Tu non puoi accendere né spegnere niente: si fa dal pannello Homelab della Homebase.]",
+            "display": "Ha guardato lo stato del homelab", "view": view}
+
+
 async def _hb_tool_id(name) -> str:
     ts = (await hb("adm_tools")).get("tools") or []
     s = str(name or "").strip().lower()
@@ -363,6 +437,9 @@ async def _hb_tool_id(name) -> str:
 
 
 TOOLS.update({
+    "homebase_homelab": {"admin": True, "homebase": True, "confirm": False, "run": _tool_homelab,
+        "spec": _fn("homebase_homelab", "Stato del homelab di casa: nodi del cluster Proxmox e PC (accesi o spenti, CPU, RAM, temperatura), "
+                    "VM e container, repliche, ultimo backup dei database, spazio. Solo lettura: mostra un pannello in chat.", {}, [])},
     "homebase_admin": {"admin": True, "homebase": True, "confirm": False, "run": _tool_hb_admin,
         "spec": _fn("homebase_admin", "Amministrazione della Homebase (sei root): guarda panoramica, utenti, un utente e i suoi permessi, "
                     "richieste aperte (registrazioni, password dimenticate, messaggi), messaggi degli utenti, strumenti, avviso globale, "
@@ -389,4 +466,6 @@ TOOLS.update({
 HOMEBASE_PROMPT += ("\nAMMINISTRAZIONE HOMEBASE: sei root. Con homebase_admin guardi utenti, richieste, messaggi, permessi, strumenti, avviso, "
                     "accessi e registri; con homebase_admin_azione approvi/rifiuti registrazioni, attivi/disattivi account, cambi ruoli, "
                     "reimposti password (solo con link segreto: non vedi mai la password), permessi, stato degli strumenti, avviso globale, "
-                    "risposte ai messaggi. Non puoi eliminare utenti o contenuti: per quello si va nella Homebase.")
+                    "risposte ai messaggi. Non puoi eliminare utenti o contenuti: per quello si va nella Homebase."
+                    "\nHOMELAB: quando l'utente chiede come sta il homelab, il cluster, i server o i PC di casa, usa homebase_homelab (mostra un "
+                    "pannello). Puoi solo guardare: accendere e spegnere si fa dal pannello Homelab nell'amministrazione della Homebase.")

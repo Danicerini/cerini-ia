@@ -540,7 +540,7 @@ CAL_TOPIC = re.compile(r"\b(da fare|programma|briefing|calendari\w*|agenda|ricor
                        r"settimana prossima|libero|occupat\w*)\b", re.I)
 HB_TOPIC = re.compile(r"\b(note?|nota|appunt\w*|segnat\w*|scratchpad|s\w{0,2}r?a\w{0,3}pa?d\w*|scrach\w*|scrat\w*|archiviat\w*|fogli[oe]?|homebase|dashboard|servizi?|rete|dispositiv\w*|router|switch|"
                       r"access point|nas|stampant\w*|offline|scansion\w*|dns|domini\w*|spf|dmarc|segret\w*|pdf sentinel|ip|lan|"
-                      r"wi-?fi|proxmox|ping|procedur\w*|runbook|sicur\w*|virus|malware|pericolos\w*|phishing|infett\w*)\b", re.I)
+                      r"wi-?fi|proxmox|homelab|cluster|pve\d?|nod[oi]|server|serverin\w*|rack|ping|procedur\w*|runbook|sicur\w*|virus|malware|pericolos\w*|phishing|infett\w*)\b", re.I)
 FILE_TOPIC = re.compile(r"\b(file|allegat\w*|pdf|document\w*|immagin\w*|exif|favicon|hash|impront\w*|sha\d*|md5|unisci|dividi|"
                         r"pagin\w*|word|excel|docx|xlsx)\b", re.I)
 ACTION_CLAIM_RE = re.compile(r"\b(ho |l'ho |li ho |le ho )?(riattivat|attivat|aggiunt|spent|nascost|pubblicat|modificat|rimess|inserit|"
