@@ -192,8 +192,8 @@ async def classify_mail(user: dict, m: dict, rule: str | None) -> dict:
               "\"scadenza\": null oppure, SOLO se la mail chiede all'utente di pagare o rinnovare qualcosa entro una data precisa "
               "(bolletta, fattura, multa, bollo, abbonamento, assicurazione, rata), {\"cosa\": \"es. Bolletta luce Enel\", "
               "\"data\": \"AAAA-MM-GG\", \"importo\": \"es. 45,20 € oppure vuoto\"}; "
-              "\"spedizione\": null oppure, SOLO se parla di un ordine o di un pacco dell'utente (conferma d'ordine, spedito, in consegna, "
-              "consegnato, problema di consegna), {\"cosa\": \"cosa ha ordinato, breve\", \"negozio\": \"es. Amazon\", \"corriere\": \"es. BRT o vuoto\", "
+              "\"spedizione\": null oppure, SOLO se parla di un ordine o di un pacco che l'utente deve RICEVERE (conferma d'ordine, spedito, in consegna, "
+              "consegnato, problema di consegna; resi, rimborsi e pacchi che l'utente deve rispedire NON sono spedizioni: null), {\"cosa\": \"cosa ha ordinato, breve\", \"negozio\": \"es. Amazon\", \"corriere\": \"es. BRT o vuoto\", "
               "\"stato\": \"ordinato|spedito|in consegna|consegnato|problema\", \"arrivo\": \"AAAA-MM-GG previsto o vuoto\", "
               "\"tracking\": \"codice di tracciamento o vuoto\"}}")
     mail = (f"Da: {m['from']} <{m['email']}>\nOggetto: {m['subject']}\nCategoria Gmail: {m.get('category') or 'principale'}\n"
@@ -228,9 +228,14 @@ PARCEL_SAY = {"ordinato": "ordine confermato", "spedito": "è partito", "in cons
               "problema": "ha un problema con la consegna"}
 
 
+_RETURN_RE = re.compile(r"\b(res[oi]|restituzion\w*|rimbors\w*|returns?|refund\w*)\b", re.I)
+
+
 def _parcel_of(x) -> dict | None:
     if not isinstance(x, dict) or not (x.get("cosa") or x.get("tracking")):
         return None
+    if _RETURN_RE.search(str(x.get("cosa") or "")):
+        return None   # un reso da spedire non è un pacco in arrivo: la mail resta una mail normale
     stato = str(x.get("stato") or "").lower().strip()
     eta = str(x.get("arrivo") or "")[:10]
     return {"cosa": _clip(clean_name(str(x.get("cosa") or "Pacco")), 80), "negozio": _clip(str(x.get("negozio") or ""), 40),
@@ -413,6 +418,16 @@ def _parcel_merge(uid: int, keep, drop) -> dict:
         return c.execute("SELECT * FROM parcels WHERE id = ?", (keep["id"],)).fetchone()
 
 
+_PARCEL_WORDS = {"ordine", "ordini", "pacco", "pacchi", "spedizione", "acquisto", "articolo", "articoli", "prodotto", "prodotti",
+                 "tuo", "tuoi", "il", "lo", "la", "del", "della", "di", "da", "su", "n", "nr", "numero", "nuovo", "consegna", "spedito"}
+
+
+def _parcel_generic(title: str, shop: str) -> bool:
+    """«Ordine Vinted», «Pacco Amazon n. 123»: un nome che non dice cosa c'è dentro."""
+    words = [w for w in re.findall(r"[^\W\d_]+", (title or "").lower()) if w not in _PARCEL_WORDS and w not in (shop or "").lower().split()]
+    return not words
+
+
 def _parcel_found(uid: int, info: dict, sp: dict):
     """Un ordine o un pacco: si aggiorna lo stesso pacco (stesso tracciamento, o stesso negozio e stessa cosa), non se ne crea un altro."""
     now = int(time.time())
@@ -424,6 +439,17 @@ def _parcel_found(uid: int, info: dict, sp: dict):
              and (not sp["negozio"] or not r["shop"] or sp["negozio"].lower() == r["shop"].lower()) and _same_thing(r["title"], sp["cosa"])]
     same = next((r for r in rows if sp["tracking"] and r["tracking"] == sp["tracking"]), None) or next(
         (r for r in alike if r["status"] != "consegnato"), None) or next(iter(alike), None)
+    if not same and sp["negozio"]:
+        # «Ordine Vinted» (nome generico, spesso la mail del corriere): se di quel negozio c'è UN solo pacco in viaggio
+        # senza un altro codice, è quello. Vale anche al contrario (pacco nato col nome generico, mail col nome vero).
+        shop = [r for r in rows if r["status"] != "consegnato" and (r["shop"] or "").lower() == sp["negozio"].lower()
+                and not (r["tracking"] and sp["tracking"] and r["tracking"] != sp["tracking"])]
+        if len(shop) == 1 and (_parcel_generic(sp["cosa"], sp["negozio"]) or _parcel_generic(shop[0]["title"], shop[0]["shop"])):
+            same = shop[0]
+    if same and _parcel_generic(same["title"], same["shop"]) and not _parcel_generic(sp["cosa"], sp["negozio"]):
+        with db() as c:   # il nome vero prende il posto di «Ordine Vinted»
+            c.execute("UPDATE parcels SET title = ? WHERE id = ?", (sp["cosa"], same["id"]))
+            same = c.execute("SELECT * FROM parcels WHERE id = ?", (same["id"],)).fetchone()
     if same and sp["tracking"] and sp["negozio"]:   # il corriere scrive con il suo nome: il negozio ora dice che quel tracciamento è di un suo ordine
         twins = [r for r in rows if r["id"] != same["id"] and r["status"] != "consegnato" and not r["tracking"] and (r["shop"] or "").lower() == sp["negozio"].lower()]
         if len(twins) == 1 and (same["shop"] or "").lower() != sp["negozio"].lower():
